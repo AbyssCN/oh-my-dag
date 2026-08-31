@@ -64,6 +64,8 @@ import {
 import { specAnchor } from './spec-anchor';
 import { dryRunSddIgnition } from './sdd-ignition-check';
 import { coverSlices, describeSliceCoverage, type SliceCoverageReport } from './slice-coverage';
+import { compileChain } from './stage-chain';
+import { routeChain } from './chain-router';
 import { attributeWriteSet, classifyWriteScope, describeWriteSet, SDD_DECLARED_WRITE_SET, type DeclaredWriteSet, type WriteScopeKind, type WriteSetDeclaration, type WriteSetReport } from '../writeset/write-set';
 import { collectRunTickets, type RunTicketSink } from '../pathfinder/run-tickets';
 import { logger } from '../logger';
@@ -310,6 +312,23 @@ export interface RunGoalConfig {
    * 路径**同源同真源**。`GenerateFn` 注入面已存在, 测试单跑 goal 时两个注入口的语义一致。
    */
   flatFirst?: boolean;
+  /**
+   * **D4 切片 3: 阶段链路由 + 编译 opt-in 开关** (SDD 2026-08-31-dynamic-workflow-design)。
+   *
+   * `undefined` = 走环境变量 `OMD_CHAIN` (`'1'` / `'true'` 视为开, 其余视作关);
+   * 给定布尔值则压过环境变量, **测试 / 装配层用这条**。
+   *
+   * 缺省语义 = 关: 不设环境变量时, 任何 goal 的执行路径与今天逐字节相同 (INV-4 零回归)。
+   * 开了之后, 规划期挂 `routeChain(goal, deps)` —— 命中 `kind:'chain'` ⇒ `compileChain`
+   * 编译出 ConductorPlan (拓扑 = 编译器输出, conductor 无改拓扑权 D-6);
+   * 命中 `kind:'shape'` / `kind:'none'` / caller 抛 / 越界 ⇒ 降级, 走 L1 (flatFirst) 或
+   * v1 conductor 通路 (零回退)。
+   *
+   * ⚠ **生产 caller 装配位置 = 服务端 boot** (切片 2 `chain-router.ts:configureRouteCaller`):
+   * 不装配 = 模块默认 caller 永远返 `'none'`, 开关开了也走零回退。本片只负责"开关 + 调用 +
+   * 编译", 不造 caller (那是装配层的事; 切片 2 的注释里写明了)。
+   */
+  chain?: boolean;
  }
 
 export interface RunGoalResult {
@@ -904,6 +923,22 @@ export function flatFirstEnabled(config: { flatFirst?: boolean }, env: NodeJS.Pr
   return v === '1' || v === 'true';
 }
 
+/**
+ * **D4 切片 3: 阶段链路由开关的合并判据** (INV-4 零回归那一半)。
+ *   · config 显式布尔值 (test / 装配层注入) ⇒ 直接用, 压过环境变量;
+ *   · config 缺席 ⇒ 读环境变量 `OMD_CHAIN` (`'1'` / `'true'` 视为开, 余下视作关);
+ *   · 两都缺席 ⇒ 关。
+ *
+ * 每次调用重读环境变量 —— 测试可在中途翻转, 不依赖模块级捕获。
+ *
+ * 镜像 `flatFirstEnabled` 的形状, 两开关**同源同真源**, 装配层 A/B 时只动 env 就行。
+ */
+export function chainEnabled(config: { chain?: boolean }, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (config.chain !== undefined) return config.chain;
+  const v = env.OMD_CHAIN;
+  return v === '1' || v === 'true';
+}
+
 /** INV-1 棘轮的四个动作 —— 「不必动」「动不了」「真动了」不许压平。 */
 export type BestGreenAction = 'none' | 'already-green' | 'restore' | 'unrestorable';
 
@@ -1477,6 +1512,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
    */
   let usedFlatFirst = false;
   const flatFirstOn = flatFirstEnabled(config);
+  const chainOn = chainEnabled(config);
   if (sdd && runnable) {
     // INV-D3-1: 同一份判定 —— fatal / fallback 与 goal.ts `sddIgnitionDryRunGate` 共用。
     const ignition = dryRunSddIgnition(sdd.text);
@@ -1668,6 +1704,54 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
         '[run-goal] L1 轻规划/编译失败 → fail-loud (opt-in 显式开关, 不静默降级 v1)',
       );
       return bail(`L1 轻规划/编译失败 (opt-in 显式): ${msg}`, 'infra-error');
+    }
+  } else if (chainOn && runnable) {
+    // ── D4 切片 3 (SDD 2026-08-31-dynamic-workflow-design, D-4 / D-6 / INV-4):
+    //   阶段链路由 + 编译 —— 加在 SDD-direct 与 L1 flat-first 之间的一层。
+    //
+    //   触发 = config.chain ?? env.OMD_CHAIN (chainEnabled 读, 同 flatFirstEnabled 形状);
+    //   命中 = routeChain 返 kind:'chain' ⇒ compileChain 出的 ConductorPlan 进 execPlan 级联,
+    //     conductor 无改拓扑权 (D-6); 未命中 / caller 抛 / 越界 ⇒ **降级**, 走下面的 L1
+    //     (flatFirst 开时) 或 v1 conductor (兜底)。
+    //
+    //   优先级: SDD 已结晶 ⇒ 让 SDD 走 (本块嵌在 `else if` 里, SDD 路径在本块之前);
+    //   chain 命中 ⇒ compileChain 产物; 未命中 ⇒ 降级。**不在 SDD 与 chain 之间二选一** —
+    //   SDD 是 owner 显式交付物, chain 是 goal 文本的图式匹配, 两者语义不同档。
+    //
+    //   失败语义 (与 SDD-direct INV-D3-4 fail-fast **刻意相反**): 路由是 opt-in 实验 (R9),
+    //   fail-loud bail 会让一次「开了开关但没命中」的 run 当场炸 —— 那比路由失败更坏。
+    //   降级是它本来的兜底, 但**不许吞证据** (INV-6): log 一行带 caller 返回 + 编译异常原文。
+    //
+    //   不造 caller (切片 2 chain-router.ts 的注释里写明了: 生产 caller 装配在服务端 boot,
+    //   `configureRouteCaller` 注入; 不装配 = 模块默认 caller 永远返 'none', 开了开关也走零回退)。
+    try {
+      const decision = await routeChain(goal, {
+        conductorModel: config.dag.conductorModel,
+        cwd: config.cwd,
+        tier,
+        acceptanceKind: acceptance.kind,
+      });
+      if (decision.kind === 'chain') {
+        // compileChain 抛 (词表外 word / listFrom 形态错 / parsePlan 拒) → catch 里降级;
+        // 不在 if 内 try/catch (语义同层不嵌套, fail-open 集中处理)。
+        flatPlan = compileChain(decision.chain);
+        logger.info(
+          { stages: decision.chain.stages.length, name: flatPlan.name },
+          '[run-goal] D4 chain 路由命中 → compileChain 产物进 execPlan (conductor 无改拓扑权, D-6)',
+        );
+      } else {
+        // 'shape' 在 v1 不消费 (D-4 留 v2 接 GRAPH_SHAPES 卡填充), 'none' 兜底, 都走降级。
+        logger.info(
+          { decisionKind: decision.kind },
+          '[run-goal] D4 chain 路由未命中 → 降级 (走 flatFirst / v1 conductor, 行为逐字节照旧)',
+        );
+      }
+    } catch (err) {
+      const msg = String(err instanceof Error ? err.message : err).slice(0, 240);
+      logger.warn(
+        { err: msg },
+        '[run-goal] D4 chain 路由/编译失败 → 降级 (走 flatFirst / v1 conductor, 不静默)',
+      );
     }
   }
   const execPlan: ConductorPlan = flatPlan ?? {

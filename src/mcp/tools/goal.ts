@@ -52,6 +52,8 @@ export interface GoalToolDeps {
       maxRounds?: number;
       researchRounds?: number;
       tier?: GoalTier;
+      /** D4 切片 3: 阶段链路由 + 编译 opt-in 开关 (R9 solve 曝面)。省略 / 未传 = 走 env OMD_CHAIN。 */
+      chain?: boolean;
       onClassified?: (classified: GoalClassification) => void;
       /** #209 spec 存盘记账钩子: 契约段收尾恰好一次 (worktree 还在的时候), 见 RunGoalConfig.onContract。 */
       onContract?: (specWrite: SpecWrite) => void;
@@ -634,6 +636,12 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
       // 不然这里放进来的 5 会在下游被静默钳掉, 又是一个"配了但不生效"的旋钮。
       maxRounds: z.number().int().min(1).max(4).optional().describe('Execute-phase inner-loop round cap (default 2 = 1 repair)'),
       researchRounds: z.number().int().min(1).max(4).optional().describe('Research inner-loop cap (default 1)'),
+      // D4 切片 3: 阶段链路由 + 编译 opt-in 开关 (R9 solve 曝面)。**本片暂不曝 MCP 入参面** —
+      // capability-matrix.test.ts 的结构绊线硬编码「3 层 / map_*=8 / 18 行」(scripts/
+      // omd-capability-matrix.ts §5), 在 goal 输入面再加键会把矩阵 union rows 顶成 19,
+      // 触发绊线冲突 (勘察计数与代码冲突)。SDD 该键接入参待 owner 拍 R9 后, 走绑定升级一并
+      // 改 zod + bump 绊线 (冻结接口规格 §5)。眼下切链入口 = env OMD_CHAIN (chainEnabled 读),
+      // 装配层 / 测试用 env 控制, MCP 入参面零增量, 矩阵行数冻结在 18, INV-4 零回退照旧。
       resume: z
         .string()
         .optional()
@@ -703,6 +711,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         force?: boolean;
         slug?: string;
         cwd?: string;
+        // D4 切片 3: 见上方 zod schema 注释 —— chain 暂不曝 MCP 入参面, 待 R9 拍板。
       };
       // ── 续跑恢复入参 (2026-08-23, owner 现场报) ────────────────────────────────
       // `resume` 只带 runId, 其余入参由**本次调用**给 —— 漏传一个就按缺省跑, 而缺省未必是
@@ -840,6 +849,8 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         // 同一个 dag_goal handler (进程内路径, --cwd 是主仓 → 同一张图), 挂票与散雾出口在那边一次性
         // 接上; 母进程抢先开票会开出两张 (幂等锚 suggestedBy=runId 能救回来, 但那是靠运气不是靠设计)。
         // 留账已清 (cb4a129 → 2026-08-11): slug 随 spawn 参数直通 worker, 隔离后台 run 与前台同等挂票。
+        // D4 切片 3: chain 暂不曝 MCP 入参面 (capability-matrix 绊线 18/19 冲突, 待 R9 拍板),
+        //   worker 与母进程同源 env OMD_CHAIN → 装配层透传 env 后两边语义一致。
         if (force) {
           // 与 slug 同款纪律 (不预留死参数): worker 不认 `--force`, 转发了就是死参数 —— 不转发, 但要念出来,
           // 否则 owner 以为越闸已生效, 而 worker 侧会在写集相交时硬闸拒绝。
@@ -1179,6 +1190,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           ...(researchRounds ? { researchRounds } : {}),
           ...(tier ? { tier } : {}),
           ...(sddPath ? { sddPath } : {}),
+          // D4 切片 3: chain 暂不曝 MCP 入参面 (capability-matrix 绊线 18/19, 待 R9); 入口=env OMD_CHAIN。
           // ── 盘点表 #3: D-2 写集对账的生产注入面 ─────────────────────────────────
           // 判据全在 `sddWriteSetFace` 的注里 (为什么只在有 SDD 时注、为什么必须显式给 declared)。
           // 注入这一个字段同时点亮三个读数: 归属阶梯 (谁写的) · writeScope (该不该写) ·
