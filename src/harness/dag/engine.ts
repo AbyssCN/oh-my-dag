@@ -1804,7 +1804,11 @@ async function executePlan(
         ...(opts.model ? { model: opts.model } : {}),
         outputPaths,
         artifactHashes,
-        ...(opts.filesRead?.length ? { inputPaths: opts.filesRead.map(rel) } : {}),
+        // G3 (2026-08-31): inputPaths 三态 —— `filesRead` **已定义**即写 (含空数组),
+        // 缺席语义留给 inproc/command 不传文件读集合的场景。`?.length` 谓词会把"读了 0 个"
+        // 塌成"没读"或"没记", 这是 NULL≠0≠不适用塌陷的同一种病灶。恢复三态用 `!== undefined`,
+        // 这样空数组能保真落盘。
+        ...(opts.filesRead !== undefined ? { inputPaths: opts.filesRead.map(rel) } : {}),
         tokenUsage: opts.usage,
         summary,
         ...(outputText ? { outputText } : {}),
@@ -2461,6 +2465,7 @@ async function executePlan(
                 ...(settledR.failureKind ? { failureKind: settledR.failureKind } : {}),
               });
               roundResults.set(cid, settledR);
+              // G4: 子叶 usage 不再向 conductor 节点 usageAcc 折; 见上面那块。
               depOutputs[cid] = settledR.output;
               // #153 D-7: 子节点绕过外层 settle → 逐字保真探针在这里同样点一次 (同一个
               // detectVerbatimDrop 调用, 不是第二判据)。观察条目两条路都照常进账本 (INV-6),
@@ -2477,7 +2482,14 @@ async function executePlan(
                   if (gateVerbatimRed(vdCid, plan!.nodes[cid]?.goal ?? '')) verbatimReds.add(cid);
                 }
               }
-              usageAcc = addUsage(usageAcc, settledR.usage);
+              // G4 (2026-08-31): 子叶份额**不进** conductor 节点自身的 usageAcc —— 子叶有
+              // 各自一行 (nodes 账 `tokensIn`/`tokensOut`), 不许被父节点再折一次 (历史那把
+              // 3.3× 差就是这么来的)。子叶不走外层 settle (runtime id `父::子` 不在
+              // plan.nodes), 所以此处直接把 usage 灌进 run 级 leaves 三位累加器
+              // (闭包内, 见 `runExecutorDagWithPlan` 的 `let leavesIn = 0` 那块)。
+              leavesIn += settledR.usage.in;
+              leavesOut += settledR.usage.out;
+              leavesCacheHit += settledR.usage.cacheHit ?? 0;
               if (settledR.status === 'failed') failedLocal++;
               // 失败子节点**带上败因** (截断防爆), 不是一个光秃秃的 `[failed]`。
               // 2026-07-30 live 冒烟实证: 一个写文件的子节点被产物闸拒 (`filesTouched 空 — leaf
@@ -3576,7 +3588,10 @@ async function executePlan(
               depOutputs[child.id] = r.output;
               // map 子节点绕过外层 settle() → 此处补发 settle 事件 (INV-U6 子集独立调度)。
               emitNodeEvent(settleEvent(child.id, r));
-              usageAcc = addUsage(usageAcc, r.usage);
+              // G4 (2026-08-31): map 子叶**已挂进 plan.nodes** (上面那行) → 经外层 settle 累进
+              // run 级 leavesIn/Out/CacheHit。这里**不**再折进 map 自身的 usageAcc,
+              // 否则双记 (历史 bug 之一)。map 节点自身 usage = lister / expand 那几次
+              // generate (3488/3508/3521 三选一), 不含子节点。
               if (r.status === 'failed') failedCount++;
               // 失败子项带败因截断 (2026-08-04): 此前压成光秃 '[failed]', 下游 fan-in 与 repair 轮
               // 都看不见 10 个子项**为什么**全灭 (ed4dbe39: 防注入闸拒的原话被吞, reconcile 只能说
@@ -5485,7 +5500,10 @@ async function executePlan(
           // 盘上看这两者**长得一模一样**(filesTouched 都空、盘上都没位移), 而下一步相反。
           // 今天分不开不是因为难, 是因为**没人记那一位**。先记, 攒够了再判要不要动闸。
           // ⚠ 只记不判: 产物闸一个字没改。
-          ...(settled.filesRead?.length ? { inputPaths: settled.filesRead } : {}),
+          // G3 (2026-08-31): failed 出口同样按"三态"写 —— 见 done 出口那条注。`?.length`
+          // 塌成缺席 = 把"读了 0 个文件还失败"读成"根本没读"(恰好是 `empty-artifact`
+          // 的高发形态, 失败面最该留痕的那一格)。
+          ...(settled.filesRead !== undefined ? { inputPaths: settled.filesRead } : {}),
           // S1 埋点: failed checkpoint 也透传 watchdog (看门狗判死的叶, 盘上不该只剩 failureKind:'stall'
           // 而读不到活性; done 出口在 saveDoneCheckpoint 里同风格透传)。
           ...(settled.watchdog ? { watchdog: settled.watchdog } : {}),

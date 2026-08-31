@@ -73,9 +73,35 @@ export interface NodeCheckpoint {
   /**
    * 该节点**读过**的文件路径 (D-12, agent-leaf 从 read 族 tool-call 事件收集)。
    *
-   * 为什么进 checkpoint 而不只活在内存里: resume 跳过一个节点时, 它的 `filesRead` 本该随之
-   * 还原 —— 否则续跑一次, 制品 lint 与读毒的观察面就静默窄一截 (漏报的正是"上次读过被拒制品"
-   * 那种最该拦的节点)。缺席 = 老 checkpoint / 非 agent 节点 (向后兼容, 退回无观察)。
+   * ## 为什么进 checkpoint 而不只活在内存里
+   *
+   * resume 跳过一个节点时, 它的 `filesRead` 本该随之还原 —— 否则续跑一次, 制品 lint 与读毒
+   * 的观察面就静默窄一截 (漏报的正是"上次读过被拒制品"那种最该拦的节点)。
+   *
+   * ## 三态语义 (G3, 2026-08-31) —— NULL≠0≠不适用
+   *
+   * 字段在不在**就是**判据, 不许把空数组伪装成"没读":
+   *
+   *   · `inputPaths: []`        = 该跑经工具面**零文件读** (agent leaf 跑过了, 但 read/hashline_read
+   *                              一次都没调; 真值 = 跑了没读, 不是"没记")
+   *   · `inputPaths: ['a.ts',…]` = 经工具面读了这些 (相对 repo root 的相对化路径)
+   *   · `inputPaths === undefined` = **缺席** = (a) 不适用 (inproc/command leaf 无文件读工具),
+   *                                 或 (b) 老 checkpoint / 非 agent 节点 (向前兼容, 退回无观察)
+   *
+   * 引擎侧 (`src/harness/dag/engine.ts:1807` done 出口 · `:5488` failed 出口) 用 `!== undefined`
+   * 落字段, **空数组保真**; 不要回退 `?.length` 谓词 (那正是塌成"没读"的那条原 bug)。
+   *
+   * ## 采集边界 (诚实三态)
+   *
+   * 只覆盖 `read` / `hashline_read` 两个工具面 (`FILE_READ_TOOLS`, `src/harness/agent-leaf.ts:1716`):
+   *
+   *   · `grep` / `ls` / `glob` = **检索**不是消费, 不计 (一次 grep 命中十个不等于依赖那十个)
+   *   · `bash` 里的 `cat` / `ugrep` / `sed` 读 = **不收**。**证据面已存在 = `shellRuns`**
+   *     (同一节点的命令痕迹), 需要时**离线**解析。引擎内解析 bash 命令猜读路径 = 启发式
+   *     猜测面污染证据, 此处刻意不做。
+   *
+   * 三态 = 真值 (`[]`) / 真值 (`['a',…]`) / 不适用 (`undefined`), 读数板必须按字面念,
+   * 合并数 (`总数 419`) 把缺席吞进零, 恰是 NULL≠0≠不适用塌陷的反向案例。
    */
   inputPaths?: string[];
   /** 模型用量。command leaf = null。 */

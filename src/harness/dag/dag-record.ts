@@ -107,6 +107,18 @@ export interface DagRunNode {
    * 节点级 token 账五位列 (C-1, 2026-08-19)。与 run 级 `usage` 聚合 (conductorIn/Out +
    * leavesIn/Out/CacheHit) 分开: 那一位是**全图聚合**, 这一组是**每节点原值**。
    *
+   * **2026-08-31 (G4) 之后** (本契约生效节点): 每行 tokensIn = 该节点**自身** generate
+   *   调用, 不含子图/子叶份额 (子叶份额归 run 级 leavesIn, 与 conductor 节点行无关);
+   *   ∑全行 tokensIn === conductorIn + leavesIn (单轮 run 上逐位相等)。
+   * **2026-08-31 之前** (历史行): conductor 节点行 tokensIn = 自身 + 子图子叶份额,
+   *   execute 行 leavesIn 可为 0 (子叶烧的 token 全部记在父 conductor 节点里)。这条病
+   *   已在 `engine.ts` 的 conductor 子图展开 + map 展开里修掉, 老行原样保留 (不做
+   *   历史数据迁移, 写死进注释不算 bug)。
+   * **允许的差 = 跨轮/escalation 累计**: 行级 (dag_run 行) = 全轮累计 (run 多次 escalation
+   *   时把每轮 conductor generate 都算进 conductorIn), 节点级 (nodes 数组) = 末轮
+   *   (`engine.ts` 跨轮 `_nodeLastSettled` 的覆盖规则); 其它差全部来自跨层归属错,
+   *   一律按 INV-1 / INV-2 修引擎侧。
+   *
    * 存在理由是**事后还原不回来**: 节点级数据只能当场从 `LeafResult.usage` 摘; 它不进入
    * 全图聚合 (那是 sum), 而 sum 一旦写入磁盘就拆不回"哪几个节点贡献了大头" —— 而这正是
    * 留痕层该有的颗粒度 (N9 同族: 存原值, 派生的事读数板现算)。
