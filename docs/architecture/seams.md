@@ -15,7 +15,7 @@
 
 | 字段 | 必填 | 类型 | 一句话 | 消费方 (前3) |
 |---|---|---|---|---|
-| `conductorModel` | **是** | `string` | conductor 模型 'provider:modelId' (规划用, 我们=mimo:mimo-v2.5-pro)。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/dag-tools.ts`<br>`src/eval/oracles/conductor-modelmix.ts` (18 文件) |
+| `conductorModel` | **是** | `string` | conductor 模型 'provider:modelId' (规划用, 我们=mimo:mimo-v2.5-pro)。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/dag-tools.ts`<br>`src/eval/oracles/conductor-modelmix.ts` (19 文件) |
 | `leafModel` | **是** | `string` | inproc leaf 模型 'provider:modelId' (生成/判断单发)。 | `src/mcp/tools/dag-tools.ts`<br>`src/harness/dag/engine.ts`<br>`src/eval/oracles/conductor-modelmix.ts` (20 文件) |
 | `agentLeafModel` |  | `string` | agent leaf 模型 (带工具改文件)。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/pathfinder.ts`<br>`src/harness/execute-slice.ts` (11 文件) |
 | `judgeModel` |  | `string` | 收敛 judge 的模型坐标。 | `src/harness/research/fanout.ts`<br>`src/harness/plan/best-of-n.ts`<br>`src/harness/research/web-fanout.ts` (9 文件) |
@@ -38,7 +38,7 @@
 
 | 字段 | 必填 | 类型 | 一句话 | 消费方 (前3) |
 |---|---|---|---|---|
-| `generate` |  | `GenerateFn` | 注入式模型调用 (inproc leaf, 默认 callModel)。 | `src/harness/dag/engine.ts`<br>`src/harness/goal/run-goal.ts`<br>`src/harness/goal/classify-acceptance.ts` (14 文件) |
+| `generate` |  | `GenerateFn` | 注入式模型调用 (inproc leaf, 默认 callModel)。 | `src/harness/dag/engine.ts`<br>`src/harness/goal/run-goal.ts`<br>`src/harness/dag/thinker.ts` (15 文件) |
 | `agentRunner` |  | `AgentLeafRunner` | agent-kind leaf 的执行器 (带工具子 agent, 能改文件)。 | `src/harness/dag/engine.ts`<br>`src/harness/goal/run-goal.ts`<br>`src/mcp/assemble.ts` (17 文件) |
 | `commandRunner` |  | `CommandLeafRunner` | command-kind leaf 的执行器 (确定性 CLI, 零 LLM, 方案 A)。 | `src/harness/goal/run-goal.ts`<br>`src/harness/dag/engine.ts`<br>`src/mcp/assemble.ts` (14 文件) |
 | `researchRunner` |  | `ResearchLeafRunner` | research-kind leaf 的执行器 (真 web 检索 + 有界内环, D-6)。 | `src/harness/dag/engine.ts`<br>`src/mcp/assemble.ts`<br>`src/harness/node-failure.ts` (6 文件) |
@@ -101,7 +101,7 @@ leaf prompt 整形 seam: 注入 leaf 上下文/前缀/压缩级与档位闸 (省
 | `_budgetAnchor` |  | `number` | #158 预算时间轴的**锚时刻** (epoch ms)。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/goal.ts` (2 文件) |
 | `repeatedActionThreshold` |  | `number` | **§8.4 动作级熔断**的阈值 (缺省 2)。 | `src/harness/dag/engine.ts` (1 文件) |
 | `judgeFailureThreshold` |  | `number` | **闸级熔断**的阈值 (缺省 2, 2026-08-16)。 | `src/harness/dag/engine.ts` (1 文件) |
-| `verifier` |  | `VerifierFn` | 跨模型校验器 (model-agnostic skeptic, 见 verifier.ts)。 | `src/harness/verifier.ts`<br>`src/harness/dag/engine.ts`<br>`src/eval/tasks/judge-artifact-cases.ts` (79 文件) |
+| `verifier` |  | `VerifierFn` | 跨模型校验器 (model-agnostic skeptic, 见 verifier.ts)。 | `src/harness/dag/engine.ts`<br>`src/harness/verifier.ts`<br>`src/eval/tasks/judge-artifact-cases.ts` (80 文件) |
 | `escalateAfterRound` |  | `number` | 从第几轮起用 `conductorEscalationModel` 重画 (默认 2 = 第 1 轮弱 conductor, 后续升级)。 | `src/harness/plan/iterate.ts`<br>`src/harness/dag/engine.ts` (2 文件) |
 | `maxEscalations` |  | `number` | verifier-fail → 升级重规划的最大次数 (默认 1)。 | `src/harness/dag/engine.ts`<br>`src/mcp/assemble.ts`<br>`src/harness/verifier.ts` (4 文件) |
 | `frozenNodes` |  | `readonly string[]` | **冻结判据节点**(SDD 2026-08-22 「冻结判据在重规划轮里并不冻结」)。 | `src/harness/dag/replan-spin.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/goal/run-goal.ts` (3 文件) |

@@ -99,6 +99,10 @@ const NOISE_PROVIDERS: ReadonlySet<string> = new Set([
   //   `review:verify-*`), 真坐标由 resolveReviewModels 的 review 座给;
   // best-of-n → plan/best-of-n.ts 两发, 真坐标 opts.model ?? resolveSeatModel('reason')。
   'escalation', 'gate', 'review', 'best-of-n',
+  // 同族再一条 (2026-08-31, Thinker 席): `thinker:critique` / `thinker:critique-escalated` ——
+  // 重画前置批评步的**角色标签** (dag/thinker.ts)。真坐标: 默认档 = 调用方 conductorModel,
+  // 升档 = SEAT_PREFERRED_COORD['verifier'] (座位链), 一个字面坐标都没写。
+  'thinker',
 ]);
 
 /**

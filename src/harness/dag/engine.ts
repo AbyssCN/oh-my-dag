@@ -131,6 +131,9 @@ import { extractFailSet } from '../goal/accept-delta';
 // ── T2#5 按簇拆出的兄弟文件 (引擎消费) ──
 import type { GenerateFn, ExecutorDagConfig, LeafResult, ExecutorDagResult, DagObservation, BlameRetryLedger, DagNodeEvent } from './types';
 import { trySpinRepair } from './replan-spin';
+// THINKER (SDD 2026-08-31, 片 2): 重画前置批评步接线。开关关 → 零调用 (INV-5), 开关开 → escTask 拼装前
+// 一次独立 generate 调用, 失败 fail-open (INV-3 / D-5)。开关在 config.critiqueStep ?? env OMD_THINKER_CRITIQUE=1。
+import { runCritiqueStep } from './thinker';
 import {
   buildSpinLadderReport,
   buildSpinRung2Decision,
@@ -6159,6 +6162,11 @@ async function runDagInternalCore(
     // 且**不进升级重规划环** —— 判卷官坏了还替它开修复轮 = 拿引擎故障当质量信号。
     // 词表同 infraStopped:「修引擎/换池, 别加轮数」。吞异常不吞证据: 错误原文进 reason 与日志。
     let verifierDown = false;
+    // THINKER (SDD 2026-08-31, D-3): 跟踪最近一次判词是不是闸红短路合成的 (vs 真 verifier 调出来的),
+    // 给重画前置批评步 (thinker) 选档用: 闸红短路 → 判词是引擎自产 → 不需要外视角 (D-2, conductor 同模型档);
+    // 真 verifier 调出来 → 同模型自审复用同一盲点 → 升档到 verifier 家族 (INV-4 四格表)。
+    // verifier 调不通 → 与闸红短路同列 (引擎自产判词), 不升档 (infra 走另一轴, 不进 thinker 选档理由)。
+    let lastVerdictSynthesized = false;
     const runVerifier = async (): Promise<VerifierVerdict> => {
       // 闸红短路 (#145 提议 5 Phase A, 2026-08-17): 图内确定性 oracle 已经说了不 → **不请强模型**。
       // 判据与"不短路"的那几格写在 oracle-red.ts 的文件头 (「oracle 说了不」≠「oracle 没能说话」)。
@@ -6167,6 +6175,7 @@ async function runDagInternalCore(
       // ⚠ 不置 verifierDown: 判卷官没坏, 是我们选择不问它。escalation 环照常开。
       const reds = findRedOracles(exec.results);
       if (reds.length > 0) {
+        lastVerdictSynthesized = true;
         const reason = renderOracleRedVerdict(reds);
         logger.info(
           { nodes: reds.map((r) => r.id), round: attempts },
@@ -6190,6 +6199,7 @@ async function runDagInternalCore(
         return { pass: false, reason, usage: { in: 0, out: 0 } };
       }
       try {
+        lastVerdictSynthesized = false;
         // S-33 集成接线: artifactRoot 必须给, 终审三态 (registered/unregistered/missing) 才不会
         // 全程沉默 (summarizeResults 只在 artifactRoot 存在时判产物, 见 verifier.ts:123)。
         // 2026-08-23 s1 切片 1: 取执行锚 (execRoot), 不是状态锚 (repoRoot) —— 隔离档下两棵树,
@@ -6197,6 +6207,7 @@ async function runDagInternalCore(
         return await config.verifier!({ task, plan: exec.plan, results: exec.results, artifactRoot: config.continuity?.execRoot ?? config.continuity?.repoRoot ?? process.cwd() });
       } catch (err) {
         verifierDown = true;
+        lastVerdictSynthesized = false;
         const detail = String(err).slice(0, 300);
         logger.warn({ err: detail }, '[omd/executor-dag] verifier 调不通 → 判卷缺席记账 (fail-closed, 保全执行产出; 修引擎/换池, 别加轮数)');
         return { pass: false, reason: `[verifier-error] 判卷官调不通 (模型层重试已耗尽): ${detail}`, usage: { in: 0, out: 0 } };
@@ -6291,6 +6302,11 @@ async function runDagInternalCore(
         .replace(/\s+/g, ' ')
         .trim()
         .slice(0, 200);
+      // THINKER (SDD 2026-08-31, D-3 / INV-4): 本轮归一化败因类是否与上一轮相同 —— 在 sameCauseStreak++
+      // 之前抓这个信号。同因重败 → 升档 (verifier 家族), 否则降回 conductor 同模型。
+      // 此处算的信号**先**于同因熔断闸的 break (D-6 / INV-5 fail-open: 升档 ≠ 阻断 —— 闸红短路
+      // 路径下合成判词也要看得见同因盲点, 不能因为闸要 break 就不给批评步机会读)。
+      const sameCauseRepeat = lastBlameKey !== undefined && blameKey === lastBlameKey;
       if (blameKey === lastBlameKey) {
         sameCauseStreak++;
         if (sameCauseStreak >= 1) {
@@ -6408,6 +6424,41 @@ async function runDagInternalCore(
       // 刀② (2026-08-30 闸门三角结): 写域闸撞墙 observation 进重画输入面。「写集疑似写漏」
       // 只有重画能修 (改分解表的写集列) —— 留在结果面外环读不到, 信号等于没发。
       const wallLines = exec.observations.filter((o) => o.kind === 'write-wall').map((o) => `[写域闸撞墙] ${o.message}`);
+      // THINKER (SDD 2026-08-31, 片 2): 重画前置批评步 (D-1 / D-2 / D-3 / D-5 / D-6)。
+      // 开关 = config.critiqueStep === true 或 env OMD_THINKER_CRITIQUE === '1'。缺省关 (INV-5): 零调用, escTask
+      // 与改前逐字节相同 (GWT-5)。开: 选档 → 独立 generate → 成功 → 批评块注入 escTask (位置: 判词之后、
+      // 「请基于上述分解重新规划」之前); 失败 / 超时 / plan 形状 → logEvidence 留证据行, block=null,
+      // escTask 现状拼装, 重画照走 (D-5 fail-open)。
+      //
+      // generate 与 conductor 用同一个 (D-7 成本形状: 仅重画触发, 无重画的 run 零调用); usage 累加进
+      // conductorUsage 走与补丁/整图同一只账本 (NULL≠0 — 真烧了 token 不许因为是批评步就藏起来)。
+      const thinkerCfg = config as ExecutorDagConfig & { critiqueStep?: boolean };
+      const critiqueStepEnabled = thinkerCfg.critiqueStep === true || process.env.OMD_THINKER_CRITIQUE === '1';
+      let critiqueBlock: string | null = null;
+      if (critiqueStepEnabled) {
+        const cResult = await runCritiqueStep({
+          enabled: true,
+          pick: { verdictSynthesized: lastVerdictSynthesized, sameCauseRepeat },
+          conductorModel,
+          input: {
+            task,
+            planOutline: planOutline(exec.plan),
+            verdictReason: verdict.reason,
+            writeWallLines: wallLines,
+            normalizedCauses: [blameKey],
+          },
+          generate,
+          logEvidence: (msg, payload) => logger.warn({ ...payload, round: escCount }, msg),
+        });
+        critiqueBlock = cResult.block;
+        conductorUsage = addUsage(conductorUsage, cResult.usage);
+        if (critiqueBlock !== null) {
+          logger.info(
+            { round: escCount, tier: cResult.tier.seat, model: cResult.model.model, len: critiqueBlock.length },
+            '[omd/executor-dag] 重画前置批评步 (thinker) → 块注入 escTask',
+          );
+        }
+      }
       const escTask = [
         task,
         '',
@@ -6416,6 +6467,7 @@ async function runDagInternalCore(
         '',
         `[上一轮校验未通过] ${verdict.reason}`,
         ...wallLines,
+        ...(critiqueBlock !== null ? ['===== 重画前置批评 (thinker) =====', critiqueBlock, ''] : []),
         ...repairGuidance,
         '请基于上述分解重新规划: 只修被点名有问题的节点; 未点名节点**逐字保留**其 id/goal/字段/依赖边',
         '(引擎按语义指纹复用未变节点的上轮结果 — 任何措辞变化都会浪费一次重算)。',

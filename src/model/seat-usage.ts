@@ -109,6 +109,11 @@ const TRACE_SEAT_RULES: readonly [RegExp, string][] = [
   // engine.ts:3879 把 conductorModel 换成 conductorEscalationModel, 但 traceName 仍打
   // `conductor:*` → escalation 的钱结构上算在 conductor 头上。2026-08-16 (#144 洞 1) 分标签。
   [/^escalation:/, 'escalation'], // engine.ts:278/1182 在 escalated 轮改打这个前缀
+  // Thinker 批评步 (2026-08-31, 契约 D-2/D-3 两档): 归到**烧钱的那个座**, 与 escalation
+  // 分标签同一课 —— 一个标签配两种模型必有一半错归。默认档在 dag/thinker.ts
+  // resolveCritiqueModel 走 conductorModel; 升档走 seats 表 verifier 座 preferredCoord。
+  [/^thinker:critique$/, 'conductor'], // dag/thinker.ts buildCritiquePrompt (默认档 → opts.conductorModel)
+  [/^thinker:critique-escalated$/, 'verifier'], // dag/thinker.ts runCritiqueStep 升档改打此标签 → SEAT_PREFERRED_COORD['verifier']
   [/^judge:/, 'judge'], // engine.ts:1018
   [/^leaf:/, 'leaf'], // engine.ts:3018 → config.leafModel
   [/^primitive-leaf:/, 'leaf'], // engine.ts:2380 → 同 leaf 档
