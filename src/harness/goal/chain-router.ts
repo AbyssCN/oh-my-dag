@@ -211,7 +211,8 @@ function truncate(s: string, n: number): string {
 function safeStringify(o: unknown): string {
   try {
     return JSON.stringify(o);
-  } catch {
-    return String(o);
+  } catch (e) {
+    // 吞异常不吞证据: 败因随返回串进上层 logger 行(仓规 §静默坑 2)。
+    return `[unserializable: ${e instanceof Error ? e.message : String(e)}] ${String(o)}`;
   }
 }
