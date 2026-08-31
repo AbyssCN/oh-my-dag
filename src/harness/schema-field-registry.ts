@@ -190,4 +190,15 @@ export const REGISTRY: Record<string, FieldEntry> = {
     declared: true,
     note: '成本预估申告 (体量提示同族): 预估抖动不该打空判重; S3 预算闸上线若让它改变调度语义, 归属须重议。#248 shape 段明示 (字段名沿用 zod 字面;critique 只校存在, 不校数值)。',
   },
+  // ── plan 顶层字段 ──
+  // ⚠ doc §「已知边界」原话: plan 顶层 (name / description / outputs / shape / suppressions /
+  // schema_version) 走各自的守法, 不进这张表。L1 平铺契约片 2 (2026-08-31, INV-2) 是显式
+  // 例外: 路由权在 config, 不在模型, 必须给消费者看到 (路由层读 plan.complexity 决定 L1 vs L2)
+  // —— 不登记就没人知道这个字段存在, 也就没人会改它的归属或消费面。
+  complexity: {
+    consumer: 'goal/run-goal (片 3 读取 plan.complexity 路由 L1 opt-in + 升档协议)',
+    fingerprint: false,
+    declared: false,
+    note: 'L1 平铺契约 (2026-08-31, INV-2): 枚举 flat|full, 缺席 = full (零回归)。plan 顶层字段, 节点级指纹不沾 (改动不影响 nodeFieldsKey / merkleFingerprints —— 它是路由信号不是节点语义)。**刻意不进 conductor prompt** (D-2 路由权在 config): 让重仪式 conductor 看不见, 就不会主动声明, 也就没「写错第三个值」的写入面。',
+  },
 };
