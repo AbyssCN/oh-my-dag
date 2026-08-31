@@ -1,0 +1,300 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "omd 运行周期 —— verifier 打回之前经过的全部闸门",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "happy-path",
+        "label": "一次绿跑",
+        "focus": [
+          "ignite",
+          "gates",
+          "compile",
+          "leaf",
+          "judgegate",
+          "verifier",
+          "accept"
+        ],
+        "note": "点火到 accept 的主路径:每一步都有闸,全部绿才走到头。"
+      },
+      {
+        "id": "gates-only",
+        "label": "只看闸门",
+        "focus": [
+          "gates",
+          "toolgate",
+          "judgegate",
+          "verifier",
+          "paralysis"
+        ],
+        "note": "验收阶梯:点火闸群 → 工具面闸 → 判死与对账 → 跨模型 verifier;瘫痪绊线拦无意义重画。"
+      },
+      {
+        "id": "repair-loop",
+        "label": "打回与重画",
+        "focus": [
+          "judgegate",
+          "verifier",
+          "paralysis",
+          "replan",
+          "leaf"
+        ],
+        "note": "打回不是终点:毒集 + 冻结复原 + 语义指纹复用,重画一轮回到执行。"
+      }
+    ],
+    "output": "docs/architecture/omd-run-lifecycle.html"
+  },
+  "lanes": [
+    {
+      "id": "plan",
+      "label": "点火与规划(plan 期)"
+    },
+    {
+      "id": "exec",
+      "label": "节点执行(leaf 运行时)"
+    },
+    {
+      "id": "judge",
+      "label": "判定与验收(settle 后)"
+    },
+    {
+      "id": "repair",
+      "label": "打回与重画",
+      "variant": "exception"
+    }
+  ],
+  "phases": [
+    {
+      "id": "ignition",
+      "label": "点火期闸(fail-closed)",
+      "fromCol": 0,
+      "toCol": 1,
+      "variant": "security"
+    },
+    {
+      "id": "runtime",
+      "label": "执行期闸(每节点)",
+      "fromCol": 3,
+      "toCol": 4,
+      "variant": "emphasis"
+    },
+    {
+      "id": "verify",
+      "label": "验收(oracle → 跨模型)",
+      "fromCol": 5,
+      "toCol": 5,
+      "variant": "dashed"
+    }
+  ],
+  "mainPath": [
+    "ignite",
+    "gates",
+    "compile",
+    "leaf",
+    "judgegate",
+    "verifier",
+    "accept"
+  ],
+  "nodes": [
+    {
+      "id": "ignite",
+      "lane": "plan",
+      "col": 0,
+      "type": "external",
+      "label": "点火 solve",
+      "sublabel": "sddPath 直通·预告不拦",
+      "width": 138
+    },
+    {
+      "id": "gates",
+      "lane": "plan",
+      "col": 1,
+      "type": "security",
+      "label": "点火闸群",
+      "sublabel": "SDD 编译·坐标·登记面·互斥",
+      "tag": "判据自证·O-6 红探针",
+      "width": 168
+    },
+    {
+      "id": "compile",
+      "lane": "plan",
+      "col": 2,
+      "type": "backend",
+      "label": "编图",
+      "sublabel": "平铺 / conductor 铺图",
+      "width": 160,
+      "tag": "pass 管线"
+    },
+    {
+      "id": "leaf",
+      "lane": "exec",
+      "col": 3,
+      "type": "backend",
+      "label": "leaf 执行",
+      "sublabel": "agent / command / map",
+      "width": 138
+    },
+    {
+      "id": "toolgate",
+      "lane": "exec",
+      "col": 4,
+      "type": "security",
+      "label": "工具面闸",
+      "sublabel": "白名单·元字符·写域闸",
+      "tag": "write-wall 进重画",
+      "width": 148
+    },
+    {
+      "id": "accept",
+      "lane": "exec",
+      "col": 5,
+      "type": "backend",
+      "label": "accept 终局",
+      "sublabel": "冻结判据绿·自动收编",
+      "width": 148
+    },
+    {
+      "id": "judgegate",
+      "lane": "judge",
+      "col": 4,
+      "type": "security",
+      "label": "判死与对账",
+      "sublabel": "expect_exit·产物闸·谎报",
+      "tag": "oracle 红→闸红短路",
+      "width": 168
+    },
+    {
+      "id": "verifier",
+      "lane": "judge",
+      "col": 5,
+      "type": "security",
+      "label": "跨模型 verifier",
+      "sublabel": "换家族攻击结果",
+      "tag": "同模型自审 = 同一盲点",
+      "width": 150
+    },
+    {
+      "id": "paralysis",
+      "lane": "repair",
+      "col": 4,
+      "type": "security",
+      "label": "瘫痪绊线",
+      "sublabel": "全员同因死→不开重画",
+      "tag": "STALLED 交人",
+      "width": 145
+    },
+    {
+      "id": "replan",
+      "lane": "repair",
+      "col": 5,
+      "type": "messagebus",
+      "label": "升级重画环",
+      "sublabel": "Thinker 批评→escTask→重画",
+      "tag": "毒集·冻结·复用·轮上限",
+      "width": 165
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-ignite",
+      "from": "ignite",
+      "to": "gates",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e-gates",
+      "from": "gates",
+      "to": "compile",
+      "variant": "default",
+      "label": "全绿才编图"
+    },
+    {
+      "id": "e-compile",
+      "from": "compile",
+      "to": "leaf",
+      "variant": "emphasis",
+      "label": "按波形派发"
+    },
+    {
+      "id": "e-tool",
+      "from": "leaf",
+      "to": "toolgate",
+      "variant": "security",
+      "label": "工具调用"
+    },
+    {
+      "id": "e-settle",
+      "from": "leaf",
+      "to": "judgegate",
+      "variant": "default",
+      "label": "settle"
+    },
+    {
+      "id": "e-ask-verifier",
+      "from": "judgegate",
+      "to": "verifier",
+      "variant": "default",
+      "label": "语义待判"
+    },
+    {
+      "id": "e-oracle-red",
+      "from": "judgegate",
+      "to": "replan",
+      "variant": "security",
+      "role": "error",
+      "label": "闸红短路"
+    },
+    {
+      "id": "e-paralysis",
+      "from": "judgegate",
+      "to": "paralysis",
+      "variant": "security",
+      "role": "error",
+      "label": "同因死"
+    },
+    {
+      "id": "e-pass",
+      "from": "verifier",
+      "to": "accept",
+      "variant": "emphasis",
+      "label": "pass"
+    },
+    {
+      "id": "e-veto",
+      "from": "verifier",
+      "to": "replan",
+      "variant": "security",
+      "role": "error",
+      "label": "打回→毒集"
+    },
+    {
+      "id": "e-rerun",
+      "from": "replan",
+      "to": "leaf",
+      "variant": "dashed",
+      "role": "branch",
+      "label": "重画重跑·绿节点复用"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "验收阶梯(不跳级)",
+      "items": [
+        "① 机械 oracle: tsc / bun test / expect_exit / 产物闸 / 写集对账",
+        "② 跨模型 verifier: oracle 判不了语义时才问, 必须换家族",
+        "③ 人: 前两层都判不了 → escalate, 不许 defer 不许擅断"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "两类失败通道",
+      "items": [
+        "fail-closed: 白名单 / 写域 / 产物闸 / 点火闸 —— 拒了不许原样重试",
+        "fail-open: 消耗预告 / 回执 / Thinker 批评步 —— 挂了不挡主流程, 必留证据行"
+      ]
+    }
+  ]
+}
