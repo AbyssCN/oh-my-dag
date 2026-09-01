@@ -42,6 +42,7 @@ import { ChatLog } from './components/chat-log';
 import { type DialogHost, type InputOpts, type SelectOpts, confirm as dialogConfirm, input as dialogInput, select as dialogSelect } from './components/dialog';
 import { DagHud } from './components/dag-hud';
 import { DagTree } from './components/dag-tree';
+import { attachExternalRun, createExternalRunChannel, type ExternalRunChannel } from './dag-hud-attach';
 import { type PathReader, PathHud, createPathReader } from './components/path-hud';
 import { paintTicketRow, renderTicketBoard } from './components/ticket-board';
 import { renderRunBoard } from './components/run-board';
@@ -660,6 +661,18 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
    */
   let runList: import('../hud/load').DagView[] = [];
   let runListTicker: ReturnType<typeof setInterval> | null = null;
+  // ── t-tui-attach 接线 (2026-09-01):外部 run 附身通道 ──
+  // run-list Enter 选中**非 bus 的** run → attach + 开通道;1s ticker 顺拍 tick;
+  // 全屏关 / 换 run / bus 起新图 → dispose。通道自身 fail-open,这里只管生命周期。
+  let externalChannel: ExternalRunChannel | null = null;
+  /** 引擎 bus 正在喂的本地 runId(planned 事件记账)—— 附身不与 bus 抢同一张图。 */
+  let busRunId: string | null = null;
+  function dropExternalChannel(): void {
+    if (externalChannel) {
+      externalChannel.dispose();
+      externalChannel = null;
+    }
+  }
 
   // ── 片 5 切片 3 · 「当前」区数据 + 收件箱数据 ──
   // 与 ticketBoard / runBoard 同条纪律:不在 render 里读盘 (D-12 ②),复用既有刷新时机
@@ -1102,6 +1115,8 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         '[omd/tui] readDagShards threw -> live run list empty this round',
       );
     }
+    // 外部附身通道顺拍 (t-tui-attach): 通道内部按内容键判 APPLY/NO-OP, 不新增 ticker。
+    externalChannel?.tick();
     // 数据变了 → 触发重绘。其它 ticker (loader / dagTicker) 也走同一通道, 不发明新机制。
     tui.requestRender();
   }
@@ -1113,6 +1128,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     } else if (!dagFullState.fullOn && runListTicker !== null) {
       clearInterval(runListTicker);
       runListTicker = null;
+      dropExternalChannel(); // 全屏关 → 不再跟外部 run (D-2 同款: 静止零成本)
     }
   }
 
@@ -1645,6 +1661,8 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       const p = e.payload as { runId?: string; node?: { type?: string } };
       // 换了 run → 清空上一个 run 的节点, 否则两个 run 的节点混成一张表。
       if (p?.node?.type === 'planned' && p.runId) {
+        busRunId = p.runId; // bus 接管屏 → 外部附身让位 (两路喂同一 hud 会互踩)
+        dropExternalChannel();
         dagHud.beginRun(p.runId);
         dagTree.beginRun(p.runId);
       }
@@ -3097,12 +3115,27 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
           const idx = ((dagFullState.runListSelected % len) + len) % len;
           const view = runList[idx];
           if (view) {
+            dropExternalChannel(); // 换 run 先清旧通道 (幂等)
             try {
-              dagTree.loadSnapshot(view.snap);
+              if (view.snap.runId !== busRunId) {
+                // 外部 run (t-tui-attach): 快照翻译进 hud+tree, 再开 1s 尾随通道 —— 画面随盘动。
+                attachExternalRun(dagHud, dagTree, view);
+                externalChannel = createExternalRunChannel({
+                  cwd: opts.cwd,
+                  runId: view.snap.runId,
+                  hud: dagHud,
+                  tree: dagTree,
+                  now,
+                  requestRender: () => tui.requestRender(),
+                });
+              } else {
+                // bus 正在喂的本地 run: 只重载树 (hud 由 bus 持续推, 不重复喂)。
+                dagTree.loadSnapshot(view.snap);
+              }
             } catch (err) {
               logger.warn(
                 { err: err instanceof Error ? err.message : String(err), runId: view.snap.runId },
-                '[omd/tui] run-list Enter -> loadSnapshot threw',
+                '[omd/tui] run-list Enter -> attach/loadSnapshot threw',
               );
             }
           }
