@@ -200,7 +200,7 @@ function candidatePrompt(t: BenchTask): string {
 /** 一臂跑完的**代价读数**(不判对错, 但两臂比较全靠它 —— 承 Claw-Eval:token efficiency 是一等公民)。 */
 interface ArmCost { wallMs: number; tokensIn: number; tokensOut: number; toolCalls: number | null; seat: string; note: string }
 
-async function runArm(t: BenchTask, arm: 'a' | 'b', dir: string, opts: { budgetMs: number; stack?: 'run' | 'solve' }): Promise<ArmCost> {
+async function runArm(t: BenchTask, arm: 'a' | 'b', dir: string, opts: { budgetMs: number; stack?: 'run' | 'solve'; tier?: 'simple' | 'complex' }): Promise<ArmCost> {
   const { bootstrapModelRuntime } = await import('../src/model/bootstrap');
   const { resolveEngineModels } = await import('../src/mcp/assemble');
   bootstrapModelRuntime();
@@ -249,7 +249,7 @@ async function runArm(t: BenchTask, arm: 'a' | 'b', dir: string, opts: { budgetM
   const tool = tools.find((x) => x.name === toolName);
   if (!tool) throw new Error(`omd-bench: 装不出 ${toolName}`);
   const input = stack === 'solve'
-    ? { goal: candidatePrompt(t), branchStrategy: 'head' }
+    ? { goal: candidatePrompt(t), branchStrategy: 'head', ...(opts.tier ? { tier: opts.tier } : {}) }
     : { task: candidatePrompt(t) };
   const res = (await tool.handler(input as never, {} as never)) as {
     content: { text: string }[]; isError?: boolean;
@@ -296,7 +296,8 @@ async function main(): Promise<void> {
     log(`题 ${t.id} · 臂 ${arm} · 世界 ${dir} · 预算 ${budgetMs}ms`);
     try {
       const stack = (opt('stack') ?? 'run') as 'run' | 'solve';
-      const cost = await runArm(t, arm, dir, { budgetMs, stack });
+      const tier = opt('tier') as 'simple' | 'complex' | undefined;
+      const cost = await runArm(t, arm, dir, { budgetMs, stack, ...(tier ? { tier } : {}) });
       const run = runCommand(t.command, dir);
       const touched = touchedProtected(t, dir);
       // 回归**默认不跑**(全量测试很慢); 没跑就记 null, **不记通过**(仓规 NULL≠0)。
@@ -307,7 +308,7 @@ async function main(): Promise<void> {
       mkdirSync(out, { recursive: true });
       const stamp = `${t.id}-${arm}-${Date.now()}`;
       // profile: null = 没用档案 (生产全工具面), 不是"空档案" —— 事后比读数要分得开这两件事。
-      writeFileSync(join(out, `${stamp}.json`), JSON.stringify({ task: t.id, arm, stack: arm === 'a' ? stack : null, profile: opt('profile') ?? null, seatPinned: opt('seat') ?? null, hashlineEdit: !argv.includes('--no-hashline'), hinted: !argv.includes('--no-hint'), verdict, run, touched, regressionGreen, cost }, null, 1));
+      writeFileSync(join(out, `${stamp}.json`), JSON.stringify({ task: t.id, arm, stack: arm === 'a' ? stack : null, tier: tier ?? null, profile: opt('profile') ?? null, seatPinned: opt('seat') ?? null, hashlineEdit: !argv.includes('--no-hashline'), hinted: !argv.includes('--no-hint'), verdict, run, touched, regressionGreen, cost }, null, 1));
       console.log(`${verdict.verdict === 'pass' ? '✅' : verdict.verdict === 'invalid' ? '⚠' : '✘'} ${t.id} [臂 ${arm}] ${verdict.verdict}`);
       console.log(`   ${verdict.reason}`);
       console.log(`   墙钟 ${(cost.wallMs / 1000).toFixed(0)}s · 判分命令 exit ${run.exitCode} · 存盘 ${join(out, `${stamp}.json`)}`);
