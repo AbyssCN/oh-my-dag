@@ -49,9 +49,11 @@ export function parseSessionCommand(text: string): SessionCommand {
  * 返回 null 让主分发回落成普通文本 —— 与 `/sessionx` 回落同纪律。
  */
 export function parseNewForkCommand(text: string): SessionCommand {
-  const m = /^\/(new|fork)(?:\s+(.*))?$/.exec(text.trim());
+  const m = /^\/(new|fork|clear)(?:\s+(.*))?$/.exec(text.trim());
   if (!m) return null;
-  const kind = m[1] as 'new' | 'fork';
+  // `/clear` = `/new` 的语义别名 (owner 2026-09-01, 对齐 Claude Code 的 /clear 心智):
+  // 清上下文 = 新 session + 清转录, 而 `/new` 本来就是这两件事 —— 不长第二条实现。
+  const kind = (m[1] === 'clear' ? 'new' : m[1]) as 'new' | 'fork';
   const rest = m[2] ?? '';
   if (rest === '') return { kind, id: null };
   const id = rest.split(/\s+/)[0] as string; // 多余参数同 parseSessionCommand: 静默忽略

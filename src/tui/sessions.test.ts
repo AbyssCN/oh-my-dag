@@ -59,6 +59,11 @@ describe('parseNewForkCommand —— /new /fork 是 /session new|fork 的直达�
     expect(parseNewForkCommand('/new ')).toEqual({ kind: 'new', id: null });
   });
 
+  test('/clear = /new 的语义别名 (Claude Code /clear 心智); /clearx 前缀撞车照旧回落', () => {
+    expect(parseNewForkCommand('/clear')).toEqual({ kind: 'new', id: null });
+    expect(parseNewForkCommand('/clearx')).toBeNull();
+  });
+
   test('给合法 id 就用给的, 与 /session 同一条白名单口径', () => {
     expect(parseNewForkCommand('/new mine')).toEqual({ kind: 'new', id: 'mine' });
     expect(parseNewForkCommand('/fork b1')).toEqual({ kind: 'fork', id: 'b1' });

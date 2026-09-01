@@ -49,6 +49,7 @@ export const COMMANDS: readonly CommandDoc[] = [
   { handler: 'handleLogout', name: '/logout', args: '[provider]', what: 'delete a stored credential for one provider (**side effect**)' },
   { handler: 'handleSession', name: '/session', args: '[id | new [id]]', what: 'list sessions; with an id, switch and replay it; `new` starts a fresh one' },
   { handler: 'parseNewForkCommand', name: '/new', args: '[id]', what: 'start a fresh session (alias of /session new)' },
+  { handler: 'parseNewForkCommand', name: '/clear', args: null, what: 'clear the context: fresh session + wiped transcript (alias of /new)' },
   // ⚠ `/fork` 与 `/tree` **不是重复的两条**, 两句 what 要把分野说清(2026-08-11 §1.3 裁决):
   //    /fork 复制出**第二条会话**(两条都能活, 同一段历史两份); /tree 在**同一份文件**里换分支
   //    (一份真值, 同时只有一个活分支)。说不清分野时人会随便点一个, 而两者的产物完全不同。

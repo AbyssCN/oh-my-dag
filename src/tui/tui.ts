@@ -3175,8 +3175,15 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       const act = twice && !turnInFlight ? 'rewind' : decideEsc(turnInFlight, escArmedAt, now());
       if (act === 'interrupt') {
         escArmedAt = null;
+        // 即时反馈 (owner 实报「Esc 有延迟」2026-09-01): abort 发出后模型要几秒才真停,
+        // 期间屏上原来**一个字都不变** —— 键被吃了但看不见, 读起来就是"Esc 没反应/延迟"。
+        // 终局回执仍归 submit 收尾 (CHROME.interrupted, :1595); 这里只画"已收到, 在停了"。
+        // abortRequested 已置位时不重复画 (连按 Esc 不刷屏)。
+        if (!abortRequested) {
+          chatLog.appendNotice('Esc — interrupting… (the model may take a moment to stop)');
+          tui.requestRender();
+        }
         abortRequested = true;
-        // 回执不在这画 —— submit 的收尾是唯一出口(正常返回与抛错两条路都汇那儿)。
         void opts.backend.abortChat({ sessionId }).catch((err: unknown) => {
           logger.warn({ err: err instanceof Error ? err.message : String(err), sessionId }, '[omd/tui] abortChat threw');
         });
