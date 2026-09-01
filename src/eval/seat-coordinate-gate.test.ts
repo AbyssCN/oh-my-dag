@@ -87,6 +87,9 @@ const NOISE_PROVIDERS: ReadonlySet<string> = new Set([
   // `seat-check:<seatId>`(goal/ignition-preflight.ts)—— 判词标识, 不是模型坐标;
   // 真坐标全部来自 seatExpectations 声明与 renderConfigDump 实配, 零字面绕过。
   'seat-check',
+  // P2b (2026-09-02): live 变异的 seat-usage 角色标签 `mutate:live`(eval/replay/mutate.ts)
+  // —— 与 thinker:critique / judge:rubric 同族, 归座在 TRACE_SEAT_RULES, 不是模型坐标。
+  'mutate',
   // ⚠ `classify` 早就在上面那行里了 —— 同样是 traceName 前缀, 只是当时没连 `judge` 一起加。
   'judge',
   // per-seat 台账的**角色标签**命名空间 (`web:expand` / `web:distill-source` / `web:distill-challenger`,

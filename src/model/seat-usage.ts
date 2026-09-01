@@ -138,6 +138,10 @@ const TRACE_SEAT_RULES: readonly [RegExp, string][] = [
   // 与别家无名调用混一桶 —— 而「distill 输入截断」正是 research 降耗的候选之一, 量不出来就选不了。
   [/^web:expand$/, 'expand'], // web/query-expand.ts → resolveSeatModel('expand')
   [/^web:distill-/, 'distill'], // web/distill-source.ts 与 distill-challenger.ts → resolveSeatModel('distill')
+  // autoresearch 进化内环的 live 变异 (P2b, 2026-09-02): eval/replay/mutate.ts 走 conductor
+  // 座真联机 (契约「变异算子 = M3 生产同款」)。分标签不借 conductor:* —— 变异的钱要能与
+  // 规划的钱分开看 (byTrace), 归座才并到 conductor。
+  [/^mutate:live$/, 'conductor'], // eval/replay/mutate.ts defaultMutationProvider
 ];
 /** 归座规则覆盖到的座位集合(由 TRACE_SEAT_RULES 第二列机器去重) —— 与 seats.ts 的 ALL_SEAT_IDS 是两套独立真源, 覆盖闸判的是二者的差集。 */
 export const SEAT_USAGE_RULE_SEATS: ReadonlySet<string> = new Set(TRACE_SEAT_RULES.map(([, seat]) => seat));

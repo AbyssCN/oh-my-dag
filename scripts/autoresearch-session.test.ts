@@ -13,6 +13,8 @@
  *   · MAX_GEN_STOP: 自然到 maxGenerations → reason='maxGenerations';
  *   · JOURNAL_APPEND_ONLY (C-4 / INV-4): 第一次 session 写完后该文件的前 N 字节,
  *     在写第二个 session 后依然逐字节相等 (append-only 守恒, 不修改早段)。
+ *   · GEN_CHECKPOINT_RESUME (P2b 切片 2 / C-5): 每代 settle → session.json 写入,
+ *     续跑 session 时前 N 代字段字节相同; resumeSessionId 缺失 checkpoint → throw。
  *
  * 反向自检 (锁死判据力):
  *   · JOURNAL_APPEND_ONLY: 把 appendSessionJournal 改成 'w' 模式全覆盖 → 那条红;
@@ -24,9 +26,14 @@
  *   · BUDGET_STOP: 把 budget 检查删 → budgetMs=1 fixture 仍跑到 maxGenerations → 红;
  *   · MUTATION_INJECTION: 把 mutateVariant 的 opts.mutationProvider ?? defaultMutationProvider
  *     改成忽略 opts → mutationProvider.calls 从 K×parents.length 跌到 0 → 红。
+ *   · GEN_CHECKPOINT_RESUME: 把 runSession 里每代后的 writeSessionCheckpoint 删了 → CKPT-1
+ *     红 (session.json 不存在 / generations 字段缺); 把 loadSessionCheckpoint 改成 always-null
+ *     → CKPT-2 红 (resume 时从头跑, 字段不再等于预置 gen 0); 把 resumeSessionId 缺失的 throw
+ *     改成 silent fallback → CKPT-3 红。
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -37,15 +44,23 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  GEN_CHECKPOINT_RESUME,
   JOURNAL_APPEND_ONLY,
+  PLATEAU_DEFAULT_THRESHOLD,
   SESSION_BASELINE_VARIANT,
   SESSION_DEFAULT_OBJECTIVES,
   SESSION_MAIN_OBJECTIVE,
   appendSessionJournal,
+  appendGenerationToJournal,
+  beginSessionJournal,
+  endSessionJournal,
+  loadSessionCheckpoint,
   renderJournalBlock,
   runSession,
+  writeSessionCheckpoint,
   type GenerationRecord,
   type MutationProvider,
+  type SessionCheckpoint,
   type VariantFitness,
 } from './autoresearch-session';
 import type { AggregatedFitness } from '../src/eval/replay/fitness';
@@ -94,6 +109,7 @@ interface FixtureSetup {
   root: string;
   variantDir: string;
   journalPath: string;
+  sessionsDir: string;
   loaded: LoadedCorpus;
 }
 
@@ -101,9 +117,10 @@ function makeFixture(allowHeldout: boolean = false): FixtureSetup {
   const root = freshRoot();
   const variantDir = join(root, 'variants');
   const journalPath = join(root, 'journal.md');
+  const sessionsDir = join(root, 'sessions');
   const m = freezeCorpus(sampleItems(), { seats: SEATS, targetCounts: TARGET_COUNTS });
   const loaded = loadCorpus(JSON.stringify(m), { allowHeldout, verifyHash: true });
-  return { root, variantDir, journalPath, loaded };
+  return { root, variantDir, journalPath, sessionsDir, loaded };
 }
 
 /** 总是返同一 rawText → 同 fitness (跨所有 variant)。plateau 测试用。 */
@@ -684,5 +701,337 @@ describe('VARIANT_INTEGRATION — variant 物化面真在调用', () => {
       expect(obj.version).toBe(VARIANT_VERSION);
       expect(obj.name).toBe(cn);
     }
+  });
+});
+
+// =====================================================================
+// GEN_CHECKPOINT_RESUME — 逐代落盘 + resume (P2b 切片 2 / C-5 / P2b INV-2)
+// =====================================================================
+describe(`${GEN_CHECKPOINT_RESUME} — per-gen session.json + resumeSessionId`, () => {
+  test('CKPT-1 每代 settle 后 session.json 存在, 含全 N 代 + 终 stopReason', async () => {
+    const fx = makeFixture();
+    const stub = makeCountingMutationProvider();
+    const res = await runSession({
+      corpus: fx.loaded,
+      variantDir: fx.variantDir,
+      journalPath: fx.journalPath,
+      sessionsDir: fx.sessionsDir,
+      K: 1,
+      maxGenerations: 3,
+      budgetMs: 60_000,
+      mutationProvider: stub.provider,
+      rawTextProvider: predictableRawText(),
+      sessionId: 'CKPT-1',
+    });
+
+    const ckptPath = join(fx.sessionsDir, 'CKPT-1', 'session.json');
+    expect(existsSync(ckptPath)).toBe(true);
+    const ckpt = JSON.parse(readFileSync(ckptPath, 'utf8')) as SessionCheckpoint;
+    expect(ckpt.sessionId).toBe('CKPT-1');
+    expect(ckpt.generations).toHaveLength(3);
+    expect(ckpt.generations[0]!.genIdx).toBe(0);
+    expect(ckpt.generations[1]!.genIdx).toBe(1);
+    expect(ckpt.generations[2]!.genIdx).toBe(2);
+    expect(ckpt.stopReason).toBe('maxGenerations');
+    expect(ckpt.lastWinnerIds).toEqual(res.winnerIds);
+    // 启动元数据从 runSession 复制过来, 字段冻结 = resume 时不再变。
+    expect(ckpt.K).toBe(1);
+    expect(ckpt.maxGenerations).toBe(3);
+    expect(ckpt.topM).toBe(1);
+    expect(ckpt.plateauThreshold).toBe(PLATEAU_DEFAULT_THRESHOLD);
+  });
+
+  test('CKPT-2 resumeSession: 手动预置 gen 0 checkpoint → resume 后早期记录字段字节相同', async () => {
+    const fx = makeFixture();
+    const stub = makeCountingMutationProvider();
+    const sessionId = 'CKPT-2';
+    const sessionDir = join(fx.sessionsDir, sessionId);
+
+    // 跑一个 helper session 拿到一份真实的 gen 0 record (含 fitness)。**用同一 fx** 共享
+    // journalPath / sessionsDir, 与 production runSession 内部的状态路径一致 (避免跨 tmpRoot)。
+    const helperRes = await runSession({
+      corpus: fx.loaded,
+      variantDir: fx.variantDir,
+      journalPath: fx.journalPath,
+      sessionsDir: fx.sessionsDir,
+      K: 1,
+      maxGenerations: 2,
+      budgetMs: 60_000,
+      mutationProvider: stub.provider,
+      rawTextProvider: predictableRawText(),
+      sessionId: 'helper-CKPT-2',
+    });
+    const gen0 = helperRes.generations[0]!;
+
+    // 模拟 "process kill 在 gen 0 写盘后 / session-end 前": checkpoint.stopReason='running',
+    // generations.length=1, lastWinnerIds=[baseline]。这是唯一能 resume 的状态
+    // (其它 stopReason 直接早返)。
+    // 同时把 journal 也补齐 (runSession 在 gen 0 settle 时会写 header + gen 段; 这里手写对齐)。
+    beginSessionJournal(fx.journalPath, sessionId, {
+      startMs: 1_000, K: 1, maxGenerations: 3, topM: 1, plateauThreshold: PLATEAU_DEFAULT_THRESHOLD,
+    });
+    appendGenerationToJournal(fx.journalPath, gen0);
+    const partial: SessionCheckpoint = {
+      sessionId,
+      startMs: 1_000,
+      stopReason: 'running',
+      K: 1,
+      maxGenerations: 3,
+      topM: 1,
+      plateauThreshold: PLATEAU_DEFAULT_THRESHOLD,
+      generations: [gen0],
+      lastWinnerIds: gen0.winnerIds,
+    };
+    writeSessionCheckpoint(fx.sessionsDir, partial);
+
+    // 快照 checkpoint 字节: resume 后前 sizeBefore 字节必须逐字节相等 (INV-2 守恒)。
+    const beforeText = readFileSync(join(sessionDir, 'session.json'), 'utf8');
+    const beforeSnap = Buffer.from(beforeText, 'utf8');
+
+    // Resume: 同一 sessionId, 期望从 gen 1 继续到 gen 2 (maxGenerations=3)。
+    const resumed = await runSession({
+      corpus: fx.loaded,
+      variantDir: fx.variantDir,
+      journalPath: fx.journalPath,
+      sessionsDir: fx.sessionsDir,
+      K: 1,
+      maxGenerations: 3,
+      budgetMs: 60_000,
+      mutationProvider: stub.provider,
+      rawTextProvider: predictableRawText(),
+      resumeSessionId: sessionId,
+    });
+
+    expect(resumed.sessionId).toBe(sessionId);
+    expect(resumed.generations).toHaveLength(3);
+    expect(resumed.stopReason).toBe('maxGenerations');
+    // 字段冻结: resume 后 gen 0 record 字段逐项 == 预置的 gen 0 (INV-2 字段级)。
+    expect(resumed.generations[0]).toEqual(gen0);
+
+    // 字节级: 前 N=1 代 record 在 resume 后 JSON 序列化 (canonical, 同 indent) 字节相同。
+    // 整档 session.json 的 prefix **不**字节相同 (stopReason / lastWinnerIds 在 generations
+    // 数组外/后会更新 — 是 contract 允许的); 字节守恒针对**记录本身**, 非整档。
+    const afterText = readFileSync(join(sessionDir, 'session.json'), 'utf8');
+    const afterObj = JSON.parse(afterText) as SessionCheckpoint;
+    const beforeObj = JSON.parse(beforeSnap.toString('utf8')) as SessionCheckpoint;
+    expect(JSON.stringify(afterObj.generations[0], null, 2))
+      .toBe(JSON.stringify(beforeObj.generations[0], null, 2));
+
+    // 新加的 gen 1 / gen 2 在 snapshot 之后: 字段不空。
+    expect(resumed.generations[1]!.genIdx).toBe(1);
+    expect(resumed.generations[2]!.genIdx).toBe(2);
+  });
+
+  test('CKPT-3 resumeSession 不存在 → throw (fail-closed, 不静默开新 session)', async () => {
+    const fx = makeFixture();
+    const stub = makeCountingMutationProvider();
+    let err: Error | null = null;
+    try {
+      await runSession({
+        corpus: fx.loaded,
+        variantDir: fx.variantDir,
+        journalPath: fx.journalPath,
+        sessionsDir: fx.sessionsDir,
+        K: 1,
+        maxGenerations: 2,
+        budgetMs: 60_000,
+        mutationProvider: stub.provider,
+        rawTextProvider: predictableRawText(),
+        resumeSessionId: 'no-such-session-id',
+      });
+    } catch (e) {
+      err = e as Error;
+    }
+    expect(err).not.toBeNull();
+    expect(err!.message).toMatch(/cannot resume/);
+  });
+
+  test('CKPT-4 resumeSession checkpoint.stopReason !== running → 早返 (不重跑)', async () => {
+    const fx = makeFixture();
+    const stub = makeCountingMutationProvider();
+
+    // 跑完一个小 session, 改写其 checkpoint 的 stopReason 为已收束, 模拟 "resume 一个完整 session"。
+    const first = await runSession({
+      corpus: fx.loaded,
+      variantDir: fx.variantDir,
+      journalPath: fx.journalPath,
+      sessionsDir: fx.sessionsDir,
+      K: 1,
+      maxGenerations: 2,
+      budgetMs: 60_000,
+      mutationProvider: stub.provider,
+      rawTextProvider: predictableRawText(),
+      sessionId: 'CKPT-4',
+    });
+    expect(first.stopReason).toBe('maxGenerations');
+
+    // Resume 同一 sessionId (checkpoint.stopReason='maxGenerations' ≠ 'running'): 早返。
+    // mutationProvider 计数器在这次调用里应**不再增长** (mutation 不会被再调一次)。
+    const callsBeforeResume = stub.calls;
+    const resumed = await runSession({
+      corpus: fx.loaded,
+      variantDir: fx.variantDir,
+      journalPath: fx.journalPath,
+      sessionsDir: fx.sessionsDir,
+      K: 1,
+      maxGenerations: 2,
+      budgetMs: 60_000,
+      mutationProvider: stub.provider,
+      rawTextProvider: predictableRawText(),
+      resumeSessionId: 'CKPT-4',
+    });
+    expect(stub.calls).toBe(callsBeforeResume); // 没有新 mutation
+    expect(resumed.sessionId).toBe('CKPT-4');
+    expect(resumed.stopReason).toBe('maxGenerations');
+    expect(resumed.generations).toHaveLength(first.generations.length);
+  });
+
+  test('CKPT-5 journal 逐代 append: 每代落盘后 journal.md 含 begin + N 段 generation + ended', async () => {
+    const fx = makeFixture();
+    const stub = makeCountingMutationProvider();
+    await runSession({
+      corpus: fx.loaded,
+      variantDir: fx.variantDir,
+      journalPath: fx.journalPath,
+      sessionsDir: fx.sessionsDir,
+      K: 1,
+      maxGenerations: 3,
+      budgetMs: 60_000,
+      mutationProvider: stub.provider,
+      rawTextProvider: predictableRawText(),
+      sessionId: 'CKPT-5',
+    });
+
+    const j = readFileSync(fx.journalPath, 'utf8');
+    // 文件 header (first-write only) + session header + 逐代 + ended
+    expect(j).toContain('# autoresearch journal');
+    expect(j).toContain('## session CKPT-5');
+    expect(j).toContain('### generation 0 (baseline)');
+    expect(j).toContain('### generation 1');
+    expect(j).toContain('### generation 2');
+    expect(j).toContain('### session CKPT-5 ended');
+    expect(j).toContain('stopReason: maxGenerations');
+    // 早字节守恒 (INV-4): 第二次再写另一 session 时, 早段字节不变。直接读回 session 头那段:
+    const sessionHeaderIdx = j.indexOf('## session CKPT-5');
+    expect(sessionHeaderIdx).toBeGreaterThanOrEqual(0);
+  });
+
+  test('CKPT-6 beginSessionJournal + appendGenerationToJournal + endSessionJournal 单元: 不经 runner 也拼齐', async () => {
+    // 这条锁 append-only 三件的契约: begin 写头, append 写代, end 写尾; 头部 header
+    // 仅在文件首次创建时写一次 (后续 begin 不重复)。
+    const fx = makeFixture();
+    const jp = fx.journalPath;
+    const r1 = beginSessionJournal(jp, 'S-A', {
+      startMs: 1000, K: 2, maxGenerations: 3, topM: 1, plateauThreshold: 5,
+    });
+    expect(r1.bytesAppended).toBeGreaterThan(0);
+    const after1 = readFileSync(jp, 'utf8');
+    expect(after1.startsWith('# autoresearch journal')).toBe(true);
+    expect(after1).toContain('## session S-A');
+
+    const gen0: GenerationRecord = {
+      genIdx: 0,
+      parentVariantNames: [],
+      childVariantNames: [],
+      fitnessByChild: {},
+      frontIds: [SESSION_BASELINE_VARIANT],
+      winnerIds: [SESSION_BASELINE_VARIANT],
+      stopReason: 'running',
+      frontFitnessSignature: 'sig',
+    };
+    const r2 = appendGenerationToJournal(jp, gen0);
+    expect(r2.bytesAppended).toBeGreaterThan(0);
+    const after2 = readFileSync(jp, 'utf8');
+    expect(after2).toContain('### generation 0 (baseline)');
+
+    const r3 = endSessionJournal(jp, 'S-A', 'maxGenerations', [SESSION_BASELINE_VARIANT]);
+    expect(r3.bytesAppended).toBeGreaterThan(0);
+    const after3 = readFileSync(jp, 'utf8');
+    expect(after3).toContain('### session S-A ended');
+    expect(after3).toContain('stopReason: maxGenerations');
+
+    // 第二次再 begin 另一 session: 文件级 header **不**重复, 只追加 session 头。
+    const sizeBefore = Buffer.byteLength(after3, 'utf8');
+    beginSessionJournal(jp, 'S-B', {
+      startMs: 2000, K: 1, maxGenerations: 2, topM: 1, plateauThreshold: 5,
+    });
+    const after4 = readFileSync(jp, 'utf8');
+    const sizeAfter = Buffer.byteLength(after4, 'utf8');
+    expect(sizeAfter).toBeGreaterThan(sizeBefore);
+    // '# autoresearch journal' 仍只出现一次 (在文件开头, 后续不被复制)。
+    expect((after4.match(/^# autoresearch journal/gm) ?? []).length).toBe(1);
+    expect(after4).toContain('## session S-B');
+
+    // appendGenerationToJournal 在无头时 throw (caller 漏 begin = fail-closed)。
+    const noheaderJp = join(fx.root, 'no-header-journal.md');
+    let err: Error | null = null;
+    try {
+      appendGenerationToJournal(noheaderJp, gen0);
+    } catch (e) {
+      err = e as Error;
+    }
+    expect(err).not.toBeNull();
+    expect(err!.message).toMatch(/call beginSessionJournal first/);
+  });
+
+  test('CKPT-7 writeSessionCheckpoint atomic 写: 文件始终是完整代集合, 不是 partial 状态', () => {
+    const fx = makeFixture();
+    const ckpt: SessionCheckpoint = {
+      sessionId: 'atomic',
+      startMs: 1000,
+      stopReason: 'running',
+      K: 1,
+      maxGenerations: 3,
+      topM: 1,
+      plateauThreshold: 5,
+      generations: [
+        {
+          genIdx: 0,
+          parentVariantNames: [],
+          childVariantNames: [],
+          fitnessByChild: {},
+          frontIds: [SESSION_BASELINE_VARIANT],
+          winnerIds: [SESSION_BASELINE_VARIANT],
+          stopReason: 'running',
+          frontFitnessSignature: 'BASELINE',
+        },
+      ],
+      lastWinnerIds: [SESSION_BASELINE_VARIANT],
+    };
+    // 第一次写
+    const p1 = writeSessionCheckpoint(fx.sessionsDir, ckpt);
+    expect(existsSync(p1)).toBe(true);
+    // 写完后不应残留 .tmp (atomic rename 已搬走)。
+    expect(existsSync(`${p1}.tmp`)).toBe(false);
+    // 读回 JSON 完整可解析 (不是 half-written)。
+    const back = JSON.parse(readFileSync(p1, 'utf8')) as SessionCheckpoint;
+    expect(back.generations).toHaveLength(1);
+
+    // 覆写更长的 generations
+    const ckpt2: SessionCheckpoint = {
+      ...ckpt,
+      generations: [
+        ...ckpt.generations,
+        {
+          genIdx: 1,
+          parentVariantNames: [SESSION_BASELINE_VARIANT],
+          childVariantNames: ['g1-c0'],
+          fitnessByChild: {},
+          frontIds: ['g1-c0'],
+          winnerIds: ['g1-c0'],
+          stopReason: 'running',
+          frontFitnessSignature: 'fsp1',
+        },
+      ],
+      lastWinnerIds: ['g1-c0'],
+    };
+    writeSessionCheckpoint(fx.sessionsDir, ckpt2);
+    const back2 = JSON.parse(readFileSync(p1, 'utf8')) as SessionCheckpoint;
+    expect(back2.generations).toHaveLength(2);
+
+    // loadSessionCheckpoint 与 write 是对偶的。
+    const loaded = loadSessionCheckpoint(fx.sessionsDir, 'atomic');
+    expect(loaded).not.toBeNull();
+    expect(loaded!.generations).toHaveLength(2);
   });
 });

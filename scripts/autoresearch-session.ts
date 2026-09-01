@@ -5,6 +5,9 @@
  * 把 variant 物化 (s1) · 变异算子 (s2) · 选择器 (s3) 串成一条 session:
  *   第 0 代基线 → 变异 K → 粗筛/主段评估 → 选择 → journal append → 平台期/预算/代数收束。
  *
+ * P2b 切片 2 加逐代持久化:每代 settle 后立即 append journal + 覆写 session.json
+ * (整档原子写); `--resume-session <id>` 从已录代继续 (录过的代跳过)。
+ *
  * ## 契约对照
  *
  *   - C-1 / INV-1: variant 物化经 readVariant → variantSpecToPromptOpts 注入 opts;
@@ -15,6 +18,9 @@
  *   - C-3 / INV-3: 选择器零 LLM, 默认 Pareto 5 维 + speedup 主目标, 平台期 = PLATEAU_DEFAULT_THRESHOLD。
  *   - C-4 / INV-4: appendSessionJournal 用 appendFileSync; 文件不存在 → writeFileSync;
  *     之后**只追加**, 早字节不被改写 (本测试 JOURNAL_APPEND_ONLY 那条验)。
+ *   - C-5 / P2b INV-2 (切片 2): 逐代落盘 — 每代 settle 后写 `<sessionsDir>/<id>/session.json`
+ *     (atomic tmp + rename), 与 journal append 同步; `--resume-session` 从 checkpoint 续跑,
+ *     前 N 代记录逐字节保留。
  *
  * ## 噪声纪律
  *
@@ -38,8 +44,8 @@
  *     只按 id 排 → winnerIds 顺序漂移, 但 frontIds 不动, 那条若只验 frontIds 不红;
  *     双锁 (frontIds 用 paretoFront 验真, winnerIds 用 sortByMainObjective 验真)。
  */
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import type { AggregatedFitness } from '../src/eval/replay/fitness';
 import {
   DEFAULT_VARIANT_DIR,
@@ -64,6 +70,8 @@ import {
   type Candidate,
   type Objective,
 } from '../src/eval/replay/select';
+// 平台期阈值常量是合同面 (default 5), 测试需直接断言 → re-export。
+export { PLATEAU_DEFAULT_THRESHOLD };
 import type { LoadedCorpus } from '../src/eval/replay/corpus';
 import { evaluateSplit, stubVariantToRawText } from './autoresearch-replay';
 
@@ -89,6 +97,9 @@ export const SESSION_BASELINE_VARIANT = 'baseline';
 
 /** Marker for the journal-append-only contract test (matches the verify command grep). */
 export const JOURNAL_APPEND_ONLY = 'JOURNAL_APPEND_ONLY';
+
+/** Marker for the per-gen checkpoint + resume contract test (matches the verify command grep). */
+export const GEN_CHECKPOINT_RESUME = 'GEN_CHECKPOINT_RESUME';
 
 /** Session 收束原因。'running' 只在 GenerationRecord 内部用 (最后一轮已写 stopReason)。 */
 export type SessionStopReason = 'running' | 'plateau' | 'budget' | 'maxGenerations' | 'completed';
@@ -132,6 +143,8 @@ export interface SessionOptions {
   variantDir?: string;
   /** journal 路径 (append-only)。默认 = `runs/autoresearch/journal.md`。 */
   journalPath?: string;
+  /** sessions 根目录 (per-session 子目录 = `<id>/session.json`)。默认 = `runs/autoresearch/sessions`。 */
+  sessionsDir?: string;
   /** 每代每 parent 的 children 数 (K)。≥ 1。genIdx=0 不做变异。 */
   K: number;
   /** 代数上限 (含 genIdx=0)。≥ 1。 */
@@ -142,8 +155,16 @@ export interface SessionOptions {
   topM?: number;
   /** 墙钟预算 (ms)。超 = 'budget' 收束。默认 = 90 × 60 × 1000 (合同 §决策)。 */
   budgetMs?: number;
-  /** 会话 id。默认 = unix ms 戳。 */
+  /** 会话 id。默认 = unix ms 戳。resumeSessionId 优先。 */
   sessionId?: string;
+  /**
+   * P2b 切片 2: 从已录代的 session 继续。给定后, 优先于 sessionId 使用 (即恢复的 sessionId
+   * 等于 resumeSessionId); 路径 = `<sessionsDir>/<resumeSessionId>/session.json`。
+   * checkpoint.stopReason === 'running' → 从 checkpoint.generations.length 代继续;
+   * checkpoint.stopReason !== 'running' → 直接返已有结果 (不重跑)。
+   * 不存在 → throw (fail-closed, 不静默开新 session)。
+   */
+  resumeSessionId?: string;
   // ─── 注入 (test 替默认) ────────────────────────────────────────────────
   /** 替代默认变异 provider (mutate.ts 的 defaultMutationProvider 会主动 throw, 故意 fail-closed)。 */
   mutationProvider?: MutationProvider;
@@ -153,6 +174,27 @@ export interface SessionOptions {
   writeVariantSpec?: (dir: string, spec: VariantSpec) => string;
   /** 替代默认 Date.now。 */
   now?: () => number;
+}
+
+/** P2b 切片 2: session.json 形状 (整档 atomic 写, 每个 generation settle 后覆写)。
+ *
+ * 字段冻结语义 (INV-2): 前 N 代记录从已落盘 checkpoint 拷出, resume 后 N 代记录字段
+ * 字节相同。Generations 之外 (startMs / K / maxGenerations / topM / plateauThreshold)
+ * 是 session 启动时的元数据, resume 后不可改。 */
+export interface SessionCheckpoint {
+  sessionId: string;
+  /** startMs 来自首次 runSession 调用, resume 时复用 (保证 budget 闸的 deadlineMs 不漂移)。 */
+  startMs: number;
+  /** 'running' = 中途被 kill (可 resume); 其它 = session 已收束。 */
+  stopReason: SessionStopReason;
+  K: number;
+  maxGenerations: number;
+  topM: number;
+  plateauThreshold: number;
+  /** 长度 = 已 settle 的代数 (从 0 起, 含 baseline)。 */
+  generations: GenerationRecord[];
+  /** 最后一代的 winnerIds; 下次 resume 时作为下一代 parents 的种子。 */
+  lastWinnerIds: string[];
 }
 
 /** Session 收束结果。journalBytesAppended 记录这次写入的字节数 (供 caller / 闸对账)。 */
@@ -174,6 +216,11 @@ function defaultVariantDir(): string {
 /** 默认 journal 路径。 */
 function defaultJournalPath(): string {
   return 'runs/autoresearch/journal.md';
+}
+
+/** 默认 sessions 根目录 (per-session 子目录 = `<id>/session.json`)。 */
+function defaultSessionsDir(): string {
+  return 'runs/autoresearch/sessions';
 }
 
 /** 默认 rawText 提供器: readVariant(variantDir, variant) 命中 → 改走 live path;
@@ -376,6 +423,170 @@ export function renderJournalBlock(
   return lines.join('\n');
 }
 
+// ─── P2b 切片 2: 逐代持久化 (session.json atomic 写) ──────────────────────
+
+/**
+ * 把 sessionCheckpoint 写到 `<sessionsDir>/<sessionId>/session.json`。
+ *
+ * 整档 atomic 写: writeFileSync 到 `session.json.tmp` → renameSync 到 `session.json`。
+ * POSIX rename 在同目录内是原子的, 保证读到 session.json 的总是一个完整的代集合
+ * (中断发生在 tmp 阶段 → 旧 session.json 仍有效; 发生在 rename 阶段 → 全新或旧)。
+ *
+ * 父目录不存在 → mkdirSync({recursive:true}) 自动建。
+ */
+export function writeSessionCheckpoint(
+  sessionsDir: string,
+  checkpoint: SessionCheckpoint,
+): string {
+  const dir = join(sessionsDir, checkpoint.sessionId);
+  mkdirSync(dir, { recursive: true });
+  const finalPath = join(dir, 'session.json');
+  const tmpPath = `${finalPath}.tmp`;
+  const text = `${JSON.stringify(checkpoint, null, 2)}\n`;
+  writeFileSync(tmpPath, text);
+  renameSync(tmpPath, finalPath);
+  return finalPath;
+}
+
+/**
+ * 读 `<sessionsDir>/<sessionId>/session.json`。
+ *
+ * 文件不存在 → null (正常: 全新 session, 不是 resume)。
+ * 文件存在但 JSON parse 失败 → throw (fail-closed: checkpoint 是 session 的真源,
+ * 解析失败 = 不能继续也不能当全新开, 升级 owner 决策)。
+ */
+export function loadSessionCheckpoint(
+  sessionsDir: string,
+  sessionId: string,
+): SessionCheckpoint | null {
+  const p = join(sessionsDir, sessionId, 'session.json');
+  if (!existsSync(p)) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(p, 'utf8'));
+  } catch (e) {
+    throw new Error(
+      `loadSessionCheckpoint: "${p}" JSON parse failed — ${(e as Error).message}`,
+    );
+  }
+  return parsed as SessionCheckpoint;
+}
+
+/**
+ * 写 session 头到 journal: `## session <id>` + 启动元数据 + `- stopReason: running`
+ * (临时, 终值在 endSessionJournal 中以末尾 `### session <id> ended` 块覆义)。
+ *
+ * 首次创建文件 → 顶部写 `# autoresearch journal\n\n` header;
+ * 后续调用 → 直接 appendFileSync session 头。
+ *
+ * 与 appendSessionJournal 不同: 本函数 + appendGenerationToJournal + endSessionJournal
+ * 一起支持逐代落盘 (P2b INV-2)。老的 appendSessionJournal 留作 backward compat
+ * (AOL-1/2/3 直接测试它, 不动)。
+ */
+export function beginSessionJournal(
+  journalPath: string,
+  sessionId: string,
+  meta: {
+    startMs: number;
+    K: number;
+    maxGenerations: number;
+    topM: number;
+    plateauThreshold: number;
+  },
+): { bytesAppended: number; fileSizeAfter: number } {
+  const dir = dirname(journalPath);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+
+  const isNewFile = !existsSync(journalPath);
+  const fileHeader = isNewFile ? '# autoresearch journal\n\n' : '';
+  const sessionHeader = [
+    `## session ${sessionId}`,
+    `- startMs: ${meta.startMs}`,
+    `- K: ${meta.K}`,
+    `- maxGenerations: ${meta.maxGenerations}`,
+    `- topM: ${meta.topM}`,
+    `- plateauThreshold: ${meta.plateauThreshold}`,
+    `- stopReason: running`,
+    '',
+  ].join('\n');
+
+  const block = fileHeader + sessionHeader;
+  if (isNewFile) {
+    writeFileSync(journalPath, block);
+  } else {
+    appendFileSync(journalPath, block);
+  }
+  return {
+    bytesAppended: Buffer.byteLength(block, 'utf8'),
+    fileSizeAfter: -1,
+  };
+}
+
+/**
+ * 把单代记录 append 到 journal: 一段 `### generation N (...)` Markdown。
+ *
+ * 与 appendSessionJournal 共享同一文件 (C-4 append-only, 早字节不被改)。
+ * 失败模式: 目录不存在 → mkdirSync({recursive:true}) 兜底;
+ * 文件不存在 → throw (beginSessionJournal 必须先调, 缺失 = caller 漏, fail-closed)。
+ */
+export function appendGenerationToJournal(
+  journalPath: string,
+  generation: GenerationRecord,
+): { bytesAppended: number } {
+  if (!existsSync(journalPath)) {
+    throw new Error(
+      `appendGenerationToJournal: ${journalPath} does not exist — call beginSessionJournal first`,
+    );
+  }
+  const lines: string[] = [];
+  const genTag = generation.genIdx === 0 ? 'baseline' : `${generation.genIdx}`;
+  lines.push(`### generation ${generation.genIdx} (${genTag})`);
+  lines.push(`- parents: [${generation.parentVariantNames.join(', ')}]`);
+  lines.push(`- children: [${generation.childVariantNames.join(', ')}]`);
+  if (generation.childVariantNames.length > 0) {
+    lines.push('- fitnessByChild:');
+    for (const name of generation.childVariantNames) {
+      const fit = generation.fitnessByChild[name];
+      if (fit === undefined) continue;
+      lines.push(`  - ${name}:`);
+      lines.push(`    screen: ${JSON.stringify(fit.screen)}`);
+      lines.push(`    main: ${JSON.stringify(fit.main)}`);
+    }
+  }
+  lines.push(`- frontIds: [${generation.frontIds.join(', ')}]`);
+  lines.push(`- frontFitnessSignature: ${generation.frontFitnessSignature}`);
+  lines.push(`- winnerIds: [${generation.winnerIds.join(', ')}]`);
+  lines.push(`- stopReason: ${generation.stopReason}`);
+  lines.push('');
+  const block = lines.join('\n');
+  appendFileSync(journalPath, block);
+  return { bytesAppended: Buffer.byteLength(block, 'utf8') };
+}
+
+/**
+ * 把 session 收束信息 append 到 journal: `### session <id> ended` 段。
+ *
+ * journal 是 append-only, 不回改 session 头里的 `stopReason: running`;
+ * 终值靠末尾这段追加覆义 (读时: 若有 ended 块 → 用其 stopReason; 否则 → 用头里的 running
+ * 表明 session 被 kill 中途)。
+ */
+export function endSessionJournal(
+  journalPath: string,
+  sessionId: string,
+  stopReason: Exclude<SessionStopReason, 'running'>,
+  finalWinnerIds: readonly string[],
+): { bytesAppended: number } {
+  const lines = [
+    `### session ${sessionId} ended`,
+    `- stopReason: ${stopReason}`,
+    `- finalWinnerIds: [${finalWinnerIds.join(', ')}]`,
+    '',
+  ];
+  const block = lines.join('\n');
+  appendFileSync(journalPath, block);
+  return { bytesAppended: Buffer.byteLength(block, 'utf8') };
+}
+
 // ─── 主入口 ────────────────────────────────────────────────────────────────
 
 /**
@@ -399,6 +610,7 @@ export async function runSession(opts: SessionOptions): Promise<SessionResult> {
 
   const variantDir = opts.variantDir ?? defaultVariantDir();
   const journalPath = opts.journalPath ?? defaultJournalPath();
+  const sessionsDir = opts.sessionsDir ?? defaultSessionsDir();
   const plateauThreshold = opts.plateauThreshold ?? PLATEAU_DEFAULT_THRESHOLD;
   const topM = Math.max(1, opts.topM ?? 1);
   const budgetMs = opts.budgetMs ?? 90 * 60 * 1000;
@@ -409,43 +621,157 @@ export async function runSession(opts: SessionOptions): Promise<SessionResult> {
     : defaultRawTextProvider(variantDir);
   const mutationProvider: MutationProvider = opts.mutationProvider ?? defaultMutationProvider;
 
-  const sessionId = opts.sessionId ?? `s-${now()}`;
-  const startMs = now();
-  const deadlineMs = startMs + budgetMs;
+  // ─── Resume 处理 (P2b INV-2) ──────────────────────────────────────────
+  // resumeSessionId 优先于 sessionId (即恢复出的 sessionId === resumeSessionId)。
+  let sessionId: string;
+  let startMs: number; // journal / checkpoint 里记录的 origin startMs (resume 时保留首次启动的 unix ms)。
+  const runStartMs: number = now(); // 本次 runSession 调用的墙钟起点 (resume 时也是 now, 用于 budget 闸 — 见 deadlineMs)。
+  let resumeCheckpoint: SessionCheckpoint | null = null;
+  if (opts.resumeSessionId !== undefined) {
+    sessionId = opts.resumeSessionId;
+    resumeCheckpoint = loadSessionCheckpoint(sessionsDir, sessionId);
+    if (resumeCheckpoint === null) {
+      throw new Error(
+        `runSession: cannot resume session "${sessionId}" — no checkpoint at ${sessionsDir}/${sessionId}/session.json`,
+      );
+    }
+    startMs = resumeCheckpoint.startMs;
+  } else {
+    sessionId = opts.sessionId ?? `s-${now()}`;
+    startMs = runStartMs;
+  }
+  // budget 闸永远以**本次调用**为基准: resume 时钟归零 (caller 想累计就传一个更大的 budgetMs;
+  // 想从 0 计就用默认)。这与 session.json.startMs 不冲突 — 后者是 origin 信息, 仅记录, 不参与预算。
+  const deadlineMs = runStartMs + budgetMs;
 
-  const generations: GenerationRecord[] = [];
-  const signatureHistory: string[] = []; // 跨代 Pareto 前沿的 fitness 签名, 给 isPlateau
-  let stopReason: Exclude<SessionStopReason, 'running'> = 'maxGenerations';
-  let lastWinnerIds: string[] = [SESSION_BASELINE_VARIANT];
+  // 累加本进程内对 journal 的写入字节数 (resume 时 = 0; 新 session 含 begin + 逐代 + end)。
+  let journalBytesAppendedTotal = 0;
 
-  // ─── gen 0 baseline ──────────────────────────────────────────────────
-  // budget 在每代入口前查 (不在 gen 0 之后, 防「先 flush 再停」)。
-  if (now() > deadlineMs) {
-    stopReason = 'budget';
-    const baselineRecord = makeBaselineRecord();
-    generations.push(baselineRecord);
-    return finalizeSession(
-      sessionId, stopReason, generations, lastWinnerIds, journalPath,
-      { K: opts.K, maxGenerations: opts.maxGenerations, topM, plateauThreshold },
-    );
+  // ─── 已收束 checkpoint → 直接返 (resume 一个完整 session 是 no-op) ────
+  if (resumeCheckpoint !== null && resumeCheckpoint.stopReason !== 'running') {
+    return {
+      sessionId: resumeCheckpoint.sessionId,
+      stopReason: resumeCheckpoint.stopReason,
+      generations: [...resumeCheckpoint.generations],
+      winnerIds: [...resumeCheckpoint.lastWinnerIds],
+      journalBytesAppended: 0,
+    };
   }
 
-  // gen 0: 不变异。frontIds / winnerIds = [baseline] (基线至少在场)。
-  const baselineRecord = makeBaselineRecord();
-  // 评估 baseline 给一份 fitness 记录 (供 journal + 后续代对比)。
-  const baselineFit = await evaluateVariantFitness(
-    opts.corpus, SESSION_BASELINE_VARIANT, rawTextProvider,
-  );
-  baselineRecord.fitnessByChild[SESSION_BASELINE_VARIANT] = baselineFit;
-  baselineRecord.frontFitnessSignature = frontFitnessSignature([
-    { id: SESSION_BASELINE_VARIANT, fitness: baselineFit.main },
-  ]);
-  generations.push(baselineRecord);
-  signatureHistory.push(baselineRecord.frontFitnessSignature);
-  lastWinnerIds = baselineRecord.winnerIds;
+  // ─── 状态恢复 / 初始化 ──────────────────────────────────────────────
+  // 注意: resume 时 generations / signatureHistory / lastWinnerIds 都从 checkpoint 取,
+  //       后续只在追加新代 (startGenIdx..maxGenerations)。
+  const generations: GenerationRecord[] = resumeCheckpoint
+    ? resumeCheckpoint.generations.map(cloneGenerationRecord)
+    : [];
+  const signatureHistory: string[] = generations.map((g) => g.frontFitnessSignature);
+  let stopReason: Exclude<SessionStopReason, 'running'> = 'maxGenerations';
+  let lastWinnerIds: string[] = resumeCheckpoint
+    ? [...resumeCheckpoint.lastWinnerIds]
+    : [SESSION_BASELINE_VARIANT];
+
+  const startGenIdx = generations.length;
+
+  // ─── 写 journal 头 + 初始 session.json (仅全新 session) ──────────────
+  if (startGenIdx === 0) {
+    const r = beginSessionJournal(journalPath, sessionId, {
+      startMs,
+      K: opts.K,
+      maxGenerations: opts.maxGenerations,
+      topM,
+      plateauThreshold,
+    });
+    journalBytesAppendedTotal += r.bytesAppended;
+    writeSessionCheckpoint(sessionsDir, {
+      sessionId,
+      startMs,
+      stopReason: 'running',
+      K: opts.K,
+      maxGenerations: opts.maxGenerations,
+      topM,
+      plateauThreshold,
+      generations,
+      lastWinnerIds,
+    });
+  }
+
+  // ─── gen 0 baseline ──────────────────────────────────────────────────
+  let baselineRecord: GenerationRecord;
+  let baselineFit: VariantFitness;
+
+  if (startGenIdx <= 0) {
+    // budget 在每代入口前查 (不在 gen 0 之后, 防「先 flush 再停」)。
+    if (now() > deadlineMs) {
+      stopReason = 'budget';
+      baselineRecord = makeBaselineRecord();
+      baselineRecord.stopReason = 'budget';
+      generations.push(baselineRecord);
+      const r = appendGenerationToJournal(journalPath, baselineRecord);
+      journalBytesAppendedTotal += r.bytesAppended;
+      writeSessionCheckpoint(sessionsDir, {
+        sessionId,
+        startMs,
+        stopReason: 'budget',
+        K: opts.K,
+        maxGenerations: opts.maxGenerations,
+        topM,
+        plateauThreshold,
+        generations,
+        lastWinnerIds,
+      });
+      const re = endSessionJournal(journalPath, sessionId, 'budget', [SESSION_BASELINE_VARIANT]);
+      journalBytesAppendedTotal += re.bytesAppended;
+      return {
+        sessionId,
+        stopReason: 'budget',
+        generations: [...generations],
+        winnerIds: [SESSION_BASELINE_VARIANT],
+        journalBytesAppended: journalBytesAppendedTotal,
+      };
+    }
+
+    // gen 0: 不变异。frontIds / winnerIds = [baseline] (基线至少在场)。
+    baselineRecord = makeBaselineRecord();
+    // 评估 baseline 给一份 fitness 记录 (供 journal + 后续代对比)。
+    baselineFit = await evaluateVariantFitness(
+      opts.corpus, SESSION_BASELINE_VARIANT, rawTextProvider,
+    );
+    baselineRecord.fitnessByChild[SESSION_BASELINE_VARIANT] = baselineFit;
+    baselineRecord.frontFitnessSignature = frontFitnessSignature([
+      { id: SESSION_BASELINE_VARIANT, fitness: baselineFit.main },
+    ]);
+    generations.push(baselineRecord);
+    signatureHistory.push(baselineRecord.frontFitnessSignature);
+    lastWinnerIds = baselineRecord.winnerIds;
+
+    // 逐代落盘 (C-5 / P2b INV-2)
+    const r = appendGenerationToJournal(journalPath, baselineRecord);
+    journalBytesAppendedTotal += r.bytesAppended;
+    writeSessionCheckpoint(sessionsDir, {
+      sessionId,
+      startMs,
+      stopReason: 'running',
+      K: opts.K,
+      maxGenerations: opts.maxGenerations,
+      topM,
+      plateauThreshold,
+      generations,
+      lastWinnerIds,
+    });
+  } else {
+    // Resume 路径: 从已录代的 gen 0 复原 baselineRecord / baselineFit。
+    baselineRecord = generations[0]!;
+    const fit = baselineRecord.fitnessByChild[SESSION_BASELINE_VARIANT];
+    if (fit === undefined) {
+      throw new Error(
+        `runSession: resumed session "${sessionId}" has no baseline fitness record`,
+      );
+    }
+    baselineFit = fit;
+  }
 
   // ─── gen 1..N mutation ───────────────────────────────────────────────
-  for (let genIdx = 1; genIdx < opts.maxGenerations; genIdx++) {
+  for (let genIdx = Math.max(1, startGenIdx); genIdx < opts.maxGenerations; genIdx++) {
     if (now() > deadlineMs) {
       stopReason = 'budget';
       break;
@@ -527,6 +853,21 @@ export async function runSession(opts: SessionOptions): Promise<SessionResult> {
     signatureHistory.push(thisGen.frontFitnessSignature);
     lastWinnerIds = sel.winnerIds;
 
+    // 逐代落盘 (C-5 / P2b INV-2)
+    const r = appendGenerationToJournal(journalPath, thisGen);
+    journalBytesAppendedTotal += r.bytesAppended;
+    writeSessionCheckpoint(sessionsDir, {
+      sessionId,
+      startMs,
+      stopReason: 'running',
+      K: opts.K,
+      maxGenerations: opts.maxGenerations,
+      topM,
+      plateauThreshold,
+      generations,
+      lastWinnerIds,
+    });
+
     // 平台期检查: 跨 ≥ threshold 代 frontier 在 fitness 空间不动 → 收束。
     // 注意: 平台期用签名 (frontFitnessSignature), 不用 frontIds —— 跨代名不同但
     // fitness 相同的子代**也算不动** (这是 Pareto-前沿的本意: fitness 空间的前沿)。
@@ -552,10 +893,28 @@ export async function runSession(opts: SessionOptions): Promise<SessionResult> {
     }
   }
 
-  return finalizeSession(
-    sessionId, stopReason, generations, lastWinnerIds, journalPath,
-    { K: opts.K, maxGenerations: opts.maxGenerations, topM, plateauThreshold },
-  );
+  // 收尾: 整档 atomic 写最终 session.json + 写 session-ended journal 段。
+  writeSessionCheckpoint(sessionsDir, {
+    sessionId,
+    startMs,
+    stopReason,
+    K: opts.K,
+    maxGenerations: opts.maxGenerations,
+    topM,
+    plateauThreshold,
+    generations,
+    lastWinnerIds,
+  });
+  const re = endSessionJournal(journalPath, sessionId, stopReason, lastWinnerIds);
+  journalBytesAppendedTotal += re.bytesAppended;
+
+  return {
+    sessionId,
+    stopReason,
+    generations: [...generations],
+    winnerIds: [...lastWinnerIds],
+    journalBytesAppended: journalBytesAppendedTotal,
+  };
 }
 
 // ─── 内部 helper ───────────────────────────────────────────────────────────────
@@ -587,24 +946,18 @@ function findPrevGen(
   return null;
 }
 
-/** 收尾: 写 journal, 返 SessionResult。 */
-async function finalizeSession(
-  sessionId: string,
-  stopReason: Exclude<SessionStopReason, 'running'>,
-  generations: readonly GenerationRecord[],
-  winnerIds: readonly string[],
-  journalPath: string,
-  extra: Readonly<Record<string, unknown>>,
-): Promise<SessionResult> {
-  const { bytesAppended } = appendSessionJournal(
-    journalPath, sessionId, generations, stopReason, extra,
-  );
+/** 深拷贝一个 GenerationRecord — resume 时从 checkpoint 拷出, 与后续 in-memory 改动隔离
+ * (后续 push / set stopReason 不污染原对象, INV-2 字节守恒的运行时保险)。 */
+function cloneGenerationRecord(g: GenerationRecord): GenerationRecord {
   return {
-    sessionId,
-    stopReason,
-    generations: [...generations],
-    winnerIds: [...winnerIds],
-    journalBytesAppended: bytesAppended,
+    genIdx: g.genIdx,
+    parentVariantNames: [...g.parentVariantNames],
+    childVariantNames: [...g.childVariantNames],
+    fitnessByChild: { ...g.fitnessByChild },
+    frontIds: [...g.frontIds],
+    frontFitnessSignature: g.frontFitnessSignature,
+    winnerIds: [...g.winnerIds],
+    stopReason: g.stopReason,
   };
 }
 
@@ -616,12 +969,14 @@ usage: bun scripts/autoresearch-session.ts --corpus <manifest.json> [options]
 options:
   --variant-dir <dir>     variant 写入目录 (默认 runs/autoresearch/variants)
   --journal <path>        journal 路径 (默认 runs/autoresearch/journal.md)
+  --sessions-dir <dir>    sessions 根目录 (默认 runs/autoresearch/sessions)
   --K <n>                 每代每 parent 的子代数 (默认 4)
   --max-generations <n>   代数上限 (默认 8)
   --plateau-threshold <n> 平台期阈值 (默认 5)
   --top-m <n>             父代保留数 (默认 1)
   --budget-minutes <n>    墙钟预算 (默认 90)
   --session-id <id>       会话 id (默认 unix ms)
+  --resume-session <id>   从已录代的 session 继续 (P2b 切片 2)
   --help                  打印本用法
 `;
 
@@ -629,12 +984,14 @@ interface CliOpts {
   corpusPath: string;
   variantDir?: string;
   journalPath?: string;
+  sessionsDir?: string;
   K?: number;
   maxGenerations?: number;
   plateauThreshold?: number;
   topM?: number;
   budgetMinutes?: number;
   sessionId?: string;
+  resumeSessionId?: string;
   help: boolean;
 }
 
@@ -652,12 +1009,14 @@ function parseCli(argv: readonly string[]): CliOpts {
       case '--corpus': out.corpusPath = next(); break;
       case '--variant-dir': out.variantDir = next(); break;
       case '--journal': out.journalPath = next(); break;
+      case '--sessions-dir': out.sessionsDir = next(); break;
       case '--K': out.K = Number(next()); break;
       case '--max-generations': out.maxGenerations = Number(next()); break;
       case '--plateau-threshold': out.plateauThreshold = Number(next()); break;
       case '--top-m': out.topM = Number(next()); break;
       case '--budget-minutes': out.budgetMinutes = Number(next()); break;
       case '--session-id': out.sessionId = next(); break;
+      case '--resume-session': out.resumeSessionId = next(); break;
       case '--help':
       case '-h':
         out.help = true; break;
