@@ -592,7 +592,8 @@ describe('D-6③ 派发锚: 票 → runId', () => {
       await call('path_deliver');
 
       expect(midRun?.dispatch).toBeDefined();
-      expect(midRun!.dispatch!.runId).toMatch(/^[0-9a-f-]{36}$/);
+      // runId 形状 = `<destination-slug>-<6hex>` (src/harness/dag/run-id.ts mintRunId) —— 任务可读、撞名有防。
+      expect(midRun!.dispatch!.runId).toMatch(/^ship-x-[0-9a-f]{6}$/);
       expect(midRun!.dispatch!.finishedAt).toBeUndefined(); // 还在跑
       expect(dispatchPhaseOf(midRun!)).toBe('in-flight');
     } finally {

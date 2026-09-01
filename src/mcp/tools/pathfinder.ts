@@ -31,6 +31,7 @@ import {
 } from '../../harness/pathfinder/dispatch';
 import { reflowGoalResults, reflowOwnerCommands, reflowResearchResults } from '../../harness/pathfinder/afk-hook';
 import { computeFrontier } from '../../harness/pathfinder/frontier';
+import { mintRunId } from '../../harness/dag/run-id';
 import { compileSlice, regionIsClear, specGateViolation } from '../../harness/pathfinder/slice-compiler';
 import {
   canConfirm,
@@ -653,7 +654,8 @@ function makeDeliver(deps: PathfinderToolDeps): OmdMcpTool {
       // 「这些票 ↔ 这个 run」的事实在那一行产生、当场被扔掉, 于是票从 ruled 直接跳 delivered,
       // 看板上「正在跑 / 跑完待验」两态盘上根本不存在 (控制台 SDD D-3 要的两列没有数据源)。
       // 现在 runId 提到这里生成: 它同时是账本键与票上的锚, **必须是同一个值**, 否则回执查不回来。
-      const runId = crypto.randomUUID();
+      // 形状 = `<slug>-<6hex>` (slug = map.destination 归一) —— 同票派两次不撞, `/runs`/palette 看见名字。
+      const runId = mintRunId(map.destination);
       backend.markDispatch?.(cwd, r.slug, region.slice, { open: { runId, startedAt: new Date().toISOString() } });
       let settled = false;
       // 收工回填。放 finally 里跑 —— 异常路径 (编译期外的任何抛错) 若不 settle, 票就会永远停在

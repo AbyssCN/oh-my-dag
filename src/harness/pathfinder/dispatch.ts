@@ -25,6 +25,7 @@
  */
 import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { mintRunId } from '../dag/run-id';
 import { computeFrontier } from './frontier';
 import type { GhResult, GhRunner } from './backend';
 import { declaredTicketClass } from './types';
@@ -362,8 +363,8 @@ export function goalWorkerPath(): string {
 export interface DispatchGoalDeps {
   /** 注入接缝 (测试传替身, 永不起真进程)。默认 = Bun.spawn detached + unref。 */
   spawnDetached?: (cmd: string[], opts: { cwd: string; logPath: string }) => number | undefined;
-  /** runId 工厂 (测试定值)。默认 crypto.randomUUID。 */
-  makeRunId?: () => string;
+  /** runId 工厂 (测试定值)。默认 = mintRunId(ruling) (slug+6hex)。 */
+  makeRunId?: (goal: string) => string;
 }
 
 export interface DispatchGoalResult {
@@ -403,7 +404,7 @@ export function dispatchGoalTicket(
   // GWT-G1-3: 上次 not-converged 留下的续跑锚 → 用旧 runId 续 (journal/毒集/绿节点都按 runId 存)。
   const resumeAnchor = goalResumePath(cwd, slug, ticketId);
   const resumeId = existsSync(resumeAnchor) ? readFileSync(resumeAnchor, 'utf8').trim() : undefined;
-  const runId = resumeId ?? (deps.makeRunId ?? (() => crypto.randomUUID()))();
+  const runId = resumeId ?? (deps.makeRunId ?? mintRunId)(ruling);
   const rounds = env.OMD_TICKET_GOAL_ROUNDS ?? '2';
   const minutes = env.OMD_TICKET_GOAL_MINUTES ?? '30';
   mkdirSync(dirname(marker), { recursive: true });
