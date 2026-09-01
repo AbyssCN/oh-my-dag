@@ -57,7 +57,10 @@ import { renderRunList } from './render/run-list';
 import { renderNowBand, type NowBandInput, type NowPaint } from './render/now-band';
 import { applyInboxAction, decideInboxKey, renderInbox, type InboxAction, type InboxItem } from './render/inbox';
 import { readDagShards } from '../hud/load';
-import { readAttention } from '../serve/read-api';
+import { readTerminalRunIds, sweepHudSnapshots } from '../hud/gc';
+import type { AttentionView } from '../serve/read-api';
+import { createAttentionReader } from './attention-reader';
+import { createOscTailGuard } from './osc-guard';
 import { StatusLine } from './components/status-line';
 import { formatSeatRows, parseSeatCommand, seatRows } from './seat-picker';
 import { defaultTuiSessionId, forkSessionId, formatSessions, newSessionId, parseNewForkCommand, parseSessionCommand, sessionPickerOptions } from './sessions';
@@ -682,16 +685,32 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   let nowBandData: NowBandInput = { awaiting: [], suggested: [], live: [], maps: [] };
   /** 收件箱四态由各数据源汇成。`InboxItem` 形状见 `render/inbox.ts` 类型定义。 */
   let inboxItems: InboxItem[] = [];
+  /**
+   * 注意力视图 (等裁票 / 建议票 / 雾档) **异步取** (2026-09-02): `readAttention` 走 PathBackend 端口,
+   * gh 后端 = listMaps + 每图一次 GraphQL, 实测 5 图 5.4s —— 同步读会把启动与每轮收尾各冻 5s。
+   * 于是取数进 Worker (`attention-reader.ts`), 这里先用**上一次**的票立即画, 数回来再重画。
+   * 序号防乱序: 慢的旧请求不许盖掉新的。
+   */
+  const EMPTY_ATTENTION: AttentionView = { awaiting: [], frontier: [], suggested: [], maps: [] };
+  let lastAttention: AttentionView = EMPTY_ATTENTION;
+  let attentionSeq = 0;
+  const readAttentionAsync = createAttentionReader();
   function refreshNowBandData(): void {
-    const attention = (() => {
-      try {
-        return readAttention(opts.cwd);
-      } catch (err) {
-        // fail-open 吞异常不吞证据:日志留痕,屏上空仓。
-        logger.warn({ err: err instanceof Error ? err.message : String(err) }, '[omd/tui] readAttention threw -> current zone empty this round');
-        return { awaiting: [], frontier: [], suggested: [], maps: [] };
-      }
-    })();
+    buildNowBand(lastAttention);
+    const seq = ++attentionSeq;
+    void readAttentionAsync(opts.cwd)
+      .then((view) => {
+        if (seq !== attentionSeq) return; // 更新的一轮已经发出, 这份是旧的
+        lastAttention = view;
+        buildNowBand(view);
+        tui.requestRender();
+      })
+      .catch((err) => {
+        // fail-open 吞异常不吞证据:日志留痕,屏上留上一次的票 (不清空: 清空会把「读失败」画成「没票」)。
+        logger.warn({ err: err instanceof Error ? err.message : String(err) }, '[omd/tui] readAttention threw -> current zone keeps last view');
+      });
+  }
+  function buildNowBand(attention: AttentionView): void {
     const liveViews = runList.filter((v) => v.phase === 'live');
     nowBandData = {
       awaiting: attention.awaiting,
@@ -1106,7 +1125,28 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   // 活图列表数据源 = **磁盘分片** (`readDagShards`), 不是本进程内存。
   // 这是整片存在的理由 (INV-DAG-7): run / research 恒 detached, 进程内订阅在生产上
   // 基本是空的, 而这个列表画的是盘上有什么, 与哪个进程无关。
+  /**
+   * HUD 分片归档 (2026-09-02, 见 `src/hud/gc.ts`): 终态过期 / run 已终态却仍 `running` / 静默 24h 的分片
+   * 挪进 `.omd/hud/archive/`。不归档时 96 份僵尸分片会在 run 列表里永远「waiting」。
+   * 节流 60s: 列表 ticker 是 1s 一拍, 每拍扫 2000 个文件没必要。
+   */
+  let lastHudSweepAt = -Infinity;
+  const HUD_SWEEP_EVERY_MS = 60_000;
+  function sweepHudIfDue(): void {
+    const t = now();
+    if (t - lastHudSweepAt < HUD_SWEEP_EVERY_MS) return;
+    lastHudSweepAt = t;
+    try {
+      const r = sweepHudSnapshots(opts.cwd, t, { terminalRunIds: readTerminalRunIds(opts.cwd) });
+      if (r.archived.length > 0 || r.failed.length > 0) {
+        logger.info({ archived: r.archived.length, failed: r.failed.map((f) => `${f.runId.slice(0, 8)}:${f.note}`) }, '[omd/tui] hud shards archived');
+      }
+    } catch (err) {
+      logger.warn({ err: err instanceof Error ? err.message : String(err) }, '[omd/tui] hud sweep threw (fail-open)');
+    }
+  }
   function refreshRunList(): void {
+    sweepHudIfDue();
     try {
       runList = readDagShards(opts.cwd, now());
     } catch (err) {
@@ -3007,7 +3047,11 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   // ⚠ 必须走 addInputListener 而不是组件的 handleInput: 实读 `tui.js:558`,
   // input listener 在**焦点分派之前**跑, 且 `consume: true` 能截住 —— Ctrl+C 必须
   // 抢在任何组件之前, 否则将来 editor 一拿到焦点就把它吃了。
+  // OSC 应答尾字节守卫 (2026-09-02, `osc-guard.ts`): 断开的 `OSC 11` 应答其结尾 BEL 与 Ctrl+G 同字节,
+  // 不拦的话全屏视图会「自己弹出来」。放在最前: 它只吞「前缀之后紧跟的尾巴」, 真按键一律放行。
+  const oscGuard = createOscTailGuard();
   tui.addInputListener((data: string) => {
+    if (oscGuard.feed(data, now()) === 'swallow') return { consume: true };
     if (kb.matches(data, 'omd.quit')) {
       if (decideCtrlC(armedAt, now()) === 'exit') {
         requestCleanExit();

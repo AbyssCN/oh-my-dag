@@ -277,6 +277,14 @@ if (userArgs[0] === 'serve') {
       console.log(`${it.runId.slice(0, 8)} [${it.category}] ${r.ok ? '✓' : '✗'} ${r.note}`);
     }
   }
+  // HUD 分片归档 (2026-09-02, src/hud/gc.ts): 与 worktree 回收同一把开关 —— 缺省只报数, --apply 才挪。
+  {
+    const { readTerminalRunIds, sweepHudSnapshots } = await import('../hud/gc');
+    const hud = sweepHudSnapshots(root, Date.now(), { terminalRunIds: readTerminalRunIds(root), dryRun: !doApply });
+    const by: Record<string, number> = {};
+    for (const a of hud.archived) by[a.reason] = (by[a.reason] ?? 0) + 1;
+    console.log(`hud 分片: 扫 ${hud.scanned} · ${doApply ? '已归档' : '待归档'} ${hud.archived.length} ${JSON.stringify(by)}${hud.failed.length ? ` · 失败 ${hud.failed.length}` : ''}`);
+  }
   if (!doApply) console.log('\n(dry-run。要真干: omd runs gc --apply)');
   process.exit(0);
 } else if (userArgs[0] === 'pack') {

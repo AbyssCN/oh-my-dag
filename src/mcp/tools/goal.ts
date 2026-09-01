@@ -1278,6 +1278,10 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           }
           else if (r.cancelled) deps.runRegistry.cancel(runId, r.cancelled, summarizeGoal(r));
           else deps.runRegistry.fail(runId, summarizeGoalFailure(r));
+          // 终态落盘到 HUD 分片 (2026-09-02): 上面 onNodeEvent 只在节点事件时写, 而 succeed/cancel/fail
+          // 之后再无节点事件 —— 于是 solve 的分片永远停在 `running`, TUI run 列表把它们当「waiting」
+          // 挂一辈子 (实测 96 份, runs.db 全是终态)。dag-tools.ts:486 那条线早就补了, 这里是漏的另一半。
+          deps.hudMirror?.write(runId, deps.runRegistry.getRecord(runId));
           // ③ 终态如实翻票 (D-6③)。开票失败过 (runTicketId 缺席) 就没有可翻的 —— 不重开一张:
           // 一张只在终态出现的票读不出"这活跑过多久", 而那正是挂票要给人的信息。
           if (ticketTarget && runTicketId)
@@ -1318,6 +1322,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         })
         .catch((err) => {
           deps.runRegistry.fail(runId, err instanceof Error ? err.message : String(err));
+          deps.hudMirror?.write(runId, deps.runRegistry.getRecord(runId)); // 同上: 异常终态也要落分片
           if (resultOut) {
             try {
               mkdirSync(dirname(resultOut), { recursive: true });

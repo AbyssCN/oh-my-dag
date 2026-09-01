@@ -29,7 +29,7 @@ function slugOf(cwd: string): string {
   return basename(cwd).toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 63);
 }
 
-function candidateHudDirs(cwd: string): string[] {
+export function candidateHudDirs(cwd: string): string[] {
   const dirs = [join(cwd, '.omd', 'hud')];
   const slug = slugOf(cwd);
   if (slug) dirs.push(join(homedir(), '.omd', 'projects', slug, 'hud'));

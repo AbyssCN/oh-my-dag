@@ -85,7 +85,9 @@ describe('dag_goal 节点事件旁路 (2026-08-21 补的第三半)', () => {
     const { call, trace } = make();
     await call();
     // 每个事件都是先 mirror 后 subscriber, 不许交错成 subscriber 先。
-    expect(trace).toEqual(EVENTS.flatMap(() => ['mirror', 'subscriber']));
+    // 尾上多一次 mirror (2026-09-02): 终态 (succeed/cancel/fail) 之后再无节点事件, 不补这一笔分片就永远停在
+    // `running` (实测 96 份僵尸分片, TUI 当「waiting」挂一辈子)。它没有订阅者对应项 —— 终态不是节点事件。
+    expect(trace).toEqual([...EVENTS.flatMap(() => ['mirror', 'subscriber']), 'mirror']);
   });
 
   test('订阅者抛错被吞, 不打断这次 goal —— 观测面挂了不许拖垮执行', async () => {

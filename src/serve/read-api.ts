@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { logger } from '../logger';
 import { readDagView, readFog, type DagView } from '../hud/load';
 import type { HudFogSnapshot } from '../hud/types';
-import { loadMap } from '../harness/pathfinder/map-store';
+import { resolveBackend } from '../harness/pathfinder/backend';
 import { computeFog, type FogView } from '../harness/pathfinder/fog';
 import { dispatchPhaseOf, type DispatchPhase } from './board-page';
 import { ledgerPath } from '../harness/dag/dag-record';
@@ -248,36 +248,66 @@ export interface PathMapListRow {
   suggested: number;
 }
 
-const SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,80}$/;
+// slug 只做路径安全闸 (没有 `/` `..` 之类), **不限 ASCII**: `slugifyDestination` 保留 \p{L}, 中文目的地就是中文 slug。
+// 旧的 ASCII 版把仓里全部 md 图静默跳过 (2026-09-02 实测: readAttention 回 maps=0, inbox 因此恒空)。
+const SLUG_RE = /^[\p{L}\p{N}][\p{L}\p{N}_-]{0,80}$/u;
 
-export function listPathMaps(cwd: string): PathMapListRow[] {
-  const dir = join(cwd, 'docs', 'plan', 'pathfinder');
-  let files: string[];
-  try {
-    files = readdirSync(dir).filter((n) => n.endsWith('.md'));
-  } catch {
-    return [];
+/**
+ * 全部开放地图, **经 PathBackend 端口读** (2026-09-02)。
+ *
+ * 此前这里直接 `loadMap` 读 `docs/plan/pathfinder/*.md` —— 那是 md 后端的私路; 2026-08-12 本仓切到 gh
+ * 后端后 md 图不再是真相源 (`.omd/pathfinder/config.json` 那条裁决), 于是 TUI inbox / now-band /
+ * 网页控制台的图列表全部读到零张图, 而 pathfinder 侧栏 (`tui/components/path-hud.ts`) 早已走端口 ——
+ * 一个数据源两条读路, 又对不上了一次 (同一形态 path-hud 头注记过)。现在只剩端口这一条。
+ *
+ * 远端后端读缓存: 与 path-hud 的 `REMOTE_TTL_MS` 同款理由 (gh 实测 listMaps 0.7s + 每图 0.5~2.4s,
+ * 5 图 5.4s; 网页控制台 5s 轮询一次 `/attention`, 不缓存就是持续打 gh)。md 本地 2ms 不进缓存。
+ */
+const REMOTE_TTL_MS = 10_000;
+interface LoadedMap {
+  slug: string;
+  destination: string;
+  map: PathMap;
+}
+const remoteMapsCache = new Map<string, { at: number; maps: LoadedMap[] }>();
+
+function readAllMaps(cwd: string, nowMs: number = Date.now()): LoadedMap[] {
+  const backend = resolveBackend(cwd);
+  const remote = backend.kind !== 'md';
+  if (remote) {
+    const hit = remoteMapsCache.get(cwd);
+    if (hit && nowMs - hit.at < REMOTE_TTL_MS) return hit.maps;
   }
-  const rows: PathMapListRow[] = [];
-  for (const f of files) {
-    const slug = f.slice(0, -3);
-    if (!SLUG_RE.test(slug)) continue;
+  const out: LoadedMap[] = [];
+  for (const row of backend.listMaps(cwd)) {
     try {
-      const map = loadMap(cwd, slug);
+      const map = backend.readMap(cwd, row.slug);
       if (!map) continue;
-      rows.push({
-        slug,
-        destination: map.destination,
-        total: map.tickets.length,
-        ruled: map.tickets.filter((t) => t.status === 'ruled' || t.status === 'delivered').length,
-        delivered: map.tickets.filter((t) => t.status === 'delivered').length,
-        suggested: map.tickets.filter((t) => t.status === 'suggested').length,
-      });
+      out.push({ slug: row.slug, destination: map.destination || row.destination, map });
     } catch (err) {
-      logger.warn({ slug, err: String(err) }, '[serve/read] 坏地图跳过 (证据在此)');
+      logger.warn({ slug: row.slug, err: String(err) }, '[serve/read] 坏地图跳过 (证据在此)');
     }
   }
-  return rows.sort((a, b) => a.slug.localeCompare(b.slug));
+  out.sort((a, b) => a.slug.localeCompare(b.slug));
+  if (remote) remoteMapsCache.set(cwd, { at: nowMs, maps: out });
+  return out;
+}
+
+/** 测试 / 裁决写入后强制下一次重读 (远端缓存作废)。 */
+export function invalidateMapsCache(cwd?: string): void {
+  if (cwd === undefined) remoteMapsCache.clear();
+  else remoteMapsCache.delete(cwd);
+}
+
+export function listPathMaps(cwd: string): PathMapListRow[] {
+  return readAllMaps(cwd).map(({ slug, destination, map }) => ({
+    slug,
+    destination,
+    total: map.tickets.length,
+    ruled: map.tickets.filter((t) => t.status === 'ruled' || t.status === 'delivered').length,
+    delivered: map.tickets.filter((t) => t.status === 'delivered').length,
+    suggested: map.tickets.filter((t) => t.status === 'suggested').length,
+  }));
 }
 
 /** 地图 + 雾档读数 (前端要的两样东西一次给全, 免得它自己算第二份)。 */
@@ -298,12 +328,17 @@ export interface PathMapView extends Omit<PathMap, 'tickets'> {
 /** 整张地图 + 雾档 (tickets 自带 blockedBy/status/suggestedBy/executorKind — 星图数据源)。 */
 export function readPathMap(cwd: string, slug: string): PathMapView | null {
   if (!SLUG_RE.test(slug)) throw new Error(`非法 slug: ${JSON.stringify(slug)}`);
-  const map = loadMap(cwd, slug);
+  // 开放图走缓存那份; 不在列表里 (md 的 archive/ 图、gh 已 close 的图) 再问端口一次 —— 归档不等于失忆。
+  const map = readAllMaps(cwd).find((m) => m.slug === slug)?.map ?? resolveBackend(cwd).readMap(cwd, slug);
   if (!map) return null;
   // 派发相与雾档同规:**服务端算**。判据 (dispatchPhaseOf) 留在一处, 前端只渲染不判断 ——
   // 前端自己算等于让判据出现两份 (web 包抄的是类型不是实现, 见 web/src/api.ts 那 32 个手抄
   // interface), 两处各算一份必漂。本仓已经为这条付过账 (本程刚在 readProfiles 的 persona
   // 判据上又抓到一例:引擎认、控制台不认, 不报错, 只是列表里少一行)。
+  return toPathMapView(map);
+}
+
+function toPathMapView(map: PathMap): PathMapView {
   return { ...map, tickets: map.tickets.map((t) => ({ ...t, phase: dispatchPhaseOf(t) })), fog: computeFog(map) };
 }
 
@@ -377,9 +412,8 @@ export interface AttentionView {
 
 export function readAttention(cwd: string): AttentionView {
   const out: AttentionView = { awaiting: [], frontier: [], suggested: [], maps: [] };
-  for (const row of listPathMaps(cwd)) {
-    const view = readPathMap(cwd, row.slug);
-    if (!view) continue;
+  for (const row of readAllMaps(cwd)) {
+    const view = toPathMapView(row.map);
     const bands: Record<string, number> = {};
     const byId = new Map(view.tickets.map((t) => [t.id, t]));
     for (const c of view.fog.cells) {
