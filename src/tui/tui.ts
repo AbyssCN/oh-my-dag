@@ -189,7 +189,9 @@ export type DagFullEvent =
 export function decideDagFull(state: DagFullState, event: DagFullEvent): DagFullState {
   if (event.type === 'toggle') {
     if (state.fullOn) return { ...state, fullOn: false };
-    return { fullOn: true, kind: 'dag', dagSelected: 0, runListSelected: 0 };
+    // 开屏落点看 dagActive: 本进程没有 bus run → 直接落 run-list (盘上外部 run 的入口,
+    // t-tui-attach 收尾) —— 否则先见一张空 DAG 屏还得 Tab 一下, 空屏即 INV-DAG-8 反例。
+    return { fullOn: true, kind: event.dagActive ? 'dag' : 'run-list', dagSelected: 0, runListSelected: 0 };
   }
   if (!state.fullOn) return state;
   if (event.type === 'tab') {
@@ -3020,6 +3022,9 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     if (kb.matches(data, 'omd.dagFull') && !dialogs.busy) {
       // 关 → 开: 两屏 (DAG / run-list) 任一有源才开, 两者都空则一句话告知。
       // INV-DAG-8: 无源恒缺席 — 按了键什么都没发生比开空屏更难查。
+      // ⚠ t-tui-attach 收尾 (2026-09-01): 判门前先读一次盘 —— runList 只被全屏 ticker 刷新,
+      // 开屏前恒空, 于是「盘上有外部 run 却开不了门」是死锁 (门等列表, 列表等门开)。
+      if (!dagFullState.fullOn && !dagTree.active && runList.length === 0) refreshRunList();
       if (!dagFullState.fullOn && !dagTree.active && runList.length === 0) {
         chatLog.appendNotice('No run yet - send one, then press Ctrl+G');
         tui.requestRender();
