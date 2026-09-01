@@ -364,6 +364,94 @@ function parseAllFalsify(
   return out;
 }
 
+// ── 结晶器四列表的兼容折叠 (t-spec-format · S-45 族, 2026-09-02) ─────────────────
+//
+// 引擎自己结晶的 spec 自己吃不下: `spec-author` 卡 (agent-templates-builtin.ts) 只说
+// 「Breakdown = construction slices + dependencies」, **没钉列名**, 而它的 TDD SHAPE 段
+// 要求 TEST/RED/IMPL/GREEN 四片同写集。于是结晶出来的是「切片|波形|写集|验证」四列 +
+// RED/GREEN 行写集写「同上」—— 直通 v2 要的「切片|写集|依赖|verify」+ 写集两两不相交,
+// 两条判据全不满足 (run bd81b660 实测, 当晚靠人工折叠绕过)。
+//
+// 修在读侧不修在写侧: prompt 保证不了格式 (卡上写什么列名都不是机械闸), 而**盘上已经有的**
+// 那些结晶产物也只有读侧能救。折叠是确定性的, 规则只有三条 (下面 foldLegacyRows 的注释)。
+
+/** 旧格式的判据: 表头第 2 列是「波形」而不是「写集」。列名不匹配 = 不是旧格式, 不折叠。 */
+const LEGACY_WAVE_HEADER = /^(波形|并行波形|waves?)$/i;
+/** 写集列的回指写法 (RED/GREEN 行惯用) —— 折叠成并集时它不贡献新路径, 整格丢掉。 */
+const LEGACY_SAME_AS_ABOVE = /^(同上|同前|同上文|same(\s+as\s+above)?)$/i;
+
+/** 表的一行: 单元格 + 原文 (原文只为报错时逐字还原作者写的那一行)。 */
+interface RawRow {
+  readonly cells: string[];
+  readonly raw: string;
+}
+
+/** 旧格式写集格 → 直通格 (回指/占位归零; 其余原样交给 parseWriteSet, 剥注解是它的活)。 */
+function legacyWriteCell(cell: string): string {
+  const t = cell.replace(/`/g, '').replace(/\*\*/g, '').trim();
+  if (!t || t === '—' || t === '-' || LEGACY_SAME_AS_ABOVE.test(t)) return '';
+  return cell.trim();
+}
+
+/**
+ * 旧格式验证格 → 直通 verify。剥两样东西:
+ *  · 尾巴上的 `, expect_exit 1` / `，期望退出码 1` —— 红/绿由 sdd-compile 生成的 `sN-green` 节点管,
+ *    退出码不属于 verify 命令串 (留着会被 command 闸当命令的一部分)。
+ *  · `同命令 …` / `同上` 这类**回指** —— 它不是命令。GREEN 行整格归零后, 那一波的
+ *    verify 由 RED 行那条真命令提供 (两行本来就要求同一条命令)。
+ */
+function legacyVerifyCell(cell: string): string {
+  const v = cell
+    .replace(/`/g, '')
+    .trim()
+    .replace(/[,，;；、]?\s*(?:expect[_ ]?exit|期望退出码)\s*[:：]?\s*\d+\s*$/i, '')
+    .trim();
+  if (!v || v === '—' || v === '-') return '';
+  if (/^(同上|同命令|同一命令|同条命令|same)/.test(v)) return '';
+  return v;
+}
+
+/**
+ * 四列旧表 → 直通 v2 四列表。三条规则, 全确定性:
+ *  1. **按波形分组** —— 同一波形值的行折成一片 (TEST/RED/IMPL/GREEN 本来就是同一件事的四步,
+ *     写集必然相交; 折成一片后写集变并集, 相交闸才有意义)。片号按波形值升序重编为 1..N。
+ *  2. **波形变依赖** —— 第 k 波依赖第 k-1 波 (波形列就是作者声明的层序)。首波无依赖。
+ *  3. **无波形又无写集的行丢掉** —— 盘上两份结晶产物里这只有两种行: 「全量验收」行
+ *     (accept 节点由 sdd-compile 自己生成, 不占切片位) 与分组标题行 (`| 波形 1 · … | | | |`)。
+ *     **有写集却没波形**则 throw: 放不进任何一层 = 静默少跑一片, 不许。
+ */
+function foldLegacyRows(rows: readonly RawRow[]): RawRow[] {
+  const groups = new Map<number, { names: string[]; writes: string[]; verify: string }>();
+  for (const { cells, raw } of rows) {
+    if (cells.length < 4)
+      throw new Error(`分解表这一行不足四列 (切片|波形|写集|验证): ${raw}`);
+    const write = legacyWriteCell(cells[2]!);
+    const waveDigits = /\d+/.exec(stripAnnotations(cells[1]!));
+    if (!waveDigits) {
+      if (!write) continue; // 全量验收行
+      throw new Error(`分解表这一行有写集却没有波形, 放不进任何一层: ${raw}`);
+    }
+    const wave = Number(waveDigits[0]);
+    const g = groups.get(wave) ?? { names: [], writes: [], verify: '' };
+    g.names.push(cells[0]!.replace(/^\s*\d+\s*[·.、:：-]*\s*/, '').trim());
+    if (write) g.writes.push(write);
+    const verify = legacyVerifyCell(cells[3]!);
+    if (verify) g.verify = verify;
+    groups.set(wave, g);
+  }
+  return [...groups.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, g], i) => {
+      const cells = [
+        `${i + 1} ${g.names.join(' + ')}`,
+        g.writes.join(' · '),
+        i === 0 ? '—' : String(i),
+        g.verify,
+      ];
+      return { cells, raw: `| ${cells.join(' | ')} |` };
+    });
+}
+
 /**
  * 解析「## 分解 (Breakdown)」段: 四列表 + 可选波形行 + 每片可选反向自检小节 → 结构 (G-1 前半)。
  *
@@ -384,8 +472,9 @@ export function parseBreakdown(text: string): SddBreakdown {
   const nextHeading = /^##\s/m.exec(after);
   const section = nextHeading ? after.slice(0, nextHeading.index) : after;
 
-  const slices: SddSlice[] = [];
-  const seen = new Set<number>();
+  // 先把表行收齐再判形状: 旧格式 (切片|波形|写集|验证) 的识别只能靠表头, 而表头在数据行之前。
+  const rows: RawRow[] = [];
+  let legacy = false;
   for (const line of section.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed.startsWith('|')) continue;
@@ -393,7 +482,16 @@ export function parseBreakdown(text: string): SddBreakdown {
     if (cells[0] === '') cells.shift();
     if (cells[cells.length - 1] === '') cells.pop();
     if (cells.every((c) => SEPARATOR_CELL.test(c))) continue;
-    if (HEADER_CELL.test(cells[0] ?? '')) continue;
+    if (HEADER_CELL.test(cells[0] ?? '')) {
+      if (LEGACY_WAVE_HEADER.test(stripAnnotations(cells[1] ?? '').trim())) legacy = true;
+      continue;
+    }
+    rows.push({ cells, raw: trimmed });
+  }
+
+  const slices: SddSlice[] = [];
+  const seen = new Set<number>();
+  for (const { cells, raw: trimmed } of legacy ? foldLegacyRows(rows) : rows) {
     if (cells.length < 4)
       throw new Error(`分解表这一行不足四列 (切片|写集|依赖|verify): ${trimmed}`);
     const idMatch = /^(\d+)/.exec(cells[0]!);
