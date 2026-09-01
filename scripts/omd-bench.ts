@@ -200,7 +200,7 @@ function candidatePrompt(t: BenchTask): string {
 /** 一臂跑完的**代价读数**(不判对错, 但两臂比较全靠它 —— 承 Claw-Eval:token efficiency 是一等公民)。 */
 interface ArmCost { wallMs: number; tokensIn: number; tokensOut: number; toolCalls: number | null; seat: string; note: string }
 
-async function runArm(t: BenchTask, arm: 'a' | 'b', dir: string, opts: { budgetMs: number }): Promise<ArmCost> {
+async function runArm(t: BenchTask, arm: 'a' | 'b', dir: string, opts: { budgetMs: number; stack?: 'run' | 'solve' }): Promise<ArmCost> {
   const { bootstrapModelRuntime } = await import('../src/model/bootstrap');
   const { resolveEngineModels } = await import('../src/mcp/assemble');
   bootstrapModelRuntime();
@@ -240,9 +240,18 @@ async function runArm(t: BenchTask, arm: 'a' | 'b', dir: string, opts: { budgetM
   // 生产构造同款。
   const registry = new RunRegistry(undefined, { store: createRunStore({ path: join(dir, '.omd', 'runs.db') }) });
   const tools = assembleOmdMcpTools({ cwd: dir, runRegistry: registry });
-  const tool = tools.find((x) => x.name === 'dag_run');
-  if (!tool) throw new Error('omd-bench: 装不出 dag_run');
-  const res = (await tool.handler({ task: candidatePrompt(t) } as never, {} as never)) as {
+  // `--stack solve` (2026-09-01, 仅 arm a): 同题同座位, 栈从 run 换 solve —— 单变量 = 有无
+  // 验收环与修复轮。首扫读数 0/7 里 4 题只差最后一条断言, 正是 run 层无修复轮的形状。
+  // ⚠ branchStrategy 必须 'head': solve 缺省 'branch' 会在世界里再开一层 worktree 且从不合并,
+  // 判分命令在世界根跑, 会看不到任何改动 (世界本身已是隔离层, 再隔离一层只剩误判)。
+  const stack = opts.stack ?? 'run';
+  const toolName = stack === 'solve' ? 'solve' : 'dag_run';
+  const tool = tools.find((x) => x.name === toolName);
+  if (!tool) throw new Error(`omd-bench: 装不出 ${toolName}`);
+  const input = stack === 'solve'
+    ? { goal: candidatePrompt(t), branchStrategy: 'head' }
+    : { task: candidatePrompt(t) };
+  const res = (await tool.handler(input as never, {} as never)) as {
     content: { text: string }[]; isError?: boolean;
   };
   const runId = /runId: (\S+)/.exec(res.content[0]?.text ?? '')?.[1];
@@ -270,7 +279,7 @@ async function runArm(t: BenchTask, arm: 'a' | 'b', dir: string, opts: { budgetM
     // A 臂的 token 账在 run 结果里, 这里先记 0 并在 note 里留 runId —— **别编一个看起来像真的数**。
     tokensIn: 0, tokensOut: 0, toolCalls: null,
     seat: seats.agentLeafModel ?? seats.leafModel,
-    note: `dag_run runId=${runId} status=${statusOf() ?? 'unknown'} (⚠ token 账未接, 记 0 是"未采集"不是"真 0")`,
+    note: `${toolName} runId=${runId} status=${statusOf() ?? 'unknown'} (⚠ token 账未接, 记 0 是"未采集"不是"真 0")`,
   };
 }
 
@@ -278,7 +287,7 @@ async function main(): Promise<void> {
   if (cmdName === 'run') {
     const id = opt('id');
     const arm = (opt('arm') ?? '') as 'a' | 'b';
-    if (!id || (arm !== 'a' && arm !== 'b')) { log('用法: run --id <taskId> --arm a|b [--regression] [--profile <岗位档案名>] [--seat <模型坐标>] [--no-hashline] [--no-hint] [--budget-ms <ms>]  (后四个仅 arm b; budget-ms 仅 arm a)'); process.exit(2); }
+    if (!id || (arm !== 'a' && arm !== 'b')) { log('用法: run --id <taskId> --arm a|b [--regression] [--profile <岗位档案名>] [--seat <模型坐标>] [--no-hashline] [--no-hint] [--budget-ms <ms>] [--stack run|solve]  (后四个仅 arm b; budget-ms/stack 仅 arm a)'); process.exit(2); }
     const t = loadTasks().find((x) => x.id === id);
     if (!t) { log(`没有这道题: ${id}`); process.exit(2); }
     const dir = makeCandidateWorld(t);
@@ -286,7 +295,8 @@ async function main(): Promise<void> {
     const budgetMs = Number(opt('budget-ms') ?? '1800000');
     log(`题 ${t.id} · 臂 ${arm} · 世界 ${dir} · 预算 ${budgetMs}ms`);
     try {
-      const cost = await runArm(t, arm, dir, { budgetMs });
+      const stack = (opt('stack') ?? 'run') as 'run' | 'solve';
+      const cost = await runArm(t, arm, dir, { budgetMs, stack });
       const run = runCommand(t.command, dir);
       const touched = touchedProtected(t, dir);
       // 回归**默认不跑**(全量测试很慢); 没跑就记 null, **不记通过**(仓规 NULL≠0)。
@@ -297,7 +307,7 @@ async function main(): Promise<void> {
       mkdirSync(out, { recursive: true });
       const stamp = `${t.id}-${arm}-${Date.now()}`;
       // profile: null = 没用档案 (生产全工具面), 不是"空档案" —— 事后比读数要分得开这两件事。
-      writeFileSync(join(out, `${stamp}.json`), JSON.stringify({ task: t.id, arm, profile: opt('profile') ?? null, seatPinned: opt('seat') ?? null, hashlineEdit: !argv.includes('--no-hashline'), hinted: !argv.includes('--no-hint'), verdict, run, touched, regressionGreen, cost }, null, 1));
+      writeFileSync(join(out, `${stamp}.json`), JSON.stringify({ task: t.id, arm, stack: arm === 'a' ? stack : null, profile: opt('profile') ?? null, seatPinned: opt('seat') ?? null, hashlineEdit: !argv.includes('--no-hashline'), hinted: !argv.includes('--no-hint'), verdict, run, touched, regressionGreen, cost }, null, 1));
       console.log(`${verdict.verdict === 'pass' ? '✅' : verdict.verdict === 'invalid' ? '⚠' : '✘'} ${t.id} [臂 ${arm}] ${verdict.verdict}`);
       console.log(`   ${verdict.reason}`);
       console.log(`   墙钟 ${(cost.wallMs / 1000).toFixed(0)}s · 判分命令 exit ${run.exitCode} · 存盘 ${join(out, `${stamp}.json`)}`);
