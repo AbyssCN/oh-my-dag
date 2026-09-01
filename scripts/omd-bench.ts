@@ -24,6 +24,8 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { judgeContract, type BenchTask, type RunObservation } from '../src/eval/bench/task';
+import { createRunStore, type RunStore } from '../src/mcp/run-store';
+import type { ModelUsage } from '../src/model/types';
 
 const argv = process.argv.slice(2);
 const cmdName = argv[0] ?? '';
@@ -198,7 +200,79 @@ function candidatePrompt(t: BenchTask): string {
 }
 
 /** 一臂跑完的**代价读数**(不判对错, 但两臂比较全靠它 —— 承 Claw-Eval:token efficiency 是一等公民)。 */
-interface ArmCost { wallMs: number; tokensIn: number; tokensOut: number; toolCalls: number | null; seat: string; note: string }
+interface ArmCost { wallMs: number; tokensIn: number | null; tokensOut: number | null; toolCalls: number | null; seat: string; note: string }
+
+/** A 臂 token 账三态读数 (NULL≠0≠不适用, 仓规 D-3)。空字符串 note = 真数。 */
+export interface ArmTokenReading {
+  tokensIn: number | null;
+  tokensOut: number | null;
+  /** 真数 → 空字符串 (含 `source=runs.db status=<s>` 在外层 note 里); null → 解释, **不是 0**。 */
+  note: string;
+}
+
+/**
+ * 从权威盘 `<dir>/.omd/runs.db` 读 A 臂 run 的 token 聚合 (导体+leaves+校验器; 探测段按 I-11
+ * 隔离**不算**, 与 `computeCost` / `leafCostReward` 同源)。S2 进程化后, detached child 写到
+ * `<cwd>/.omd/runs.db` 是 A 臂 run 终态与用量的唯一权威; 不从子进程日志正则抠
+ * (D-3: 源不同账不会同 —— 此前 `tokensIn:0, tokensOut:0` 留下的「恒 0」读数正是这条洞的下游)。
+ *
+ * 三态:
+ *   · 盘上无该 run 行 → null + note (采集器没写穿或 runId 编的)
+ *   · 终态无 result.usage → null + note (采集器跑空)
+ *   · usage 全 0 (没真 LLM 调用 / probe-only) → null + note (三态纪律: **绝不记 0 冒充**)
+ *   · 真数 → numbers, note 空串
+ */
+export function readArmTokens(dir: string, runId: string): ArmTokenReading {
+  const dbPath = join(dir, '.omd', 'runs.db');
+  let store: RunStore | null = null;
+  try {
+    store = createRunStore({ path: dbPath });
+    const rec = store.get(runId);
+    if (!rec) {
+      return {
+        tokensIn: null,
+        tokensOut: null,
+        note: `runs.db 无 runId=${runId} 行 (detached child 没写穿或 runId 编的)`,
+      };
+    }
+    const result = rec.result as
+      | {
+          usage?: {
+            conductor?: ModelUsage;
+            leavesIn?: number;
+            leavesOut?: number;
+            verifier?: ModelUsage;
+          };
+        }
+      | undefined;
+    const u = result?.usage;
+    if (!u) {
+      return {
+        tokensIn: null,
+        tokensOut: null,
+        note: `run ${runId} (${rec.status}) 已终态但 result.usage 缺席 — 采集器空跑 — 不是 0`,
+      };
+    }
+    const inV = (u.leavesIn ?? 0) + (u.conductor?.in ?? 0) + (u.verifier?.in ?? 0);
+    const outV = (u.leavesOut ?? 0) + (u.conductor?.out ?? 0) + (u.verifier?.out ?? 0);
+    if (inV === 0 && outV === 0) {
+      return {
+        tokensIn: null,
+        tokensOut: null,
+        note: `run ${runId} (${rec.status}) usage 全 0 (没真 LLM 调用 / probe-only) — 三态纪律退 null`,
+      };
+    }
+    return { tokensIn: inV, tokensOut: outV, note: '' };
+  } catch (e) {
+    return { tokensIn: null, tokensOut: null, note: `runs.db 读失败 (${(e as Error).message}) — 不是 0` };
+  } finally {
+    try {
+      store?.close();
+    } catch {
+      /* 关不上不值得抛 (退出路径) */
+    }
+  }
+}
 
 async function runArm(t: BenchTask, arm: 'a' | 'b', dir: string, opts: { budgetMs: number; stack?: 'run' | 'solve'; tier?: 'simple' | 'complex' }): Promise<ArmCost> {
   const { bootstrapModelRuntime } = await import('../src/model/bootstrap');
@@ -233,7 +307,6 @@ async function runArm(t: BenchTask, arm: 'a' | 'b', dir: string, opts: { budgetM
 
   const { assembleOmdMcpTools } = await import('../src/mcp/assemble');
   const { RunRegistry } = await import('../src/mcp/run-registry');
-  const { createRunStore } = await import('../src/mcp/run-store');
   // 2026-09-01 根因修: dag_run 在**子进程**执行, 状态写穿 <cwd>/.omd/runs.db;
   // 裸内存 registry 永远 getStatus=null → 等待环空转 (实账 6h47m)。带 store 走
   // 读侧现读 (run-registry.ts "内存没有该 run → 从持久面现读"), 与 assemble.ts:429
@@ -274,12 +347,19 @@ async function runArm(t: BenchTask, arm: 'a' | 'b', dir: string, opts: { budgetM
     }
     await Bun.sleep(3000);
   }
+  // A 臂 token 账(D4.2 GWT-4a/4b): 跑完态后从权威盘 <dir>/.omd/runs.db 读 result.usage,
+  // 三态真分(null / 真 0 / 真数), 绝不记 0 冒充(仓规 NULL≠0)。子进程是该 run 状态的
+  // 唯一写者, 等待环在它终态时退出 → 此刻盘上记录已写穿。
+  const reading = readArmTokens(dir, runId);
   return {
     wallMs: Date.now() - started,
-    // A 臂的 token 账在 run 结果里, 这里先记 0 并在 note 里留 runId —— **别编一个看起来像真的数**。
-    tokensIn: 0, tokensOut: 0, toolCalls: null,
+    tokensIn: reading.tokensIn,
+    tokensOut: reading.tokensOut,
+    toolCalls: null,
     seat: seats.agentLeafModel ?? seats.leafModel,
-    note: `${toolName} runId=${runId} status=${statusOf() ?? 'unknown'} (⚠ token 账未接, 记 0 是"未采集"不是"真 0")`,
+    note:
+      `${toolName} runId=${runId} status=${statusOf() ?? 'unknown'}` +
+      (reading.note ? ` · ${reading.note}` : ' · source=runs.db (导体+leaves+校验器)'),
   };
 }
 
@@ -419,4 +499,4 @@ async function main(): Promise<void> {
   process.exit(2);
 }
 
-await main();
+if (import.meta.main) await main();

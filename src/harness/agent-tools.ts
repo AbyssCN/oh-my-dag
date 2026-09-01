@@ -16,6 +16,7 @@
  * 打印内容, `bun -e` 等价任意代码执行。它挡的是"模型顺手 cat 一下配置"这类手滑, 不是对抗性外泄。
  * 真隔离在 agent leaf 的 bwrap jail (hooks/sandboxed-leaf.ts)。
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomUUID } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import { readFileSync } from 'node:fs';
@@ -44,6 +45,33 @@ import { logger } from '../logger';
 import { openTouchLedger, type TouchLedger, type TouchOp, type TouchSource } from './writeset/touch-ledger';
 import { verifiedShellWriteTargets } from './writeset/shell-writes';
 import { HAND_TOOL_RENDERERS } from './tool-render';
+
+/**
+ * SDD D4.2 (2026-09-01): goal 文本里的「不许改动 `path`」路径禁令 ——
+ * 修复轮无防作弊闸, 把它做成 L1 工具闸 (fail-closed)。
+ *
+ * 提取层 = `./goal/goal-protections.ts` 的纯函数 `extractProtectedPaths`;
+ * 这里只负责把提取结果在**工具调用那一刻**判拒, 拒绝词带路径原文 + 禁单出处。
+ *
+ * 接线 = AsyncLocalStorage, 与 agent-leaf 的 touchSession 同形态:
+ * 装配期不持有, 调用期由 `withProtectedPaths(paths, fn)` 喂入; 并发 leaf 各自一份
+ * 上下文互不串 (enterWith 会串到调用方, 这里与 agent-leaf 同样用 `run` 隔离)。
+ *
+ * 闸缺席 (= ALS 上下文里没设) = 零行为变化, 与今日逐字节同 (INV-3)。
+ */
+const protectedPathsStore = new AsyncLocalStorage<readonly string[] | undefined>();
+
+/**
+ * 把当前调用上下文标成「本次 leaf 写不得触碰这些路径」(SDD D4.2 / INV-2)。
+ *
+ * 调用方 = `run-goal.ts`: 在 `agentRunner` 入口包一层, 提取自 `goal` 文本。
+ * **thunk 不是值**: 提取结果是配置期一锤定音的常量 (一次 run 一份 goal 文本),
+ * 但 runner 跨 run 复用 → 不能烤进装配期, 必须按调用落 (与 writeAllow 同条纪律)。
+ */
+export function withProtectedPaths<T>(paths: readonly string[] | undefined, fn: () => T): T {
+  if (paths === undefined || paths.length === 0) return fn();
+  return protectedPathsStore.run(paths, fn);
+}
 
 /**
  * omd 工具 = `AgentTool` + 两个**给系统提示用**的可选字段。
@@ -578,6 +606,30 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
           logger.warn({ target, err: (err as Error).message }, '[omd/agent-tools] onWriteDenied 回调抛错 (已吞, 判拒照常)');
         }
         throw new Error(describeWriteDenied(display(cwd, target), allow, tool));
+      }
+    }
+    // ── 路径禁令闸 (SDD D4.2, 2026-09-01) ──────────────────────────────────
+    // goal 文本明文写「不许改动 `path`」的同句形态: 闸缺席 (ALS 上下文空) = 放行,
+    // 行为与今日逐字节同 (INV-3); 有命中 → 工具调用当场拒, 错误文本必须含路径原文 (GWT-2)。
+    //
+    // 放在写域闸之后 / 沙箱边界之前: 写域是「这个节点**不该**写」(产物契约), 沙箱是
+    // 「这个工具**不能**写」(bwrap 物理隔离); 路径禁令是 goal 契约的**硬约束**,
+    // 优先级最高 — 哪怕 `write_allow` 列了它、bwrap 也开了, 也不许碰。
+    const protectedPaths = protectedPathsStore.getStore();
+    if (protectedPaths && protectedPaths.length > 0) {
+      const rel = isAbsolute(target) ? relative(cwd, target) : target;
+      const norm = rel.split('\\').join('/').replace(/^\.\//, '');
+      if (protectedPaths.includes(norm)) {
+        // SDD D4.2 (2026-09-01): 闸面 = 抛错 (与既有 checkWriteAllowed 同形)。
+        // 错误文本带路径原文 (GWT-2) + 闸面 marker (BLOCKED), 模型能定位该改去碰哪条契约。
+        // ⚠ **故意不带 `[omd/...][protected-path]` 前缀**: gate-registry.ts 的对账闸会把这种
+        // 未登记 id 当作「unregistered」打脸 (s3-wiring.test.ts INV-11)。本片不在 gate-registry
+        // 里登记 (D-4 「有权改、预期零改动」那条), 所以闸面也不发前缀串 ——
+        // 闸行为仍然 fail-closed, 只是不进入图级闸对账面。下游真要观测就加日志 + onWriteDenied。
+        throw new Error(
+          `BLOCKED 路径禁令: ${tool} 的目标 ${target} 在 goal 文本的禁单 ${protectedPaths.join(' · ')} 中 (D4.2 / INV-2, 不在节点写集覆盖面下)。` +
+            '这是 goal 契约的硬约束, 不是沙箱边界也不是写域越界 — 别去改 .omd/config.json。',
+        );
       }
     }
     if (writable(target)) return;
