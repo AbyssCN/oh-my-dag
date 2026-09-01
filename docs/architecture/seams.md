@@ -16,8 +16,8 @@
 | 字段 | 必填 | 类型 | 一句话 | 消费方 (前3) |
 |---|---|---|---|---|
 | `conductorModel` | **是** | `string` | conductor 模型 'provider:modelId' (规划用, 我们=mimo:mimo-v2.5-pro)。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/dag-tools.ts`<br>`src/eval/oracles/conductor-modelmix.ts` (19 文件) |
-| `leafModel` | **是** | `string` | inproc leaf 模型 'provider:modelId' (生成/判断单发)。 | `src/mcp/tools/dag-tools.ts`<br>`src/harness/dag/engine.ts`<br>`src/eval/oracles/conductor-modelmix.ts` (20 文件) |
-| `agentLeafModel` |  | `string` | agent leaf 模型 (带工具改文件)。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/pathfinder.ts`<br>`src/harness/execute-slice.ts` (11 文件) |
+| `leafModel` | **是** | `string` | inproc leaf 模型 'provider:modelId' (生成/判断单发)。 | `src/mcp/tools/dag-tools.ts`<br>`src/harness/dag/engine.ts`<br>`src/eval/oracles/conductor-modelmix.ts` (21 文件) |
+| `agentLeafModel` |  | `string` | agent leaf 模型 (带工具改文件)。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/pathfinder.ts`<br>`src/harness/execute-slice.ts` (12 文件) |
 | `judgeModel` |  | `string` | 收敛 judge 的模型坐标。 | `src/harness/research/fanout.ts`<br>`src/harness/plan/best-of-n.ts`<br>`src/harness/research/web-fanout.ts` (9 文件) |
 | `conductorEscalationModel` |  | `string` | conductor 升级模型 'provider:modelId' (verifier fail 时用更强模型重规划重跑)。 | `src/harness/dag/engine.ts`<br>`src/harness/plan/iterate.ts`<br>`src/harness/execute-slice.ts` (9 文件) |
 
@@ -39,11 +39,11 @@
 | 字段 | 必填 | 类型 | 一句话 | 消费方 (前3) |
 |---|---|---|---|---|
 | `generate` |  | `GenerateFn` | 注入式模型调用 (inproc leaf, 默认 callModel)。 | `src/harness/dag/engine.ts`<br>`src/harness/goal/run-goal.ts`<br>`src/harness/dag/thinker.ts` (15 文件) |
-| `agentRunner` |  | `AgentLeafRunner` | agent-kind leaf 的执行器 (带工具子 agent, 能改文件)。 | `src/harness/dag/engine.ts`<br>`src/harness/goal/run-goal.ts`<br>`src/mcp/assemble.ts` (17 文件) |
+| `agentRunner` |  | `AgentLeafRunner` | agent-kind leaf 的执行器 (带工具子 agent, 能改文件)。 | `src/harness/goal/run-goal.ts`<br>`src/harness/dag/engine.ts`<br>`src/mcp/assemble.ts` (18 文件) |
 | `commandRunner` |  | `CommandLeafRunner` | command-kind leaf 的执行器 (确定性 CLI, 零 LLM, 方案 A)。 | `src/harness/goal/run-goal.ts`<br>`src/harness/dag/engine.ts`<br>`src/mcp/assemble.ts` (14 文件) |
 | `researchRunner` |  | `ResearchLeafRunner` | research-kind leaf 的执行器 (真 web 检索 + 有界内环, D-6)。 | `src/harness/dag/engine.ts`<br>`src/mcp/assemble.ts`<br>`src/harness/node-failure.ts` (6 文件) |
 | `judgeSend` |  | `typeof Gateway.send` | 注入式 judge 调用 (测试)。 | `src/harness/dag/engine.ts` (1 文件) |
-| `router` |  | `LeafModelRouter` | executor leaf 模型选型路由器 (B-2 bandit, 见 model-router.ts)。 | `src/mcp/assemble.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/model-router.ts` (19 文件) |
+| `router` |  | `LeafModelRouter` | executor leaf 模型选型路由器 (B-2 bandit, 见 model-router.ts)。 | `src/mcp/assemble.ts`<br>`src/harness/goal/route-caller.ts`<br>`src/harness/dag/engine.ts` (20 文件) |
 | `repoChecks` |  | `RepoCheck[]` | **leaf 级仓规检查清单** (D2 切片 2, #266 修补节点): 引擎对每个 agent leaf 跑完 之后、终态写入之前, 对该 leaf 的写集跑清单里每条 check。 | `src/mcp/assemble.ts`<br>`src/harness/agent-leaf.ts`<br>`src/harness/repo-checks-manifest.ts` (3 文件) |
 | `spinRung2` |  | `{ threshold?: number; pools?: SpinRung2StampPools; }` | **节点级空转档 2 阶梯配置** (SDD S2, 2026-08-25, 片 3 engine 接线)。 | `src/harness/dag/engine.ts` (1 文件) |
 

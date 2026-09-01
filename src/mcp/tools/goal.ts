@@ -636,12 +636,11 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
       // 不然这里放进来的 5 会在下游被静默钳掉, 又是一个"配了但不生效"的旋钮。
       maxRounds: z.number().int().min(1).max(4).optional().describe('Execute-phase inner-loop round cap (default 2 = 1 repair)'),
       researchRounds: z.number().int().min(1).max(4).optional().describe('Research inner-loop cap (default 1)'),
-      // D4 切片 3: 阶段链路由 + 编译 opt-in 开关 (R9 solve 曝面)。**本片暂不曝 MCP 入参面** —
-      // capability-matrix.test.ts 的结构绊线硬编码「3 层 / map_*=8 / 18 行」(scripts/
-      // omd-capability-matrix.ts §5), 在 goal 输入面再加键会把矩阵 union rows 顶成 19,
-      // 触发绊线冲突 (勘察计数与代码冲突)。SDD 该键接入参待 owner 拍 R9 后, 走绑定升级一并
-      // 改 zod + bump 绊线 (冻结接口规格 §5)。眼下切链入口 = env OMD_CHAIN (chainEnabled 读),
-      // 装配层 / 测试用 env 控制, MCP 入参面零增量, 矩阵行数冻结在 18, INV-4 零回退照旧。
+      // D4.1 切片 1: 阶段链路由 + 编译 opt-in 开关 (R9 solve 曝面)。owner 拍板 R9,
+      // **本片曝 MCP 入参面** —— capability-matrix 矩阵行同步 18→19 (scripts/
+      // omd-capability-matrix.ts §5 + capability-matrix.test.ts 结构绊线, 双层同改)。
+      // 行为优先级 = `chain` 入参 ?? env OMD_CHAIN (chainEnabled 读, run-goal.ts:936 同款);
+      // 未给且 env 关 = 行为逐字节照旧 (INV-2 零成本)。
       resume: z
         .string()
         .optional()
@@ -694,6 +693,17 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
             'this parameter does. Same repo as the server = explicit anchor confirmation (skips the foreign-path ' +
             'precheck). A different repo requires detached:true — state/logs/continuity land in the target repo via goal-worker.',
         ),
+      // D4.1 切片 1: 阶段链路由 + 编译 opt-in 开关 (R9 solve 曝面)。
+      // 优先级 = 本入参 ?? env OMD_CHAIN (run-goal.ts `chainEnabled` 读)。false / 未传 / env 关
+      // = 走老 flatFirst / v1 conductor 拓扑, 行为逐字节照旧 (INV-2 caller 关断零成本)。
+      chain: z
+        .boolean()
+        .optional()
+        .describe(
+          "D4.1 切片 1 (R9): 阶段链路由 opt-in 开关。true ⇒ 规划期挂 routeChain(goal, deps) ⇒ " +
+            "命中 kind:'chain' ⇒ compileChain 产物进 execPlan (扁平平铺图, 零契约段零重画); " +
+            "未命中 / 编译失败 ⇒ 降级。false / 省略 = 走 env OMD_CHAIN, env 关 = 行为逐字节照旧。",
+        ),
     },
     handler: async (args) => {
       const raw = args as {
@@ -711,7 +721,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         force?: boolean;
         slug?: string;
         cwd?: string;
-        // D4 切片 3: 见上方 zod schema 注释 —— chain 暂不曝 MCP 入参面, 待 R9 拍板。
+        chain?: boolean;
       };
       // ── 续跑恢复入参 (2026-08-23, owner 现场报) ────────────────────────────────
       // `resume` 只带 runId, 其余入参由**本次调用**给 —— 漏传一个就按缺省跑, 而缺省未必是
@@ -737,7 +747,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           '[omd/goal] 续跑没找到点火档案且本次也没给这几位 → 按缺省跑 (本模块之前的老 run 会这样)',
         );
       }
-      const { goal, tier, maxRounds, researchRounds, resume, detached, budgetTokens, budgetMinutes, branchStrategy, resultOut, sddPath, force, slug, cwd } =
+      const { goal, tier, maxRounds, researchRounds, resume, detached, budgetTokens, budgetMinutes, branchStrategy, resultOut, sddPath, force, slug, cwd, chain } =
         resolvedArgs as typeof raw;
 
       if (!goal?.trim()) {
@@ -849,8 +859,9 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         // 同一个 dag_goal handler (进程内路径, --cwd 是主仓 → 同一张图), 挂票与散雾出口在那边一次性
         // 接上; 母进程抢先开票会开出两张 (幂等锚 suggestedBy=runId 能救回来, 但那是靠运气不是靠设计)。
         // 留账已清 (cb4a129 → 2026-08-11): slug 随 spawn 参数直通 worker, 隔离后台 run 与前台同等挂票。
-        // D4 切片 3: chain 暂不曝 MCP 入参面 (capability-matrix 绊线 18/19 冲突, 待 R9 拍板),
-        //   worker 与母进程同源 env OMD_CHAIN → 装配层透传 env 后两边语义一致。
+        // D4.1 切片 1: chain 已曝 MCP 入参面 (R9 拍板); 入参 ?? env OMD_CHAIN, 不转发
+        //   --chain (worker 与母进程同源 env OMD_CHAIN → 装配层透传 env 后两边语义一致,
+        //   转发会成"母进程 override, worker 用 env"两条路并存, 漂)。
         if (force) {
           // 与 slug 同款纪律 (不预留死参数): worker 不认 `--force`, 转发了就是死参数 —— 不转发, 但要念出来,
           // 否则 owner 以为越闸已生效, 而 worker 侧会在写集相交时硬闸拒绝。
@@ -1190,7 +1201,10 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           ...(researchRounds ? { researchRounds } : {}),
           ...(tier ? { tier } : {}),
           ...(sddPath ? { sddPath } : {}),
-          // D4 切片 3: chain 暂不曝 MCP 入参面 (capability-matrix 绊线 18/19, 待 R9); 入口=env OMD_CHAIN。
+          // D4.1 切片 1: chain 入参 ?? env OMD_CHAIN (run-goal.ts `chainEnabled` 读, 同入参面优先级)。
+          // undefined 入参 + env 关 ⇒ chainEnabled 返 false ⇒ 不挂 routeChain, 走老 flatFirst / v1
+          // conductor 拓扑, 行为逐字节照旧 (INV-2 caller 关断零成本, GWT-2 测面)。
+          ...(chain !== undefined ? { chain } : {}),
           // ── 盘点表 #3: D-2 写集对账的生产注入面 ─────────────────────────────────
           // 判据全在 `sddWriteSetFace` 的注里 (为什么只在有 SDD 时注、为什么必须显式给 declared)。
           // 注入这一个字段同时点亮三个读数: 归属阶梯 (谁写的) · writeScope (该不该写) ·

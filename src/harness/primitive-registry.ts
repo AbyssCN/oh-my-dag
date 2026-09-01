@@ -242,6 +242,12 @@ interface VerifyParams {
   n?: number;
   /** 显式攻击镜头(研究侧深化,S3):每个 lens 一个不同角度;缺省轮转内置 correctness/security/… */
   lenses?: string[];
+  /**
+   * D4.1 INV-4 硬闸:true 且断言被证伪 → run() 抛错(节点 failed);缺省 = false
+   * 维持向后兼容(既有用例 zero-regression)。错误文本含 claim 前 80 字,
+   * 供上层定位 (GWT-4a 锚: claim 前 20 字)。
+   */
+  gate?: boolean;
 }
 const verifyTemplate: PrimitiveTemplate<VerifyParams> = {
   id: 'verify',
@@ -250,6 +256,7 @@ const verifyTemplate: PrimitiveTemplate<VerifyParams> = {
       claim: z.string().min(1),
       n: z.number().int().min(1).max(9).optional(),
       lenses: z.array(z.string().min(1)).min(1).max(9).optional(),
+      gate: z.boolean().optional(),
     })
     .strict(),
   compile(params, ctx) {
@@ -268,6 +275,10 @@ const verifyTemplate: PrimitiveTemplate<VerifyParams> = {
             ),
           params.lenses,
         );
+        // D4.1 INV-4 (GWT-4a): gate 开着 + 未存活 → 抛错, 经 runPrimitiveNode catch 判 failed。
+        if (params.gate && !survived) {
+          throw new Error(`verify gate 拒: claim 未存活 — 「${params.claim.slice(0, 80)}」`);
+        }
         return { output: JSON.stringify({ claim: params.claim, survived, verifiers: n }), usage: ctx.usage() };
       },
     };

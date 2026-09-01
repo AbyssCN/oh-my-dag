@@ -200,7 +200,7 @@ function candidatePrompt(t: BenchTask): string {
 /** 一臂跑完的**代价读数**(不判对错, 但两臂比较全靠它 —— 承 Claw-Eval:token efficiency 是一等公民)。 */
 interface ArmCost { wallMs: number; tokensIn: number; tokensOut: number; toolCalls: number | null; seat: string; note: string }
 
-async function runArm(t: BenchTask, arm: 'a' | 'b', dir: string): Promise<ArmCost> {
+async function runArm(t: BenchTask, arm: 'a' | 'b', dir: string, opts: { budgetMs: number }): Promise<ArmCost> {
   const { bootstrapModelRuntime } = await import('../src/model/bootstrap');
   const { resolveEngineModels } = await import('../src/mcp/assemble');
   bootstrapModelRuntime();
@@ -243,9 +243,18 @@ async function runArm(t: BenchTask, arm: 'a' | 'b', dir: string): Promise<ArmCos
   const runId = /runId: (\S+)/.exec(res.content[0]?.text ?? '')?.[1];
   if (!runId || res.isError) throw new Error(`A 臂起跑失败: ${res.content[0]?.text}`);
   const TERMINAL = new Set(['done', 'failed', 'cancelled']);
+  // 实测账(2026-09-01): A 臂第一题无限轮询 6h47m, 叶子进程全无而状态停 running —— 等待环无界。
+  // 装个 deadline(--budget-ms, 默认 30 分钟), 超时记 error verdict 带 runId 与 registry 状态, 退非零。
+  const deadlineAt = Date.now() + opts.budgetMs;
   for (;;) {
     const st = registry.getStatus(runId);
     if (st && TERMINAL.has(st)) break;
+    if (Date.now() >= deadlineAt) {
+      const finalStatus = registry.getStatus(runId) ?? 'unknown';
+      throw new Error(
+        `A 臂等待环 deadline 超时 (${opts.budgetMs}ms): runId=${runId} registry.status=${finalStatus}`
+      );
+    }
     await Bun.sleep(3000);
   }
   return {
@@ -261,13 +270,15 @@ async function main(): Promise<void> {
   if (cmdName === 'run') {
     const id = opt('id');
     const arm = (opt('arm') ?? '') as 'a' | 'b';
-    if (!id || (arm !== 'a' && arm !== 'b')) { log('用法: run --id <taskId> --arm a|b [--regression] [--profile <岗位档案名>] [--seat <模型坐标>] [--no-hashline] [--no-hint]  (后四个仅 arm b)'); process.exit(2); }
+    if (!id || (arm !== 'a' && arm !== 'b')) { log('用法: run --id <taskId> --arm a|b [--regression] [--profile <岗位档案名>] [--seat <模型坐标>] [--no-hashline] [--no-hint] [--budget-ms <ms>]  (后四个仅 arm b; budget-ms 仅 arm a)'); process.exit(2); }
     const t = loadTasks().find((x) => x.id === id);
     if (!t) { log(`没有这道题: ${id}`); process.exit(2); }
     const dir = makeCandidateWorld(t);
-    log(`题 ${t.id} · 臂 ${arm} · 世界 ${dir}`);
+    // --budget-ms: A 臂等待环 deadline, 默认 30 分钟(2026-09-01 实测首题 6h47m 卡死的止血线)。
+    const budgetMs = Number(opt('budget-ms') ?? '1800000');
+    log(`题 ${t.id} · 臂 ${arm} · 世界 ${dir} · 预算 ${budgetMs}ms`);
     try {
-      const cost = await runArm(t, arm, dir);
+      const cost = await runArm(t, arm, dir, { budgetMs });
       const run = runCommand(t.command, dir);
       const touched = touchedProtected(t, dir);
       // 回归**默认不跑**(全量测试很慢); 没跑就记 null, **不记通过**(仓规 NULL≠0)。
