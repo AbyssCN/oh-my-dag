@@ -71,10 +71,6 @@
     "plan-doc-check": "bun run scripts/plan-doc-check.ts",
     "omd-render": "bun run scripts/omd-render.ts",
     "omd-deliver": "bun run scripts/omd-deliver.ts",
-    "bench": "bun run scripts/omd-bench.ts",
-    "bench:validate": "bun run scripts/omd-bench.ts validate",
-    "bench:extract": "bun run scripts/omd-bench.ts extract --limit 400 --max 6",
-    "bench:selftest": "bun run scripts/omd-bench.ts selftest",
     "licenses": "bun run scripts/third-party-licenses.ts",
     "licenses:check": "bun run scripts/third-party-licenses.ts --check"
   },

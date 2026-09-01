@@ -6,7 +6,8 @@ import { extractProtectedPaths } from './goal-protections';
 
 describe('INV-1 提取忠实且 fail-open', () => {
   test('GWT-1a bench 真题面形态: "不许改动测试文件 `path`" 一行 → 数组含该路径', () => {
-    // 字面取自 src/eval/bench 实际生成的 statement (scripts/omd-bench.ts:120)。
+    // 字面取自 omd-bench 实际生成的 statement (2026-08-05 出题模板, 2026-09-01 omd-bench 整体删除,
+    // 这条样本作为契约测试 fixture 保留 —— 它就是历史上的真 bench 题面形态)。
     const goal =
       '本仓存在一个缺陷。\n' +
       '判据: `bun test src/eval/tasks/blocking-forks.test.ts` 必须通过。\n' +

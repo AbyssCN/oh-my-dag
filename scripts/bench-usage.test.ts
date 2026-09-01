@@ -16,7 +16,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readArmTokens } from './omd-bench';
+import { readArmTokens } from './bench-token-accounting';
 import { createRunStore } from '../src/mcp/run-store';
 
 const newRun = (runId: string, result: unknown, status: 'done' | 'failed' | 'cancelled' = 'done'): {

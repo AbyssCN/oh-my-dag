@@ -48,21 +48,47 @@ const WRITE_CMDS = [
   'git checkout HEAD -- src/harness/dag/engine.ts',
   'git checkout .',
   'git restore src/harness',
-  'git add -A',
+];
+
+/** command 节点上 `commandBlockReason` 走 dangerous 闸, 不走 git-write 闸 ——
+ *  这层防御**更早**且判词格式不同 (test 3 单独断言逐字相等的部分不收它们)。 */
+const DANGEROUS_CMDS = [
+  'git reset --hard HEAD~1',
+  'git push --force origin main',
+  'git branch -D main',
+];
+
+/** 2026-09-01 owner 显式放开闸后被允许的写子命令 —— 反向自检, 改回拒会红。 */
+const ALLOWED_WRITE_CMDS = [
+  'git add src/harness/command-leaf.ts',
+  'git add -u',
   'git commit -m wip',
+  'git commit --amend --no-edit',
 ];
 
 /** 只读侦察 —— 执行体的日常, 一条都不许误伤。 */
 const READONLY_CMDS = ['git status', 'git log --oneline -5', 'git diff --stat', 'git rev-parse HEAD'];
 
 describe('#239 git 写闸: agent 节点与 command 节点同一份判据', () => {
-  it('★ agent 节点的 bash 拒掉三种"抹掉本跑写入"的写法 (今天只有 reset --hard 被黑名单认识)', async () => {
+  it('★ agent 节点的 bash 拒掉"抹掉本跑写入"的写法 (commit 流放行后, 闸仍拦真毁灭性的)', async () => {
     // 怎么让它红 (实装前): agent bash 只过 `judgeCommand` 黑名单, 实测
     // `git checkout HEAD -- <f>` / `git checkout .` / `git restore <p>` 判决全是 dangerous:false
     // → 三条全放行, 这里三条断言全红。
+    // 2026-09-01 owner 开口放闸后, `add` / `commit` 已放行; 但 `checkout .` / `restore` /
+    // `reset --hard` / `push --force` / `branch -D main` 仍必拒。
     const root = mkdtempSync(join(tmpdir(), 'omd-gitgate-'));
     for (const cmd of WRITE_CMDS) {
       await expect(runBash(root, cmd), `应拒: ${cmd}`).rejects.toThrow(/blocked git-write/);
+    }
+  });
+
+  it('★ 2026-09-01 owner 显式放开的 commit 流子命令在 agent 节点仍放行 (闸不是一刀切)', async () => {
+    // 反向自检: 把 `add` / `commit` 从 `GIT_READONLY_SUBCOMMANDS` 删掉 → 这一条当场红。
+    const root = mkdtempSync(join(tmpdir(), 'omd-gitgate-add-'));
+    for (const cmd of ALLOWED_WRITE_CMDS) {
+      // 临时目录不是 git 仓 / 没文件 → 命令本身会以非 0 退出 —— 那是命令的事, 闸不该在它之前拦。
+      // 判据只有一条: **不抛 BLOCKED**。
+      await runBash(root, cmd);
     }
   });
 
@@ -95,9 +121,23 @@ describe('#239 git 写闸: agent 节点与 command 节点同一份判据', () =>
     // 同一条命令串里两道闸拆法不一致本身就是缺陷。
     expect(gitWriteBlockReason('ls -la && git checkout .')).toMatch(/blocked git-write/);
     expect(gitWriteBlockReason('echo hi ; git restore src')).toMatch(/blocked git-write/);
-    expect(gitWriteBlockReason('true | git add -A')).toMatch(/blocked git-write/);
     // 只读的链不受影响。
     expect(gitWriteBlockReason('ls -la && git status')).toBeNull();
+    // 2026-09-01 放开闸后, commit 流子命令即使藏在链尾也放行 (闸不再拦)。
+    expect(gitWriteBlockReason('ls -la && git add .')).toBeNull();
+    expect(gitWriteBlockReason('echo hi ; git commit -m x')).toBeNull();
+  });
+
+  it('★ 真毁灭性写法在两条路上都必拒 (一层闸不够, 多层互不漂移)', () => {
+    // `reset --hard` / `push --force` / `branch -D main` 走的是 dangerous 闸 (`classifyCommand`),
+    // 不走 git-write 闸 —— 但两条路都必须拒。
+    for (const cmd of DANGEROUS_CMDS) {
+      const viaCommandLeaf = commandBlockReason(cmd, DEFAULT_COMMAND_ALLOWLIST);
+      const viaShared = gitWriteBlockReason(cmd);
+      expect(viaCommandLeaf, `command 节点必拒: ${cmd}`).toMatch(/blocked/);
+      // agent 那条对 `push --force` 等可能走 dangerous 闸也走 git-write 闸 —— 任一层拒即可。
+      expect(viaCommandLeaf ?? viaShared, `任一层必须拒: ${cmd}`).toMatch(/blocked/);
+    }
   });
 
   it('★ 单段版判据: 非 git 命令一律不管 (闸只管自己那一格)', () => {

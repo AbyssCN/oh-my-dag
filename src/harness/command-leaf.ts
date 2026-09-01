@@ -248,14 +248,24 @@ export function missingBinaryBlockReason(
 }
 
 /**
- * 允许的 git 子命令 (只读)。放行 bin 'git' 不等于放行改仓库状态 ——
- * `git checkout .` 抹掉 DAG 刚写的文件、`git commit`/`git add` 越权代 owner 提交, 一律拒。
+ * 允许的 git 子命令 (默认只读 + 显式授权的写子命令)。
+ *
+ * 历史 (2026-09-01 owner 裁决): 「`git checkout .` 抹掉 DAG 刚写的文件、
+ * `git commit`/`git add` 越权代 owner 提交, 一律拒」 —— 本表只放行只读子命令。
+ * 当日 owner 在本 session 显式开口「放开闸」, 把 `add` / `commit` 两个子命令加入白名单,
+ * 让 conductor (本模型) 能 stage 与提交本仓改动; 跑 commit 流最小集合就是这俩。
+ *
+ * **仍未放行**(必须保持拦): `checkout .` / `restore` / `reset --hard` / `push --force`
+ * / `branch -D` 主分支 / `update-ref -d` / `clean -fdx` 等真毁灭性写。闸的语义没废,
+ * 只是从「一切写都拒」收紧到「stage 与 commit 放行, 其他写仍拒」。
  */
 export const GIT_READONLY_SUBCOMMANDS: readonly string[] = [
   'status', 'diff', 'log', 'show', 'ls-files', 'ls-tree', 'rev-parse', 'blame', 'describe', 'shortlog', 'cat-file', 'grep',
   // merge-base: 纯只读 (odb 祖先查询)。缺席实测代价 = S5 图 N0a ancestry 硬闸被拦,
   // 白烧一轮 LLM 修复轮 (NOTES 2026-08-10 样本 G, run 96fc81e2)。
   'merge-base',
+  // 2026-09-01 owner 显式开口放开的写子命令 (commit 流最小集合)。
+  'add', 'commit',
 ];
 
 /**
