@@ -1,0 +1,64 @@
+{
+  "_fixtureIntent": "FAKE_SERIAL_TRUTH 正例 —— ≥1 假串行对 (C-3 真值链)。",
+  "_fixtureTruthChain": [
+    "lint / typecheck / format / final 四节点, lint 与 typecheck 无 output_path 也无 output_type:'structured'/'file' → 不可观察输出",
+    "format depends_on=['lint','typecheck']; format.goal/args/postcondition.spec 字段都不存在 → JSON.stringify({goal:'',args:{},spec:{}}) 不含 'lint' 或 'typecheck'",
+    "final depends_on=['format','lint','typecheck']; final.goal='summarize results' 不含任何依赖 id, 且依赖们均无可观察输出",
+    "5 条 depends_on 边全部满足 (无可观察输出 ∧ 文本不含依赖 id) → fakeSerialPairs = 5",
+    "speedupTheoretical 真值: total=4 (各 1 call), critical=3 (final→format→lint/typecheck = 1+1+1), 4/3≈1.333"
+  ],
+  "name": "fake-serial-pipeline",
+  "schema_version": "1.0",
+  "outputs": ["final"],
+  "nodes": {
+    "lint": {
+      "executor": "command",
+      "command": "eslint .",
+      "expect_exit": 0,
+      "budgetBasis": {
+        "calls": 1,
+        "tokensIn": 0,
+        "tokensOut": 0,
+        "costUsdCeiling": 0.01,
+        "estimatedBy": "fixture:fake-serial"
+      }
+    },
+    "typecheck": {
+      "executor": "command",
+      "command": "tsc --noEmit",
+      "expect_exit": 0,
+      "budgetBasis": {
+        "calls": 1,
+        "tokensIn": 0,
+        "tokensOut": 0,
+        "costUsdCeiling": 0.01,
+        "estimatedBy": "fixture:fake-serial"
+      }
+    },
+    "format": {
+      "executor": "command",
+      "command": "prettier --write .",
+      "depends_on": ["lint", "typecheck"],
+      "expect_exit": 0,
+      "budgetBasis": {
+        "calls": 1,
+        "tokensIn": 0,
+        "tokensOut": 0,
+        "costUsdCeiling": 0.01,
+        "estimatedBy": "fixture:fake-serial"
+      }
+    },
+    "final": {
+      "executor": "leaf",
+      "goal": "summarize results",
+      "depends_on": ["format", "lint", "typecheck"],
+      "budgetBasis": {
+        "calls": 1,
+        "tokensIn": 200,
+        "tokensOut": 100,
+        "costUsdCeiling": 0.02,
+        "estimatedBy": "fixture:fake-serial"
+      }
+    }
+  }
+}

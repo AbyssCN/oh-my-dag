@@ -1,0 +1,57 @@
+{
+  "_fixtureIntent": "FAKE_SERIAL_TRUTH 反例 —— 0 假串行对 (C-3 真值链)。",
+  "_fixtureTruthChain": [
+    "compile.output_path='dist/index.js' (file 产物可读) → 任何 depends_on 指向 compile 的边, B 端均有可观察输出",
+    "test.output_path='test-results.json' (file 产物可读) → 同上",
+    "package.goal 字段未设, 但 package depends_on=['test'], test 有 output_path → 我们的规则 (有可观察输出即放行) 判定为非假串行",
+    "三节点 DAG (compile → test → package), 三条 depends_on 边全部因 output_path 存在而判非假串行 → fakeSerialPairs = 0"
+  ],
+  "name": "clean-pipeline",
+  "schema_version": "1.0",
+  "outputs": ["package"],
+  "nodes": {
+    "compile": {
+      "executor": "command",
+      "command": "tsc",
+      "output_path": "dist/index.js",
+      "output_type": "file",
+      "expect_exit": 0,
+      "budgetBasis": {
+        "calls": 1,
+        "tokensIn": 0,
+        "tokensOut": 0,
+        "costUsdCeiling": 0.01,
+        "estimatedBy": "fixture:clean"
+      }
+    },
+    "test": {
+      "executor": "command",
+      "command": "bun test",
+      "depends_on": ["compile"],
+      "output_path": "test-results.json",
+      "output_type": "file",
+      "expect_exit": 0,
+      "budgetBasis": {
+        "calls": 1,
+        "tokensIn": 0,
+        "tokensOut": 0,
+        "costUsdCeiling": 0.01,
+        "estimatedBy": "fixture:clean"
+      }
+    },
+    "package": {
+      "executor": "command",
+      "command": "tar -czf out.tgz dist",
+      "depends_on": ["test"],
+      "output_type": "none",
+      "expect_exit": 0,
+      "budgetBasis": {
+        "calls": 1,
+        "tokensIn": 0,
+        "tokensOut": 0,
+        "costUsdCeiling": 0.01,
+        "estimatedBy": "fixture:clean"
+      }
+    }
+  }
+}

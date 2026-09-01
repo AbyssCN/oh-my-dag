@@ -26,6 +26,15 @@ export type RunNode = {
   id: string;
   deps: string[] | null;
   durationMs: number | null;
+  /**
+   * 节点终态 (C-1, 2026-09-01)。
+   * - `'skipped'` = quorum 未达 / 级联跳过 — 不计入缺失占比、不触发整图剔除、
+   *   critical-path 上视为 0ms。
+   * - 其它合法值 (`'done'` / `'failed'`) 或字段缺席 = 正常计数, 按真值处理。
+   * 字段缺席 (`status === undefined`) 与 `null` 严格分:
+   * 缺席 = 老记录(早于本次改动); `null` 在解析阶段已被拒绝(非 string)。
+   */
+  status?: string;
 };
 
 export type RunVerdict =
@@ -51,10 +60,14 @@ export type MarkdownGroup = {
   speedups: number[];
 };
 
+/**
+ * 剔除计数 — C-1 钉死两桶语义, **不许合并**:
+ * - `excludedMissing` = 因缺失比例 > 20% 整图剔除 (skipped 节点不计入分子 / 不触发该剔除)
+ * - `excludedInvalid` = 因环 / 形态异常剔除 (invalid-cycle + invalid-shape 合并对外)
+ */
 export type RunCounters = {
   excludedMissing: number;
-  invalidCycle: number;
-  invalidShape: number;
+  excludedInvalid: number;
 };
 
 /**
@@ -62,6 +75,7 @@ export type RunCounters = {
  *
  * 字段缺席 / `undefined` / `null` → 该字段存 `null`(整行仍合法);类型错误 → 整行拒。
  * 负数 `durationMs` 也拒(整行无效,不是把负数当 null)。
+ * `status` 缺席合法(老记录);非字符串则拒整行。
  */
 export function parseNodesColumn(raw: unknown): RunNode[] | null {
   let arr: unknown;
@@ -124,7 +138,15 @@ export function parseNodesColumn(raw: unknown): RunNode[] | null {
       }
     }
 
-    out.push({ id, deps, durationMs });
+    // status (C-1): 缺席合法(老记录, 视为非 skipped); 非字符串则拒整行。
+    // 词表不校验 —— 留痕层存原值, 派生判定 (`status === 'skipped'`) 由消费面做。
+    let status: string | undefined;
+    if ('status' in obj && obj.status !== undefined) {
+      if (obj.status === null || typeof obj.status !== 'string') return null;
+      status = obj.status;
+    }
+
+    out.push({ id, deps, durationMs, status });
   }
   return out;
 }
@@ -134,7 +156,10 @@ export function parseNodesColumn(raw: unknown): RunNode[] | null {
  * 遇环 / 缺字段比例超阈值 / 节点形态异常各自分流。
  *
  * `missingRatio` 计数规则(§3.2):`durationMs === null` 或 `deps === null` 各算一次,
- * 同节点即使两字段都缺也只计一次。
+ * 同节点即使两字段都缺也只计一次。**C-1 例外**:`status === 'skipped'` 的节点
+ * 不计入分子(quorum 级联跳过本就预期没跑,null durationMs 是预期),亦不参与
+ * 第 ⑶ 步 `deps === null` 的残余检查 (skipped 节点的 deps null 同样合理 —
+ * 该路不适用)。
  *
  * 判错顺序严格按 §3.6:基本形态 → 缺字段比例 → 残留 deps null → 环 → critical 非正/非有限 → ok。
  */
@@ -165,9 +190,10 @@ export function analyzeRun(nodes: RunNode[]): RunVerdict {
     }
   }
 
-  // ⑵ 缺字段比例 —— 任一字段 null 算一次。
+  // ⑵ 缺字段比例 —— 任一字段 null 算一次;**C-1**: skipped 节点不计入。
   let missingCount = 0;
   for (const n of nodes) {
+    if (n.status === 'skipped') continue;
     if (n.durationMs === null || n.deps === null) {
       missingCount += 1;
     }
@@ -177,8 +203,9 @@ export function analyzeRun(nodes: RunNode[]): RunVerdict {
     return { kind: 'excluded-missing', missingRatio };
   }
 
-  // ⑶ 残留 deps null —— 比例 ≤ 0.20 但仍缺入边字段,无法恢复,拒。
+  // ⑶ 残留 deps null —— 比例 ≤ 0.20 但仍缺入边字段,无法恢复,拒。**C-1**: skipped 不查。
   for (const n of nodes) {
+    if (n.status === 'skipped') continue;
     if (n.deps === null) {
       return { kind: 'invalid-shape' };
     }
@@ -195,15 +222,17 @@ export function analyzeRun(nodes: RunNode[]): RunVerdict {
     if (s === 'done') return memo.get(id) as number;
     state.set(id, 'visiting');
     const node = nodeById.get(id) as RunNode;
-    // deps 已被第 ⑶ 步筛掉 null,此处可断言非 null。
-    const deps = node.deps as string[];
+    // deps 已被第 ⑶ 步筛掉 null(非 skipped 节点); skipped 节点此处可能仍 null —— 当作无边。
+    const deps = node.status === 'skipped' ? (node.deps ?? []) : (node.deps as string[]);
     let best = 0;
     for (const d of deps) {
       const sub = visit(d);
       if (sub > best) best = sub;
     }
-    // NULL pass-through:自身 duration 缺失不增加路径长度,但仍占用节点,依赖路径穿过它。
-    const own = node.durationMs === null ? 0 : node.durationMs;
+    // NULL pass-through: 自身 duration 缺失不增加路径长度,但仍占用节点,依赖路径穿过它。
+    // **C-1**: skipped 节点永远 own = 0(quorum 未达,本就没跑,不该给关键路径贡献)。
+    const own =
+      node.status === 'skipped' ? 0 : node.durationMs === null ? 0 : node.durationMs;
     const pathVal = own + best;
     memo.set(id, pathVal);
     state.set(id, 'done');
@@ -225,7 +254,8 @@ export function analyzeRun(nodes: RunNode[]): RunVerdict {
     return { kind: 'invalid-shape' };
   }
 
-  // totalMs:NULL pass-through,只把已知的 durationMs 求和。
+  // totalMs: NULL pass-through, 只把已知的 durationMs 求和。skipped 节点 durationMs 缺席
+  // 不参与求和,与"自节点贡献为 0"语义一致。
   let totalMs = 0;
   for (const n of nodes) {
     if (n.durationMs !== null) totalMs += n.durationMs;
@@ -290,7 +320,7 @@ export function renderMarkdown(
   }
   lines.push('');
   lines.push(
-    `excludedMissing: ${counters.excludedMissing} / invalidCycle: ${counters.invalidCycle} / invalidShape: ${counters.invalidShape}`,
+    `excluded_missing: ${counters.excludedMissing} / excluded_invalid: ${counters.excludedInvalid}`,
   );
   return lines.join('\n') + '\n';
 }
@@ -362,8 +392,7 @@ if (import.meta.main) {
   ): string {
     const counters: RunCounters = {
       excludedMissing: 0,
-      invalidCycle: 0,
-      invalidShape: 0,
+      excludedInvalid: 0,
     };
 
     // 先扫一遍本范围内的已知 shape_id,定具体 shape 行的集合。
@@ -388,16 +417,17 @@ if (import.meta.main) {
     for (const r of scopeRows) {
       const parsed = parseNodesColumn(r.nodes);
       if (parsed === null) {
-        counters.invalidShape += 1;
+        // 节点 JSON 不可解析 → 形态异常,与 invalid-shape 同语义 → 入 excludedInvalid
+        counters.excludedInvalid += 1;
         continue;
       }
       const verdict = analyzeRun(parsed);
       if (verdict.kind === 'invalid-shape') {
-        counters.invalidShape += 1;
+        counters.excludedInvalid += 1;
         continue;
       }
       if (verdict.kind === 'invalid-cycle') {
-        counters.invalidCycle += 1;
+        counters.excludedInvalid += 1;
         continue;
       }
       if (verdict.kind === 'excluded-missing') {

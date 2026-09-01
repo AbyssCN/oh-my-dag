@@ -1,19 +1,27 @@
 /**
  * `scripts/speedup-readout.ts` 纯函数面 —— 契约钉死的真值断言。
  *
- * 只测纯函数 (analyzeRun / shapeBucket / median), 不开 DB, 不跑 CLI。
- * Fixtures 与手算真值来自上游契约 §8; 实现可能未到位, 文件缺失时
- * import 阶段即红 (frozen-tests 应在实装落地后转绿)。
+ * 只测纯函数 (analyzeRun / shapeBucket / median / parseNodesColumn / renderMarkdown),
+ * 不开 DB, 不跑 CLI。Fixtures 与手算真值来自上游契约 §8 + C-1 片 1;
+ * 实现可能未到位, 文件缺失时 import 阶段即红 (frozen-tests 应在实装落地后转绿)。
  *
  * 反向自检 (锁死判据力):
  *  - 把 diamond 的 criticalMs 期望改 400 ⇒ 红 (Σ 与关键路径是分开量的);
  *  - 把 shapeBucket('one-decision-then-fanout') 改判 'unknown' ⇒ 红;
- *  - 注释写 "关键路径 = 600" 但断言 speedup === 3 ⇒ 红 (test 与实装背书互证)。
+ *  - 注释写 "关键路径 = 600" 但断言 speedup === 3 ⇒ 红 (test 与实装背书互证);
+ *  - C-1: 把 SKIPPED_NOT_MISSING fixture 的 S1..S4 status 改成 'done' ⇒ 重回 excluded-missing
+ *    (证"skipped 不计入"这一格是真接住了, 不是注释 / 旁路写糊的);
+ *  - C-1: 把 `expect(analyzeRun(allSkipped)).kind === 'invalid-shape'` 那条 fixture
+ *    至少一个节点 status 去掉 → critical path > 0 → 红 (证全 skipped 必归零);
+ *  - C-1: 把 `kind: 'skipped'` fixture 中 S1 的 deps 改为 null 并把 status 改成 'done'
+ *    → invalid-shape (证"残留 deps null 不带 status 例外"那条不变量仍守着 done/failed 节点)。
  */
 import { describe, expect, test } from 'bun:test';
 import {
   analyzeRun,
   median,
+  parseNodesColumn,
+  renderMarkdown,
   shapeBucket,
   type RunNode,
 } from './speedup-readout';
@@ -120,5 +128,167 @@ describe('median', () => {
 
   test('§8.7 偶数个取中间两值算术平均', () => {
     expect(median([1, 4, 2, 3])).toBe(2.5);
+  });
+});
+
+// =====================================================================
+// C-1 片 1: skipped ≠ 缺失 (2026-09-01 契约)
+// 让真值成立的那条链逐跳写在每条 fixture 注释里。
+// =====================================================================
+describe('C-1 SKIPPED_NOT_MISSING — 剔除规则修复', () => {
+  test('C-1.a 混合 fixture (4 skipped + 1 done+null + 1 done) 不触发 excluded-missing', () => {
+    // 真值链:
+    //   · 旧行为: 6 节点中 5 个 durationMs=null → 5/6 ≈ 83% > 20% ⇒ excluded-missing (整图剔除)
+    //   · 新行为 (C-1): 4 个 status='skipped' 不计入缺失分子 → 仅 1/6 ≈ 16.7% ≤ 20% ⇒ ok
+    //   · skipped 节点 own = 0, 不进 critical path; 仍占图, 依赖关系穿过
+    //   · 真值: critical = 100 (D2 自身), total = 100 (D2 自身; 其它都是 null 跳过) ⇒ speedup = 1
+    const mixed: RunNode[] = [
+      { id: 'S1', deps: [], durationMs: null, status: 'skipped' },
+      { id: 'S2', deps: ['S1'], durationMs: null, status: 'skipped' },
+      { id: 'S3', deps: ['S2'], durationMs: null, status: 'skipped' },
+      { id: 'S4', deps: ['S3'], durationMs: null, status: 'skipped' },
+      { id: 'D1', deps: ['S4'], durationMs: null, status: 'done' },
+      { id: 'D2', deps: ['D1'], durationMs: 100, status: 'done' },
+    ];
+    const r = analyzeRun(mixed);
+    expect(r.kind).toBe('ok');
+    if (r.kind !== 'ok') throw new Error(`unexpected verdict: ${r.kind}`);
+    expect(r.totalMs).toBe(100);
+    expect(r.criticalMs).toBe(100);
+    expect(r.speedup).toBe(1);
+  });
+
+  test('C-1.b done+null 节点 30% (无 skipped) 仍触发 excluded-missing (回归闸)', () => {
+    // 真值链: 没有 skipped 时, C-1 修复不应影响旧规则 —— 30% missing 必剔除。
+    // 这一条是把"新规则改了旧行为"假阳挡住的反向自检。
+    const noSkip: RunNode[] = [
+      { id: 'N1', deps: [], durationMs: null, status: 'done' },
+      { id: 'N2', deps: ['N1'], durationMs: null, status: 'done' },
+      { id: 'N3', deps: ['N2'], durationMs: null, status: 'done' },
+      { id: 'N4', deps: ['N3'], durationMs: 100, status: 'done' },
+      { id: 'N5', deps: ['N4'], durationMs: 100, status: 'done' },
+      { id: 'N6', deps: ['N5'], durationMs: 100, status: 'done' },
+      { id: 'N7', deps: ['N6'], durationMs: 100, status: 'done' },
+      { id: 'N8', deps: ['N7'], durationMs: 100, status: 'done' },
+      { id: 'N9', deps: ['N8'], durationMs: 100, status: 'done' },
+      { id: 'N10', deps: ['N9'], durationMs: 100, status: 'done' },
+    ];
+    expect(analyzeRun(noSkip)).toEqual({
+      kind: 'excluded-missing',
+      missingRatio: 0.3,
+    });
+  });
+
+  test('C-1.c skipped 节点 deps=null 不触发 invalid-shape (残留 deps null 例外)', () => {
+    // 真值链:
+    //   · 旧行为: 任一节点 deps=null ⇒ invalid-shape (但被 20% 闸先拦, 不论数量)
+    //   · 新行为 (C-1): skipped 节点 deps=null 是预期 (该节点没跑, 入边信息不适用),
+    //     不计入第 ⑶ 步残留检查 → 通过
+    //   · 同时 2 个 skipped 都从 missing 分子扣掉 → 缺失比 0
+    //   · critical path = 100 (D2); total = 100 ⇒ speedup = 1
+    const mixedDepsNull: RunNode[] = [
+      { id: 'S1', deps: null, durationMs: null, status: 'skipped' },
+      { id: 'S2', deps: null, durationMs: null, status: 'skipped' },
+      { id: 'D1', deps: ['S1'], durationMs: 100, status: 'done' },
+      { id: 'D2', deps: ['S1', 'S2'], durationMs: 100, status: 'done' },
+    ];
+    const r = analyzeRun(mixedDepsNull);
+    expect(r.kind).toBe('ok');
+    if (r.kind !== 'ok') throw new Error(`unexpected verdict: ${r.kind}`);
+    expect(r.criticalMs).toBe(100);
+    expect(r.totalMs).toBe(200);
+    expect(r.speedup).toBe(2);
+  });
+
+  test('C-1.d 全 skipped 必归 invalid-shape (critical path = 0)', () => {
+    // 真值链:
+    //   · 第 ⑴ 步: 节点数 > 0, 无重复 id, 无负 duration ⇒ 通过
+    //   · 第 ⑵ 步: 全 skipped → missingCount = 0 ⇒ 通过
+    //   · 第 ⑶ 步: 全 skipped ⇒ 跳过残余 deps null 检查 ⇒ 通过
+    //   · 第 ⑷ 步: DFS 中所有 skipped 的 own = 0 → criticalMs = 0
+    //   · 第 ⑸ 步: !(0 > 0) ⇒ invalid-shape
+    // 真值: 全 skipped run 是 "无工作量可测" — 整图剔除, 语义合理。
+    const allSkipped: RunNode[] = [
+      { id: 'S1', deps: [], durationMs: null, status: 'skipped' },
+      { id: 'S2', deps: ['S1'], durationMs: null, status: 'skipped' },
+      { id: 'S3', deps: ['S2'], durationMs: null, status: 'skipped' },
+    ];
+    expect(analyzeRun(allSkipped)).toEqual({ kind: 'invalid-shape' });
+  });
+
+  test('C-1.e 混合 batch (有 skipped + 有 done+null) 的 verdict 流分类', () => {
+    // 真值链:
+    //   · batch 1: 全 done (无 null) → ok
+    //   · batch 2: 全 skipped → invalid-shape (C-1.d)
+    //   · batch 3: 大量 skipped + 少量 done+null (≤20%) → ok (C-1.a 同形)
+    //   · batch 4: 大量 done+null (>20%) 无 skipped → excluded-missing (C-1.b)
+    //   · batch 5: 环穿过 skipped → invalid-cycle (cycle 判定与 status 正交, 不豁免)
+    const batch1: RunNode[] = [
+      { id: 'A', deps: [], durationMs: 50, status: 'done' },
+      { id: 'B', deps: ['A'], durationMs: 50, status: 'done' },
+    ];
+    expect(analyzeRun(batch1).kind).toBe('ok');
+
+    const batch3: RunNode[] = [
+      { id: 'S1', deps: [], durationMs: null, status: 'skipped' },
+      { id: 'S2', deps: [], durationMs: null, status: 'skipped' },
+      { id: 'S3', deps: [], durationMs: null, status: 'skipped' },
+      { id: 'S4', deps: [], durationMs: null, status: 'skipped' },
+      { id: 'S5', deps: [], durationMs: null, status: 'skipped' },
+      { id: 'S6', deps: [], durationMs: null, status: 'skipped' },
+      { id: 'S7', deps: [], durationMs: null, status: 'skipped' },
+      { id: 'S8', deps: [], durationMs: null, status: 'skipped' },
+      { id: 'D1', deps: [], durationMs: 100, status: 'done' },
+    ];
+    expect(analyzeRun(batch3).kind).toBe('ok');
+
+    // batch 5: 环 A→B→A, 状态都为 done —— cycle 判定与 skipped 规则正交, 此处只锁"done
+    // 节点形成的环仍归 invalid-cycle"。把 A 改成 skipped 会同样得 invalid-cycle。
+    const batch5: RunNode[] = [
+      { id: 'A', deps: ['B'], durationMs: 100, status: 'done' },
+      { id: 'B', deps: ['A'], durationMs: 100, status: 'done' },
+    ];
+    expect(analyzeRun(batch5).kind).toBe('invalid-cycle');
+  });
+});
+
+describe('C-1 parseNodesColumn — status 字段提取', () => {
+  test('C-1.f status 字段缺席合法 (老记录兼容)', () => {
+    const json = JSON.stringify([{ id: 'A', deps: [], durationMs: 100 }]);
+    const parsed = parseNodesColumn(json);
+    expect(parsed).not.toBeNull();
+    expect(parsed![0]!.status).toBeUndefined();
+  });
+
+  test('C-1.g status 字段为 skipped 时正常落库', () => {
+    const json = JSON.stringify([
+      { id: 'A', deps: [], durationMs: null, status: 'skipped' },
+    ]);
+    const parsed = parseNodesColumn(json);
+    expect(parsed).not.toBeNull();
+    expect(parsed![0]!.status).toBe('skipped');
+  });
+
+  test('C-1.h status 字段非字符串 (null / 数字) 拒整行', () => {
+    expect(parseNodesColumn(JSON.stringify([{ id: 'A', deps: [], durationMs: 100, status: null }]))).toBeNull();
+    expect(parseNodesColumn(JSON.stringify([{ id: 'A', deps: [], durationMs: 100, status: 42 }]))).toBeNull();
+  });
+});
+
+describe('C-1 renderMarkdown — 剔除计数分列 (excluded_missing / excluded_invalid)', () => {
+  test('C-1.i 输出含 excluded_missing / excluded_invalid 两列, 不合并', () => {
+    // 真值链: counters.excludedInvalid 在 renderMarkdown 中合并 invalid-cycle + invalid-shape
+    // (旧实现拆成两列) — 契约 §"剔除计数分列 excluded_missing / excluded_invalid, 不合并"。
+    const md = renderMarkdown(
+      'test',
+      [{ label: 'absent', speedups: [1, 2] }],
+      { excludedMissing: 5, excludedInvalid: 3 },
+    );
+    expect(md).toContain('excluded_missing: 5');
+    expect(md).toContain('excluded_invalid: 3');
+    // 旧串 (`invalidCycle` / `invalidShape` / `excludedMissing` 单名) 不许再出现
+    expect(md).not.toContain('invalidCycle');
+    expect(md).not.toContain('invalidShape');
+    expect(md).not.toContain('excludedMissing');
   });
 });
