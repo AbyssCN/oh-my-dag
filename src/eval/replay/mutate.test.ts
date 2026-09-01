@@ -100,6 +100,7 @@ function makeAggregate(): AggregatedFitness {
     planValidityRate: 0.75,
     fakeSerialPairsTotal: 4,
     speedupTheoreticalMedian: 1.42,
+    speedupCostBasis: 'declared',
     shapeDeclarationRate: 0.5,
     planningTokensTotal: 8400,
     n: 6,

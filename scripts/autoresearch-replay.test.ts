@@ -343,6 +343,7 @@ describe('STABILITY_VARIANCE — --stability N 各维方差', () => {
         planValidityRate: 1,
         fakeSerialPairsTotal: 0,
         speedupTheoreticalMedian: null,
+        speedupCostBasis: null,
         shapeDeclarationRate: 0,
         planningTokensTotal: 0,
         n: 1,
