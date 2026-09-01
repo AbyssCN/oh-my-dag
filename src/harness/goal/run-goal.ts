@@ -35,6 +35,10 @@ import type { ExecutorDagResult, LeafResult, DagObservation } from '../dag/types
 import { buildFlatPlanPrompt, compileFlatPlan, parseFlatPlanOutput } from './flat-plan';
 import { judgeRubric, DEFAULT_RUBRIC_MAX_FAILURES } from './rubric-judge';
 import { classifyGoal, renderAcceptance, type AcceptanceSpec, type GoalClassification, type GoalTier } from './classify-acceptance';
+import { ignitionPreflight, type FreezeCheckOpts, type ExclusiveLocksOpts } from './ignition-preflight';
+import { releaseDreamLock } from '../dream/trigger';
+import { IgnitionBlockedError } from './ignition-blocked-error';
+import { loadPreFlightConfig } from './preflight-config';
 import { acceptanceCommandBlockReason, acceptanceVacuityReason, checklistDiscriminationReason, type ProbeItemOutcome } from './acceptance-gate';
 import {
   settleRubric as settleRubricDefault,
@@ -171,6 +175,19 @@ export interface RunGoalConfig {
    * 文件读不到 / 缺契约·分解段 → 起跑即抛 (fail-loud, 不静默降级回全程 goal)。
    */
   sddPath?: string;
+  /**
+   * t-gate-inmigrate (2026-09-01) 三道机械前置闸的调用方声明 (全部可选; 缺席 = 闸段缺席,
+   * 零行为变化 — C-4 增量纪律)。默认兜底从 `<cwd>/.omd/preflight.json` 读 (loadPreFlightConfig)。
+   */
+  freezeCheck?: FreezeCheckOpts;
+  /** 闸 B: role → coordinate 期望表; 实配不符 → 拒。 */
+  seatExpectations?: Record<string, string>;
+  /** 闸 C: 互斥锁显式覆盖; 缺席时从 resultOut/sddPath 拼。 */
+  exclusiveLocks?: ExclusiveLocksOpts;
+  /** 结果文件路径 (闸 C 互斥键之一; goal-worker/CLI 透传)。 */
+  resultOut?: string;
+  /** 跳过三道前置闸 (owner 显式越闸; 审计走 run 记录)。 */
+  force?: boolean;
   /** 日期串 (spec 文件名)。测试注入; 默认今天 YYYY-MM-DD。 */
   _today?: () => string;
   /** 注入式分类器 (测试 / 自定义): 一次出两条轴 (D-I)。 */
@@ -1100,6 +1117,8 @@ interface BoardSettleBox {
   runId?: string;
   /** terminal 已经**尝试过**写 (成功与否都算)。见 emitBoard 里的赋值点注释。 */
   settled: boolean;
+  /** 闸 C 本次取到的互斥锁 —— 外壳 finally 无条件释放 (不释放 = 下一次同 key 点火撞残锁)。 */
+  locks?: string[];
 }
 
 /**
@@ -1132,6 +1151,15 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   try {
     return await runGoalInner(goal, config, box);
   } finally {
+    // 闸 C 互斥锁释放:终态(成/败/抛)都放, 否则残锁卡后来者到 STALE_LOCK_MS。
+    for (const p of box.locks ?? []) {
+      try {
+        releaseDreamLock(p);
+      } catch (e) {
+        // 不许吞证据 (§静默坑 2): 放锁失败 = 残锁在盘上, 必须留一行可查。
+        console.error(`[run-goal] 闸 C 锁释放失败 (残锁 ${p}): ${String(e)}`);
+      }
+    }
     if (box.root !== undefined && box.runId !== undefined && !box.settled) {
       try {
         appendBoard(box.root, {
@@ -1147,9 +1175,56 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   }
 }
 
+/**
+ * 闸 C 锁路径派生: 工件路径 → `.omd/locks/<key>-<净化全路径>.lock`。
+ * 全路径进名字 = 同一工件跨进程得同一把锁 (互斥成立), 不同工件永不同名 (不误伤)。
+ */
+function lockPathFor(key: string, artifactPath?: string): string | undefined {
+  if (artifactPath === undefined) return undefined;
+  return join('.omd', 'locks', `${key}-${artifactPath.replace(/[^\w.-]+/g, '_')}.lock`);
+}
+
 async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettleBox): Promise<RunGoalResult> {
   const stages: GoalStage[] = [];
   const sources: string[] = [];
+
+  // ── t-gate-inmigrate (2026-09-01): 三道机械前置闸直调 (闸 A 冻结 / 闸 B 座位 / 闸 C 互斥) ─
+  // 必须在 `loadSddContract` 之前 (SDD INV-4) —— 坏契约要烧任何 token 之前被拒, 闸拒同档严度。
+  // ⚠ box 在这里**刻意不钉**:既有不变量「claim 之前抛 → 板上零条目 (外壳不许凭空造 terminal)」
+  // (run-goal.test.ts) 覆盖闸拒 —— 闸在烧 token 之前拒, run 没「点过火」, 板上不该有它;
+  // 拒因走 IgnitionBlockedError(message 带判词)与调用方退出码, 不走板。
+  const boardRunId = config.tickets?.runId ?? config.dag.continuity?.runId ?? config.dag.sessionId ?? randomUUID();
+  const boardRoot = config.dag.continuity?.repoRoot ?? config.cwd;
+  // 默认配置兜底:调用方未传三字段 → 从 `<cwd>/.omd/preflight.json` 读;再缺席 → 闸段缺席。
+  const defaultCfg = loadPreFlightConfig(config.cwd);
+  const preflightOpts: {
+    force?: boolean;
+    freezeCheck?: FreezeCheckOpts;
+    seatExpectations?: Record<string, string>;
+    exclusiveLocks?: ExclusiveLocksOpts;
+  } = {
+    freezeCheck: config.freezeCheck ?? defaultCfg?.freezeCheck,
+    seatExpectations: config.seatExpectations ?? defaultCfg?.seatExpectations,
+    // exclusiveLocks 默认从 config.resultOut / config.sddPath **派生锁文件路径**
+    // (.omd/locks/ 下, 与 extended 测试的约定一致)。⚠ 不许把工件路径本身当锁:
+    // 闸 C 用 O_EXCL 创建锁文件, sddPath 指向的契约文件本来就存在 → 永远误判「撞锁」。
+    exclusiveLocks: config.exclusiveLocks ?? {
+      resultOut: lockPathFor('resultOut', config.resultOut),
+      sddPath: lockPathFor('sddPath', config.sddPath),
+    },
+    ...(config.force !== undefined ? { force: config.force } : {}),
+  };
+  // 写集传空:闸 A/B/C 不依赖写集。② 写集相交 / ③ 已结晶 advisory 由 MCP 工具面
+  // (`goal.ts:991-996`) 另行调用, 此处不重跑 (SDD INV-4 ④)。
+  const entryPreflight = ignitionPreflight(boardRoot, [], preflightOpts);
+  if (entryPreflight.verdict === 'blocked') {
+    // 闸拒 → 抛 IgnitionBlockedError。板上零条目 (claim 之前抛不造 terminal, 既有不变量);
+    // 拒因走异常 message 与调用方退出码。blocked 路径的锁已由 ignitionPreflight 自退。
+    throw new IgnitionBlockedError(entryPreflight);
+  }
+  // 闸 C 取到的锁交外壳 finally 释放 (终态成/败/抛都放)。
+  if (entryPreflight.acquiredLocks?.length) box.locks = [...entryPreflight.acquiredLocks];
+
   // 直通装载放在**一切之前** (G-2): 坏契约要在烧任何 token 之前被拒。
   const sdd = config.sddPath ? loadSddContract(config.sddPath) : undefined;
   let specPath: string | undefined = sdd?.path;
@@ -1167,7 +1242,6 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   // 异常抛 (classify/onClassified 这类引擎 bug) **也写 terminal**, 但走 `infra-error` +
   // `note: uncaught` —— 由 `runGoal` 外壳的 finally 兜底。改这条的理由与它盖不住的边界
   // (SIGKILL / 断电) 见 runGoal 的文档注。
-  const boardRunId = config.tickets?.runId ?? config.dag.continuity?.runId ?? config.dag.sessionId ?? randomUUID();
   /**
    * claim 行的写集。**未注入就是缺席, 不兜底常量**(2026-08-26)。
    *
@@ -1185,7 +1259,8 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   // #160 D-1 (s1): 板根钉主仓状态锚。branch 档 run 的 config.cwd 是 worktree (产物树),
   // 板落那里 = 主仓 (生产侧 + ignition 预检 + readout 全读者) 看不到这张 run; 钉到
   // continuity.repoRoot → 主仓。head 档 (repoRoot 缺席或 = cwd) 行为逐字节不变 (INV-1)。
-  const boardRoot = config.dag.continuity?.repoRoot ?? config.cwd;
+  // (boardRoot/boardRunId 的声明已随 t-gate preflight 前移到本函数顶部;box 的钉定仍在
+  //  下方 S4 段 —— 闸拒在 claim 之前, 板上零条目是既有不变量, 外壳 finally 不替闸拒造 terminal。)
   // F1 (片 2, 接线位): notify 配置的读法 —— `<root>/.omd/config.json`, 缺席返 null
   // (notify.ts 内部把 null 转成静默 no-op, INV-1)。与 assemble.ts 的 ownerNotifySink 内
   // 默认读法**逐字节一致** —— 两通道共用 .omd/config.json (主仓层面的 owner 意图)。

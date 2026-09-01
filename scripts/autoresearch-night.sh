@@ -6,10 +6,15 @@
 #   scripts/autoresearch-night.sh            # 判阶段 + 点火(后台,日志见 runs/autoresearch/)
 #   scripts/autoresearch-night.sh --dry-run  # 只过闸 + 报告将点什么,不点火
 #
-# 退出码:0 点火成功/dry-run 通过 · 2 目标向量未冻结 · 3 座位闸红 · 4 阶梯尽头待人 · 5 已有夜跑在进行
+# 退出码:0 点火成功/dry-run 通过 · 2 点火闸红(冻结/座位,详见输出) · 4 阶梯尽头待人
 #
 # 设计真源: docs/research/2026-09-01-autoresearch-自迭代回路设计.md (v3 §11)
-# 目标向量: docs/plan/autoresearch-objective.md(签字冻结后本脚本才放行)
+# 目标向量: docs/plan/autoresearch-objective.md(签字冻结后才放行)
+#
+# t-gate-inmigrate (2026-09-01): 三道点火闸 (A 冻结文件 / B 座位断言 / C 互斥锁) 已内迁
+# 引擎 —— solve 的 ignitionPreflight 在点火时机械强制, 声明在 .omd/preflight.json。
+# 本脚本不再自带闸实现, 只留「探针 + 报告」(dry-run 语义不回归); 闸 C 由引擎按
+# resultOut/sddPath 互斥, 本脚本的 lock 文件仅作跟踪信息 (手动 kill 提示), 不再是闸。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -25,37 +30,41 @@ mkdir -p "$OUTDIR"
 say() { echo "[autoresearch-night] $*"; }
 die() { say "✗ $1"; exit "${2:-1}"; }
 
-# ── 闸 0:重复点火 ──────────────────────────────────────────────
-if [ -f "$LOCK" ]; then
-  OLDPID=$(cat "$LOCK")
-  if kill -0 "$OLDPID" 2>/dev/null; then
-    die "已有夜跑在进行 (pid $OLDPID)。跟踪: tail -f $LOG" 5
-  fi
-  say "残留锁 (pid $OLDPID 已死) → 清除"
-  rm -f "$LOCK"
+# ── 点火闸声明(幂等):缺席才生成, 已存在的 owner 版本一字不动 ──
+if [ ! -f .omd/preflight.json ]; then
+  cat > .omd/preflight.json << 'PFEOF'
+{
+  "freezeCheck": {
+    "files": [
+      { "path": "docs/plan/autoresearch-objective.md", "draftMarker": "草案,待 owner 签字" }
+    ]
+  },
+  "seatExpectations": {
+    "conductor": "minimax-cn:MiniMax-M3",
+    "verifier": "openai-codex:gpt-5.6-sol"
+  }
+}
+PFEOF
+  say "已生成 .omd/preflight.json(点火闸声明;objective §座位)"
 fi
 
-# ── 闸 1:目标向量必须已冻结(草案状态拒点火)────────────────────
-OBJ=docs/plan/autoresearch-objective.md
-if [ ! -f "$OBJ" ]; then die "缺 $OBJ" 2; fi
-if grep -q '草案,待 owner 签字' "$OBJ"; then
-  die "目标向量仍是草案 —— owner 在 $OBJ 改状态行签字冻结后再点火。" 2
+# ── 闸探针 + 报告(判定本体在引擎 ignitionPreflight, 此处零 bash 闸实现)──
+# 只探 A(冻结)/B(座位) —— C(互斥锁) 有取锁副作用, 探针不取, 点火时由引擎强制。
+PF_JSON=$(bun -e '
+import { ignitionPreflight } from "./src/harness/goal/ignition-preflight";
+import { loadPreFlightConfig } from "./src/harness/goal/preflight-config";
+const cfg = loadPreFlightConfig(process.cwd());
+const r = ignitionPreflight(process.cwd(), [], {
+  ...(cfg?.freezeCheck ? { freezeCheck: cfg.freezeCheck } : {}),
+  ...(cfg?.seatExpectations ? { seatExpectations: cfg.seatExpectations } : {}),
+});
+console.log(JSON.stringify(r));
+' 2>&1 | tail -1)
+if ! echo "$PF_JSON" | grep -q '"verdict":"ok"'; then
+  echo "$PF_JSON" | sed 's/^/  /'
+  die "点火闸红(引擎 ignitionPreflight 判词见上)—— 修声明或按判词处置后重跑。" 2
 fi
-
-# ── 闸 2:座位 = M3 + deepseek-v4-pro(objective §座位;省额度是硬约束)──
-DUMP=$(bun run src/harness/cli.ts config dump 2>&1 || true)
-COND_LINE=$(echo "$DUMP" | grep -E '^\s*conductor\s' | head -1 || true)
-VERI_LINE=$(echo "$DUMP" | grep -E '^\s*verifier\s' | head -1 || true)
-if ! echo "$COND_LINE" | grep -q 'MiniMax-M3'; then
-  die "conductor 座位不对:${COND_LINE:-<未读到>} —— 需 minimax-cn:MiniMax-M3(TUI: omd_set_model)。" 3
-fi
-if ! echo "$VERI_LINE" | grep -q 'gpt-5.6-sol'; then
-  die "verifier 座位不对:${VERI_LINE:-<未读到>} —— 需 openai-codex:gpt-5.6-sol(异族终审,objective §座位)。" 3
-fi
-if ! bun run src/harness/cli.ts config verify-seats >/dev/null 2>&1; then
-  bun run src/harness/cli.ts config verify-seats 2>&1 | sed 's/^/  /' || true
-  die "座位家族闸 (I-14) 红 —— 上列违规行先修(同族审自己不放行)。" 3
-fi
+say "点火闸探针绿(A 冻结 / B 座位;C 互斥由引擎点火时强制)"
 
 # ── 阶段判定:交付件存在性 = 阶梯 marker ───────────────────────
 if [ ! -f scripts/autoresearch-replay.ts ] || [ ! -f runs/autoresearch/corpus/manifest.json ]; then

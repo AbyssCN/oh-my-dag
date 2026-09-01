@@ -83,6 +83,10 @@ const NOISE_PROVIDERS: ReadonlySet<string> = new Set([
   // R-2 (2026-08-30): rubric 逐条判官的**角色标签** `judge:rubric`(goal/rubric-judge.ts)——
   // 与上面 `gate:convergence` / `web:distill-*` 同族: 是 seat-usage 台账的 meta.role,
   // 不是模型坐标。真坐标由调用点的 `config.dag.conductorModel` 经座位链给, 一个字没绕过。
+  // t-gate-inmigrate (2026-09-01): 闸 B 冲突 runId 命名空间 `seat-check:family` /
+  // `seat-check:<seatId>`(goal/ignition-preflight.ts)—— 判词标识, 不是模型坐标;
+  // 真坐标全部来自 seatExpectations 声明与 renderConfigDump 实配, 零字面绕过。
+  'seat-check',
   // ⚠ `classify` 早就在上面那行里了 —— 同样是 traceName 前缀, 只是当时没连 `judge` 一起加。
   'judge',
   // per-seat 台账的**角色标签**命名空间 (`web:expand` / `web:distill-source` / `web:distill-challenger`,
