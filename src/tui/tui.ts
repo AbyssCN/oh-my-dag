@@ -1148,13 +1148,21 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         ok: theme.chrome.toolOk ?? theme.chrome.accent, // 主题若未定义 ok/fail → 退到 accent/warn
         fail: theme.chrome.toolFail ?? theme.chrome.warn,
       };
+      // ⚠ 空屏占位必须**撑满模态高度** (t-tui-bounce 实测): 只画一行的话, 全屏区从 ~30 行
+      // 塌成 1 行, 上方露出终端 scrollback 里的旧聊天 —— 用户读到的是「全屏自己弹回聊天了」,
+      // 而状态其实还在全屏里。占位行 + 空行垫到 height, 全屏「在场感」不许消失。
+      const padded = (hint: string): string[] => [
+        fitLine(hint, width),
+        ...Array.from({ length: Math.max(0, height - 1) }, () => ''),
+      ];
       if (dagFullState.kind === 'dag') {
         const snap = dagTree.snapshot();
-        if (snap.nodes.length === 0) return [fitLine('(no run yet - send one, then press Ctrl+G)', width)];
+        if (snap.nodes.length === 0)
+          return padded('(no run on this screen - Tab: run list, Enter there attaches an external run)');
         return renderDagScreen(snap, { width, height, selected: dagFullState.dagSelected, now: now(), paint });
       }
       // run-list 屏: INV-DAG-8 由 renderRunList 自己保证 (空 → [])。这里不再画"空框"。
-      if (runList.length === 0) return [fitLine('(no run shards on disk yet)', width)];
+      if (runList.length === 0) return padded('(no run shards on disk yet)');
       return renderRunList(runList, { width, height, selected: dagFullState.runListSelected, now: now(), paint });
     },
     handleInput: () => {},
