@@ -183,8 +183,8 @@ export function validateChain(chain: StageChain): void {
 
 // ── 编译器: 阶段链 → ConductorPlan ─────────────────────────────────────────
 
-/** word → PlanNode executor 映射。verify/judge/synthesize 走 agent (只有 goal 文本槽,
- *  无 command; 解析走 goal 是 LLM 的事, 走 command 需额外槽, v1 不开)。 */
+/** word → PlanNode executor 映射。verify(走 verify 原语, D4.1 切片 3) / judge / synthesize
+ *  走 agent (只有 goal 文本槽, 无 command; 解析走 goal 是 LLM 的事, 走 command 需额外槽, v1 不开)。 */
 function executorOf(word: StageWord): 'research' | 'command' | 'agent' {
   switch (word) {
     case 'research':
@@ -198,7 +198,7 @@ function executorOf(word: StageWord): 'research' | 'command' | 'agent' {
     case 'synthesize':
     case 'primitive':
       // map / primitive 自己走自己的 schema (executor:'map' / kind:'primitive'),
-      // 不进这个分支; 这里兜底给 verify/judge/synthesize。
+      // 不进这个分支; 这里兜底给 verify(已下沉 verify 原语, 见 compileStageNode)/ judge / synthesize。
       return 'agent';
   }
 }
@@ -219,9 +219,17 @@ function compileStageNode(stage: Stage): Record<string, unknown> {
     case 'agent':
       return { executor: 'agent', goal: stage.goal, depends_on: [] };
     case 'verify':
+      // D4.1 切片 3 (INV-5): verify 词 → verify 原语节点 + gate 恒开。
+      // 目标文本 (stage.goal) → claim 槽; gate:true 使下游节点 failed 可级联 skip, 修复轮接手。
+      return {
+        kind: 'primitive',
+        primitive: 'verify',
+        params: { claim: stage.goal!, gate: true },
+        depends_on: [],
+      };
     case 'judge':
     case 'synthesize':
-      // 文本槽节点 — LLM-判的 verify/judge/synthesize, 走 agent 让它读上游 + 出文本。
+      // 文本槽节点 — LLM-判的 judge/synthesize, 走 agent 让它读上游 + 出文本。
       return { executor: 'agent', goal: stage.goal, depends_on: [] };
     case 'map': {
       // listFrom = 数据流清单绑定: 编译成 executor:'map' + lister 子步 (D-2)。

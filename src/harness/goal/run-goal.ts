@@ -65,7 +65,8 @@ import { specAnchor } from './spec-anchor';
 import { dryRunSddIgnition } from './sdd-ignition-check';
 import { coverSlices, describeSliceCoverage, type SliceCoverageReport } from './slice-coverage';
 import { compileChain } from './stage-chain';
-import { routeChain } from './chain-router';
+import { configureRouteCaller, routeChain } from './chain-router';
+import { buildRouteCaller } from './route-caller';
 import { attributeWriteSet, classifyWriteScope, describeWriteSet, SDD_DECLARED_WRITE_SET, type DeclaredWriteSet, type WriteScopeKind, type WriteSetDeclaration, type WriteSetReport } from '../writeset/write-set';
 import { collectRunTickets, type RunTicketSink } from '../pathfinder/run-tickets';
 import { logger } from '../logger';
@@ -939,6 +940,49 @@ export function chainEnabled(config: { chain?: boolean }, env: NodeJS.ProcessEnv
   return v === '1' || v === 'true';
 }
 
+/**
+ * D4.1 切片 2: 路由 caller **幂等装配** (D-2 / INV-2 / INV-3)。
+ *
+ * 收进 run-goal 而不是 CLI / MCP server / detached goal-worker 各自 boot, 是因为那几个
+ * 入口分散装配必漏一个; 这里装配一次, 服务端长驻进程后续 `routeChain` 全部命中同一份 caller。
+ *
+ * 惰性 = 只在 chain 块入口 (`else if (chainOn && runnable)`) 调一次; chain 关着根本不进。
+ * 幂等 = 模块级哨: 已装配就立即返回, 不重新 `configureRouteCaller`, 不重新建 caller。
+ *
+ * 失败短路:
+ *   · 没有 agentRunner → 装配缺席, 默认 caller 仍走 'none' (链块无脑降级, 行为逐字节与今天同)。
+ *   · 没有 leafModel / agentLeafModel → 同上。
+ * 装配缺席时**留 warn 一行** (INV-2 fail-open 不吞证据: caller 想装却没原料, 不该静默走零回退)。
+ */
+let _productionRouteCallerConfigured = false;
+function ensureProductionRouteCaller(config: RunGoalConfig): boolean {
+  if (_productionRouteCallerConfigured) return true;
+  const agentRunner = config.dag.agentRunner;
+  const leafCoord = config.dag.agentLeafModel ?? config.dag.leafModel;
+  if (!agentRunner || !leafCoord) {
+    logger.warn(
+      { hasAgentRunner: !!agentRunner, leafCoord: !!leafCoord },
+      '[run-goal] D4 chain: 装配 caller 缺原料 (agentRunner / leafCoord 缺席) → 默认 caller 走 none, 这是配置面问题',
+    );
+    // 不置 _productionRouteCallerConfigured = true —— 下次 chain 块再进再尝试一次 (e.g., 后续 run 修了 config)
+    return false;
+  }
+  const caller = buildRouteCaller({
+    leafCoord,
+    call: async ({ prompt, model }) => {
+      const r = await agentRunner({ prompt, model });
+      return { text: r.text };
+    },
+  });
+  configureRouteCaller(caller);
+  _productionRouteCallerConfigured = true;
+  logger.info(
+    { leafCoord },
+    '[run-goal] D4 chain: 装配 RouteCaller (slice 2 — INV-2 idempotent, 装配一次后续 run 复用)',
+  );
+  return true;
+}
+
 /** INV-1 棘轮的四个动作 —— 「不必动」「动不了」「真动了」不许压平。 */
 export type BestGreenAction = 'none' | 'already-green' | 'restore' | 'unrestorable';
 
@@ -1722,8 +1766,10 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
     //   fail-loud bail 会让一次「开了开关但没命中」的 run 当场炸 —— 那比路由失败更坏。
     //   降级是它本来的兜底, 但**不许吞证据** (INV-6): log 一行带 caller 返回 + 编译异常原文。
     //
-    //   不造 caller (切片 2 chain-router.ts 的注释里写明了: 生产 caller 装配在服务端 boot,
-    //   `configureRouteCaller` 注入; 不装配 = 模块默认 caller 永远返 'none', 开了开关也走零回退)。
+    //   **切片 2 装配位**: `ensureProductionRouteCaller(config)` 在本块入口调一次,
+    //   幂等, 同一 run 不重复装; 装配缺席 (无 agentRunner / 无 leaf 座) ⇒ warn + 默认
+    //   caller 永远 'none', 行为不变 (INV-2 装配面记录在, zero-cost 闸靠 `chainOn` 这一道闸)。
+    ensureProductionRouteCaller(config); // 幂等: 已装就 no-op; 缺原料就 warn + 不装
     try {
       const decision = await routeChain(goal, {
         conductorModel: config.dag.conductorModel,

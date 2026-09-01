@@ -13,7 +13,7 @@
  * 冻结契约: docs/plan/2026-08-18-capability-matrix-冻结接口规格.md
  * 反向自检:
  *   ① 写后 readSegment + compareSegment 自检 → 不 ok 当场 exit 1 (capability-matrix §6);
- *   ② 绊线 3/8/18 硬编码, 与真源冲突 → throw (生成器 + 测试双层拒改, 不许就地改数);
+ *   ② 绊线 3/8/19 硬编码, 与真源冲突 → throw (生成器 + 测试双层拒改, 不许就地改数);
  *   ③ test 假源 = 四个 SourceFiles 文本, 不读盘 (seam-catalog.test.ts 假源先例);
  *   ④ 起/止 marker 各恰好一次, 0/重复即红;
  *   ⑤ 任何漂移必出首个差异行号 + 盘上原文 + 重新生成原文 (compareSegment 出口唯一)。
@@ -256,7 +256,7 @@ export function extractMatrix(sources: SourceFiles): Matrix {
     run: runKeys.has(k),
   }));
 
-  // §5 绊线 (硬编码字面量, 不派生): 层数=3, map_*=8, 行数=18
+  // §5 绊线 (硬编码字面量, 不派生): 层数=3, map_*=8, 行数=19
   const layers = new Set(tools.map((t) => t.layer));
   if (layers.size !== 3 || !(layers.has('map') && layers.has('solve') && layers.has('run'))) {
     throw new Error(
@@ -267,8 +267,8 @@ export function extractMatrix(sources: SourceFiles): Matrix {
   if (mapCount !== 8) {
     throw new Error(`勘察计数与代码冲突: 期望 map_* 层工具数=8, 实际 ${mapCount}`);
   }
-  if (rows.length !== 18) {
-    throw new Error(`勘察计数与代码冲突: 期望 矩阵行数=18, 实际 ${rows.length}`);
+  if (rows.length !== 19) {
+    throw new Error(`勘察计数与代码冲突: 期望 矩阵行数=19, 实际 ${rows.length}`);
   }
 
   return { promise, tools, rows };
@@ -300,7 +300,7 @@ export function renderSegment(matrix: Matrix): string {
   // 行 16-17
   lines.push('| 能力 | solve (dag_goal) | run (dag_run) |');
   lines.push('|---|---|---|');
-  // 行 18..35: ✓ = U+2713, — = U+2014, 逐字节冻结
+  // 行 18..36: ✓ = U+2713, — = U+2014, 逐字节冻结
   for (const r of matrix.rows) {
     lines.push(`| \`${r.param}\` | ${r.solve ? '✓' : '—'} | ${r.run ? '✓' : '—'} |`);
   }
