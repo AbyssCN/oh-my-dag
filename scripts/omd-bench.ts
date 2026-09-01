@@ -233,7 +233,12 @@ async function runArm(t: BenchTask, arm: 'a' | 'b', dir: string, opts: { budgetM
 
   const { assembleOmdMcpTools } = await import('../src/mcp/assemble');
   const { RunRegistry } = await import('../src/mcp/run-registry');
-  const registry = new RunRegistry();
+  const { createRunStore } = await import('../src/mcp/run-store');
+  // 2026-09-01 根因修: dag_run 在**子进程**执行, 状态写穿 <cwd>/.omd/runs.db;
+  // 裸内存 registry 永远 getStatus=null → 等待环空转 (实账 6h47m)。带 store 走
+  // 读侧现读 (run-registry.ts "内存没有该 run → 从持久面现读"), 与 assemble.ts:429
+  // 生产构造同款。
+  const registry = new RunRegistry(undefined, { store: createRunStore({ path: join(dir, '.omd', 'runs.db') }) });
   const tools = assembleOmdMcpTools({ cwd: dir, runRegistry: registry });
   const tool = tools.find((x) => x.name === 'dag_run');
   if (!tool) throw new Error('omd-bench: 装不出 dag_run');
@@ -246,13 +251,16 @@ async function runArm(t: BenchTask, arm: 'a' | 'b', dir: string, opts: { budgetM
   // 实测账(2026-09-01): A 臂第一题无限轮询 6h47m, 叶子进程全无而状态停 running —— 等待环无界。
   // 装个 deadline(--budget-ms, 默认 30 分钟), 超时记 error verdict 带 runId 与 registry 状态, 退非零。
   const deadlineAt = Date.now() + opts.budgetMs;
+  // 读法照生产 dag_status 同款 (dag-tools.ts:401): getRecord ?? ensureFromDisk —— 子进程 run
+  // 不在本进程内存, 读侧现读盘是唯一权威; getStatus 是纯内存视图, 对子进程 run 恒 null。
+  const statusOf = (): string | null =>
+    (registry.getRecord(runId) ?? registry.ensureFromDisk(runId))?.status ?? null;
   for (;;) {
-    const st = registry.getStatus(runId);
+    const st = statusOf();
     if (st && TERMINAL.has(st)) break;
     if (Date.now() >= deadlineAt) {
-      const finalStatus = registry.getStatus(runId) ?? 'unknown';
       throw new Error(
-        `A 臂等待环 deadline 超时 (${opts.budgetMs}ms): runId=${runId} registry.status=${finalStatus}`
+        `A 臂等待环 deadline 超时 (${opts.budgetMs}ms): runId=${runId} registry.status=${statusOf() ?? 'unknown'}`
       );
     }
     await Bun.sleep(3000);
