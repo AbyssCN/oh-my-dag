@@ -227,6 +227,16 @@ import { gateFalseCompletion, renderFalseCompletionFindings } from '../plan/fals
 const SHELL_FACT_CAP = 6;
 
 /**
+ * 暖发宽限窗口缺省上界 (ms, t-initial-pump)。判据面见 `DagSchedulingSeam.warmGraceMs`。
+ *
+ * 20s 是**结构性取值不是实测值**: 它要盖住一次 leaf 首个模型往返 (缓存写成那一刻), 又要让
+ * 白等的代价相对 leaf 墙钟 (生产实测 500–2000s 量级) 落在个位数百分比。真值要量的是
+ * 「首个往返返回」的分布 —— 那个信号今天不存在, 所以这里是上界不是估计。
+ * 证伪它: 量 leaf 首个往返耗时, 若 p90 明显超过 20s, 则暖发在这类座位上等于没开。
+ */
+const WARM_GRACE_MS_DEFAULT = 20_000;
+
+/**
  * 交接块之后那句「这一轮该怎么重画」(#226 从内联字符串提出来, 逐字未改)。
  * 提出来只为让 `renderHandoff` 与它各管一件事:前者管**交接怎么渲染**, 这句管**要它做什么**。
  */
@@ -5562,14 +5572,18 @@ async function executePlan(
   // 一个都挑不出来 (整层都是 command) → **不暖**, 直接全宽放开 —— 没有可暖的东西时,
   // 暖发的正确行为是消失, 不是随便抓一个。
   // (挑非 command 的规则在 sched.takeWarmStart; size>1 前置条件留这里 —— 单节点图不值得暖。)
+  //
+  // ⚠ 2026-09-02 实测修正 (t-initial-pump): 暖发只按住**一个宽限窗口**, 不再 await 到 settle。
+  //
+  // 旧实装是 `await runNode(warmId)` 到整发结清才放 pool。而暖发要买的东西 ——「共享冻结前缀
+  // 写进 prompt-cache」—— 在**首个模型往返返回**的那一刻就已到手, 跟这一发跑完与否无关。
+  // 于是「一发串行延迟」在生产上被读成了「一整个 leaf 任务的墙钟」: run 32d16141 的三片
+  // `depends_on: []` 里, s1 独跑 925489ms (15.4min), s2/s3 在它 settle 后的**同一毫秒**才起跑
+  // (15:46:56.508 / .512) —— 宽度 N 的平铺图白等 (N−1) 份, 加速比被压到 1.0 附近。
+  //
+  // 缓存写成这件事今天**没有信号面** (leaf runner 不上报首个往返), 所以给的是上界不是精确点:
+  // 暖发起跑 → 按住 warmGraceMs 不派新 → 到期 (或暖发提前 settle) 就全宽放开, 暖发继续在飞。
   const warmId = config.warmThenFanout && sched.size > 1 ? sched.takeWarmStart() : null;
-  if (warmId != null) {
-    const id = warmId;
-    const r0 = await runNode(id).catch((e) => failedFromThrow(id, e));
-    const { r: r1, view } = await maybeFaninView(id, r0); // 扇出≥2 → 摘要 (dependents 释放前)
-    if (view) faninView[id] = view;
-    settle(id, r1);
-  }
 
   // ── D-7v2 quorum (SDD v2): 全部依赖 settle (indeg 归零) 后判定本节点是否还值得跑 ─────
   // requires 缺省启发: 单依赖 'all' (依赖失败还跑 = 拿 [failed] 文本当正文, 纯浪费 + 静默假成功),
@@ -5680,7 +5694,42 @@ async function executePlan(
           });
       }
     };
-    pump();
+    if (warmId == null) {
+      pump();
+      return;
+    }
+    // 暖发走**与 pool 同一条**派发路径 (liveNow / release / settle / 递归 pump 一字不差),
+    // 唯一的差别: 它起跑后先按住宽限窗口再放开其余节点。槽位已由 takeWarmStart 记账 ——
+    // 所以暖发在飞期间 `isDrained()` 恒 false, 不会有"其余节点跑完就收敛、暖发下游没人派"。
+    const wid = warmId;
+    let graceTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+      graceTimer = null;
+      pump();
+    }, config.warmGraceMs ?? WARM_GRACE_MS_DEFAULT);
+    const openGate = (): void => {
+      if (graceTimer) {
+        clearTimeout(graceTimer);
+        graceTimer = null;
+      }
+    };
+    liveNow.add(wid);
+    runNode(wid)
+      .catch((e) => failedFromThrow(wid, e))
+      .then(async (r) => {
+        liveNow.delete(wid);
+        const { r: settledR, view } = await maybeFaninView(wid, r); // 扇出≥2 → 摘要 (dependents 释放前)
+        sched.release(wid);
+        if (view) faninView[wid] = view;
+        try {
+          settle(wid, settledR);
+        } catch (e) {
+          openGate(); // 定时器不许挂着 —— reject 之后没人再来收它
+          reject(e instanceof Error ? e : new Error(String(e)));
+          return;
+        }
+        openGate(); // 暖发提前结清 → 宽限窗口作废, 立刻全宽放开
+        pump();
+      });
   });
 
   // 最后再 lint 一次: 内环每轮跑的那次只覆盖有 conductor 节点的图, 而"B 读了 A 写的文件却没有边"

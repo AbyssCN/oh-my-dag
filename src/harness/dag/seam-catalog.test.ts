@@ -42,15 +42,16 @@ describe('seam 目录 (gen-seam-catalog)', () => {
     expect(deadFields(seams)).toEqual(['DagZzzSeam.zzzUnusedKnob9']);
   });
 
-  test('结构绊线: 8 seam / 53 字段 (改了分组或增删字段 → 抬这两个数并重跑生成器)', () => {
+  test('结构绊线: 8 seam / 54 字段 (改了分组或增删字段 → 抬这两个数并重跑生成器)', () => {
     // 刻意保留字面量 —— 派生成 length 就成恒真式, 绊线就没了 (同 seat-check 16→18 的先例)
     // +1 来自 #247 片 2: planCriticGate (DagLeafShapingSeam)
     // +1 来自 D2 切片 2 (#266): repoChecks (DagRunnersSeam) + 新类型 RepoCheck
     // +1 来自 S2 片 3 (2026-08-25): spinRung2 (DagRunnersSeam) 节点级空转档 2 阶梯配置
+    // +1 来自 t-initial-pump (2026-09-02): warmGraceMs (DagSchedulingSeam) 暖发宽限窗口上界
     // 注: 新增 `RepoCheck` 类型不在 Dag*Seam 接口字段数内, 故 seam 字段数只 +1。
     const seams = extractSeams(readFileSync(join(ROOT, 'src/harness/dag/types.ts'), 'utf8'));
     expect(seams).toHaveLength(8);
-    expect(seams.reduce((n, s) => n + s.fields.length, 0)).toBe(53);
+    expect(seams.reduce((n, s) => n + s.fields.length, 0)).toBe(54);
   });
 
   test('抽取保真: 必填/可选与 JSDoc 首句都进目录', () => {

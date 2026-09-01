@@ -116,12 +116,19 @@ export class DagScheduler {
 
   /**
    * 暖发挑节点: 摘一个**真会打模型**的 ready 节点 (即非 command)。整层都是 command → null (不暖)。
-   * **不记账** —— 暖发是调用方自己 await 的串行一发, 不占 worker 槽。
+   *
+   * **记账** (t-initial-pump, 2026-09-02): 暖发不再是调用方 await 到 settle 的串行一发 ——
+   * 它起跑后 pool 只按住一个宽限窗口就放开, 之后暖发与其余节点**真并发**。不记账就会让
+   * `isDrained()` 在暖发还在飞时判成收敛 (ready 空 + running 0) → 它的 dependents 永远不派。
+   * 与 `takeRunnable` 同一笔账, 由同一个 `release(id)` 退。
+   * (仍**不过** kind/channel 闸: 暖发是这张图的第一发, 此刻没有别的在飞, 闸恒不可能挡住它。)
    */
   takeWarmStart(): string | null {
     const idx = this.ready.findIndex((rid) => this.opts.kindOf(rid) !== 'command');
     if (idx < 0) return null;
-    return this.ready.splice(idx, 1)[0]!;
+    const id = this.ready.splice(idx, 1)[0]!;
+    this.charge(id);
+    return id;
   }
 
   /**
@@ -152,13 +159,18 @@ export class DagScheduler {
     );
     if (idx < 0) return null;
     const id = this.ready.splice(idx, 1)[0]!;
+    this.charge(id);
+    return id;
+  }
+
+  /** 记一笔 (kind + channel), `release` 按同一笔退 —— takeRunnable 与 takeWarmStart 共用。 */
+  private charge(id: string): void {
     const kind = this.opts.kindOf(id);
     const channel = this.hasChannelCaps ? this.opts.channelOf(id) : null;
     this.running++;
     this.runningByKind[kind]++;
     if (channel != null) this.runningByChannel.set(channel, (this.runningByChannel.get(channel) ?? 0) + 1);
     this.charged.set(id, { kind, channel });
-    return id;
   }
 
   /** 与 takeRunnable 配对的记账回退 (节点跑完时调, 在 settle 之前)。 */
