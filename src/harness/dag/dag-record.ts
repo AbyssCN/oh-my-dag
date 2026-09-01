@@ -177,8 +177,13 @@ export interface DagRunNode {
    *   - **整个字段缺席** = 该节点没有 self_check (旁路, INV-1-2) —「这条路不适用」;
    *   - `null` = self_check 存在但**被截断** (SDK 通道, INV-2-1) —「路在但截断」;
    *   - `{rounds, oracleExit, convergedAt}` = self_check 真的跑了 —
-   *     `rounds` = 注了几次 follow-up, `oracleExit.length === rounds + 1` (INV-4-2 至少一次),
-   *     `convergedAt !== null` ⟺ `oracleExit` 末项 `=== expect_exit` (INV-4-3)。
+   *     `rounds` = 注了几次 follow-up; `oracleExit.length ∈ {rounds, rounds + 1}` (**INV-4-2**) ——
+   *     差 1 = 跑了收尾 probe (收敛/闸拒), 差 0 = 环被轮数上限/零进展在 probe **之前**停掉,
+   *     那一次 probe **不存在**, 不是「跑了没记上」(静默坑 1);
+   *     `convergedAt !== null` ⟹ 末项 `=== expect_exit` (**INV-4-3**, **单向**不是充要 ——
+   *     配了 `expect_output` 时退出码对而输出没匹配上, 末项 `=== expect_exit` 但 convergedAt 仍 `null`)。
+   *     ⚠ 2026-09-02 按探针实测修正措辞 (此前写「=== rounds + 1」与「⟺」, 都比实装严);
+   *     **实装未动**。真源 = `agent-leaf.ts` 的 `SelfRepairLedger`。
    *
    * 为什么 `null` 与 `{rounds: 0, …}` 必须**分开**: 前者是「路在但没听见」(下一步 = 看 SDK
    * 通道是否该重开), 后者是「判据一次就绿」(下一步 = 看判据强度是否合理) — 两个不同的下一步

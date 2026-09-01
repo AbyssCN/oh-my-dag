@@ -54,6 +54,61 @@ export interface ExpandResult {
 /** 默认扇出硬顶 (INV-U4)。大仓审计 >64 → 分批 map (v1 DEFER, 先 64+log)。 */
 export const DEFAULT_MAX_ITEMS = 64;
 
+// ── 运行期闸 (INV-U2 / INV-U8; 登记表见 ../invariants.ts) ─────────────────────
+//
+// 为什么这两条是**运行期**的, 不是测试的地盘:
+//   子 id 与 output_path 都由 **lister 的运行时输出**推出 (keyBy 取值 / 元素内容 hash)。
+//   「任意 lister 输出下都唯一」不是一个单测钉得住的性质 —— 撞不撞取决于当天那份清单
+//   长什么样, 而那份清单是模型现写的。要判它, 必须在真展开的那一刻拿着真的 children 判。
+//
+// 为什么今天没人守得住:
+//   `dag/engine.ts:3552` 展开完直接 `plan.nodes[child.id] = ...` 写进图, 一个字都不校;
+//   `checkpoint-manager.ts:328` 与 `plan/observers.ts:110` 更是明写
+//   (⚠ 上一行刻意不写 `checkpoint-manager.ts` 的上级目录名 —— 那个词是 `Dag*Seam` 的字段名,
+//    写进来会被 `scripts/gen-seam-catalog.ts` 的 token 级消费方扫描当成本文件真消费了那个接缝,
+//    把一条注释算进 `docs/architecture/seams.md` 的消费方计数里。2026-09-02 实测踩过一次。)
+//   「子 id 由 INV-U2 **构造保证**是 `${parentId}::` 形」, 然后拿这个前缀去匹配毒集 /
+//   作废子树 —— 形状破了, 前缀匹配**静默落空**(匹配不到 ≠ 报错), 毒绿照样被复用。
+//   id 撞车更直接: 后一个 `plan.nodes[id]` 覆盖前一个, N 个元素静默变成 N-1 个子节点。
+//   两条路径今天都只有注释在守。
+//
+// 开销: 各一次 Set/Map 构建, n = children.length ≤ maxItems (缺省 64)。同一个 map 里
+//   每个子节点各做一次 `structuredClone` + 4 次正则插值, 这两格是它的噪声。
+import { registerInvariant } from '../invariants';
+
+const INV_U2 = registerInvariant<{ mapNodeId: string; children: MapChild[] }>({
+  id: 'INV-U2',
+  module: 'plan/map-expand',
+  why: '子 id 撞车 = 后一个覆盖前一个 (静默少子节点); 前缀不对 = 下游毒集/子树作废的前缀匹配静默落空',
+  check: ({ mapNodeId, children }) => {
+    const prefix = `${mapNodeId}::`;
+    const seen = new Set<string>();
+    for (const c of children) {
+      if (!c.id.startsWith(prefix)) return `子 id ${JSON.stringify(c.id)} 不以 ${JSON.stringify(prefix)} 开头`;
+      if (seen.has(c.id)) return `子 id ${JSON.stringify(c.id)} 出现两次 (共 ${children.length} 个子节点)`;
+      seen.add(c.id);
+    }
+    return null;
+  },
+});
+
+const INV_U8 = registerInvariant<{ children: MapChild[] }>({
+  id: 'INV-U8',
+  module: 'plan/map-expand',
+  why: '两个 file 类子节点写同一个 output_path = 谁后跑谁赢, 前面那份产物静默蒸发',
+  check: ({ children }) => {
+    const byPath = new Map<string, string>();
+    for (const c of children) {
+      const n = c.node as { output_type?: unknown; output_path?: unknown };
+      if (n.output_type !== 'file' || typeof n.output_path !== 'string') continue;
+      const prev = byPath.get(n.output_path);
+      if (prev !== undefined) return `${prev} 与 ${c.id} 都写 ${JSON.stringify(n.output_path)}`;
+      byPath.set(n.output_path, c.id);
+    }
+    return null;
+  },
+});
+
 // ── 纯工具 ────────────────────────────────────────────────────────────────────
 
 /** 稳定 stringify (键排序) → 内容 hash 输入确定。 */
@@ -182,11 +237,19 @@ export function expandMapNode(
   });
 
   // key 撞车消歧 (INV-U2 唯一): 同 key 追加内容 hash 短尾, 保持确定。
+  // ⚠ 内容 hash **也**相同的情形 (lister 列了逐字节一样的重复项 —— 同一个文件列两次这种,
+  //   生产可达) 此前会给两个元素发同一个 key: 3 个相同元素只展开出 2 个不同 id, 第 3 个
+  //   静默覆盖第 2 个。补一格同容组内序号收掉它 —— 组内元素逐字节相同 ⇒ 序号与 lister
+  //   输出顺序无关, INV-U2 的「重排不改子集」不受影响。
   const seen = new Map<string, number>();
   for (const k of keyed) {
     const n = seen.get(k.key) ?? 0;
     seen.set(k.key, n + 1);
-    if (n > 0) k.key = `${k.key}-${fnv1a(stableStringify(k.item)).slice(0, 6)}`;
+    if (n === 0) continue;
+    const tailed = `${k.key}-${fnv1a(stableStringify(k.item)).slice(0, 6)}`;
+    const dup = seen.get(tailed) ?? 0;
+    seen.set(tailed, dup + 1);
+    k.key = dup === 0 ? tailed : `${tailed}-${dup + 1}`;
   }
 
   // 按 key 排序 → 顺序无关 (INV-U2: lister 重排不改子集/顺序)。
@@ -213,5 +276,9 @@ export function expandMapNode(
     return { id: `${mapNodeId}::${key}`, key, item, node };
   });
 
+  // 构造点出口 = 唯一还来得及不让坏值扩散的位置 (下一站就是 engine 的 `plan.nodes[child.id] = ...`)。
+  // 抛出去由 `runNode(...).catch(failedFromThrow)` 接成「该 map 节点 failed」, 不炸整个 run。
+  INV_U2.assert({ mapNodeId, children });
+  INV_U8.assert({ children });
   return { status: 'ok', children, truncated };
 }

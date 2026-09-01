@@ -669,15 +669,49 @@ export function selfCheckEnvEnabled(env: NodeJS.ProcessEnv = process.env): boole
 }
 
 /**
- * self_check 自修环的可观察状态 (C-4 落账)。在 result 上**有 self_check 时恒写** (INV-4-2
- * 长度 = rounds + 1, 至少一次), `null` = 该节点无 self_check (不是「判据一次就绿」)。
+ * self_check 自修环的可观察状态 (C-4 落账)。在 result 上**有 self_check 时恒写**,
+ * `null` = 该节点无 self_check (不是「判据一次就绿」)。
+ *
+ * ⚠ **2026-09-02 修正 —— 只改注释, 实装一个字没动**: INV-4-2 此前写「长度 = rounds + 1」、
+ * INV-4-3 此前写「⟺」, 两条都比实装严, 且两条都有生产可达的反例 (下面各自的注释里给了实测)。
+ * 实装是对的, 错的是注释。修正的由来值得记一笔: **「只有注释在守」的坏处不止是没人守,
+ * 还包括注释本身没人对过账** —— 这两条在三个文件里措辞一致地错了一年多, 因为没有任何东西
+ * 会因为它们错而红。本文件是这三处的**真源**, 另两处 (`dag/types.ts` · `dag/dag-record.ts`)
+ * 指回这里。
  */
 export interface SelfRepairLedger {
   /** 实际自修轮数 (0 = 判据一次就绿, 没注 follow-up)。INV-4-1: 与 null 严格分开。 */
   rounds: number;
-  /** 每一轮 self_check 的实际退出码, 按序。INV-4-2: length === rounds + 1。 */
+  /**
+   * 每一轮 self_check 的实际退出码, 按序。
+   *
+   * **INV-4-2**: `oracleExit.length ∈ {rounds, rounds + 1}`。这个差值不是噪声, 是**判别位** ——
+   * 它回答「环停下来的时候, 收尾那一次 probe 到底跑没跑」:
+   *   - **差 1** = 跑了。环是被 probe 的**结果**停下的 (收敛 / 闸拒), 由 `convergedAt` 再二分;
+   *   - **差 0** = **没跑**。环在 probe **之前**就返了: 轮数上限 (`rounds >= maxSelfRepair`)、
+   *     零进展 (工作区一个字节没变 —— 那条判据刻意放在 probe 前, 为的就是连子进程都不 spawn)、
+   *     或路径根本没启用 (`{rounds: 0, oracleExit: []}`)。
+   *     ⚠ 这一格的语义是「**那一次 probe 不存在**」, 不是「跑了没记上」—— 静默坑 1
+   *     (`NULL` ≠ 0 ≠ 不适用) 说的正是别把这两件事抹平。
+   *
+   * 实测指纹 (2026-09-02, 逐条走过四条终止路径 + 未启用):
+   *   收敛 diff=1 · 闸拒 diff=1 · 轮数上限 diff=0 · 零进展 diff=0 · 未启用 diff=0。
+   */
   oracleExit: number[];
-  /** 第几轮转绿 (0 = 首轮就绿); 始终没绿 = null。INV-4-3: ⟺ oracleExit 末项 === expect_exit。 */
+  /**
+   * 第几轮转绿 (0 = 首轮就绿); 始终没绿 = null。
+   *
+   * **INV-4-3 是单向蕴含, 不是充要**: `convergedAt !== null` ⟹ `oracleExit` 末项 `=== expect_exit`。
+   * **反向不成立**, 而且反例是生产可达的: 配了 `expect_output` 时, 退出码对上但输出串没匹配上,
+   * 实装**本来就不该**算收敛 (`outputOk` 为假) —— 于是末项 `=== expect_exit` 而 `convergedAt` 仍是 `null`。
+   * 实测反例 (2026-09-02): `expect_exit: 0` + `expect_output: 'NEVER'`, probe 返 exitCode 0 / stdout `'ok'`
+   * → `convergedAt = null`, 末项 `= 0`。
+   *
+   * 在 INV-4-2 「差 1」那一格里, 本字段兼作二分: 非 `null` = 收敛收的尾;
+   * `null` = **闸拒**收的尾 (命令被 `commandBlockReason` 拒, 末项折成 `-1`)。
+   * ⚠ 所以「`convergedAt === null`」**单独**分不出「差 0」和「差 1」—— 闸拒两样都占。要判
+   * 收尾 probe 跑没跑, 看的是长度差, 不是这一位。
+   */
   convergedAt: number | null;
   /**
    * S1 spin-route 档 1 路由入账 (D-5 additive, INV-6): 路径启用但未触发 = 空数组; 缺席 = 路径未启用

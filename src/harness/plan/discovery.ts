@@ -18,6 +18,7 @@
  *  INV-D6 归一化 key: keyOf 输出归一化 (调用方责任; 引擎只做精确 key 去重, 近重 DEFER)。
  */
 import { logger } from '../logger';
+import { registerInvariant } from '../invariants';
 
 export interface DiscoveryConfig<Item> {
   input: string;
@@ -52,6 +53,42 @@ export interface DiscoveryResult<Item> {
   error?: string;
 }
 
+// ── 运行期闸 (INV-D3; 登记表见 ../invariants.ts) ──────────────────────────────
+//
+// 为什么这条是**运行期**的, 不是测试的地盘:
+//   `converged` 是本原语报给调用方 (`primitive-registry.ts:354` → 直接进模型可见的
+//   工具输出) 的一句**真值断言**: 「我们真的找完了」。它的正当性不在代码形状上, 而在
+//   与同一次返回里那份 journal 的**互相对账** —— 只有拿着这一次真跑出来的 rounds 才判得了。
+//   五个 return 点各自独立地组 `{status, converged}`, 谁都拿不到别人的上下文。
+//
+// 为什么今天没人守得住:
+//   `runDiscoveryLoop` 全仓零测试文件, 而假 converged 的后果是**静默欠采样**:
+//   调用方读到 `converged:true` 就不再追加轮次, 一份只扫了一半的 audit 与一份真扫完的
+//   audit 在账上长得一模一样。这正是本仓「NULL ≠ 0 ≠ 不适用」那条坑的同形 ——
+//   「找完了」和「停下来了」被一个 boolean 抹平。
+//
+// 开销: O(1) (读末轮一个字段), 每次 discovery 原语调用一次 —— 而那一次背后是 N 轮真 LLM
+//   往返。相对它是彻底的噪声。
+const INV_D3 = registerInvariant<{
+  status: DiscoveryStatus;
+  converged: boolean;
+  rounds: readonly { dryStreak: number }[];
+  dryThreshold: number;
+}>({
+  id: 'INV-D3',
+  module: 'plan/discovery',
+  why: '假 converged = 调用方以为找完了就收工, 半截 audit 与真扫完的 audit 在账上一模一样',
+  check: ({ status, converged, rounds, dryThreshold }) => {
+    if (converged !== (status === 'dry')) return `converged=${converged} 而 status=${status} (唯一真收敛只有 dry)`;
+    if (!converged) return null;
+    const last = rounds[rounds.length - 1];
+    if (last === undefined) return 'converged=true 而 journal 一轮都没记';
+    if (last.dryStreak < dryThreshold)
+      return `converged=true 而末轮 dryStreak=${last.dryStreak} < 阈值 ${dryThreshold}`;
+    return null;
+  },
+});
+
 /** 默认缺口注入: 已见 key 清单 → 「别重复找这些」(零额外调用)。 */
 function seenAvoidance<Item>(seen: Item[], keyOf: (i: Item) => string): string {
   if (seen.length === 0) return '';
@@ -65,6 +102,11 @@ export async function runDiscoveryLoop<Item>(cfg: DiscoveryConfig<Item>): Promis
   const seen = new Map<string, Item>(); // INV-D1: 只增不减
   const rounds: DiscoveryRound<Item>[] = [];
   let dryStreak = 0;
+  // 五个 return 点共用这一格过 INV-D3 —— 判据抄五份必漂 (同 replan-spin.ts:17 那条教训)。
+  const finish = (r: DiscoveryResult<Item>): DiscoveryResult<Item> => {
+    INV_D3.assert({ status: r.status, converged: r.converged, rounds: r.rounds, dryThreshold });
+    return r;
+  };
 
   for (let round = 1; round <= maxRounds; round++) {
     const gap = cfg.enrichGap
@@ -80,7 +122,7 @@ export async function runDiscoveryLoop<Item>(cfg: DiscoveryConfig<Item>): Promis
       const msg = err instanceof Error ? err.message : String(err);
       const status: DiscoveryStatus = round === 1 ? 'degenerate' : 'failed';
       logger.warn({ round, err: msg }, `[discovery] roundRunner 抛 → ${status} (INV-D4: 不当 dry)`);
-      return { items: [...seen.values()], rounds, status, converged: false, error: msg };
+      return finish({ items: [...seen.values()], rounds, status, converged: false, error: msg });
     }
 
     const fresh = found.filter((x) => !seen.has(cfg.keyOf(x)));
@@ -90,17 +132,17 @@ export async function runDiscoveryLoop<Item>(cfg: DiscoveryConfig<Item>): Promis
 
     // 判停 (SDD §2.3 优先级)。
     if (dryStreak >= dryThreshold) {
-      return { items: [...seen.values()], rounds, status: 'dry', converged: true }; // INV-D3 唯一真收敛
+      return finish({ items: [...seen.values()], rounds, status: 'dry', converged: true }); // INV-D3 唯一真收敛
     }
     if (round === maxRounds) {
       logger.warn({ rounds: round, items: seen.size }, '[discovery] 触 maxRounds 仍在出新 → exhausted, 覆盖可能不全 (INV-D5)');
-      return { items: [...seen.values()], rounds, status: 'exhausted', converged: false };
+      return finish({ items: [...seen.values()], rounds, status: 'exhausted', converged: false });
     }
     if (cfg.budget && cfg.budget.remaining() < cfg.budget.floor) {
       logger.warn({ round, items: seen.size }, '[discovery] 燃料阀触发 → budget_halt, 覆盖可能不全 (INV-D5)');
-      return { items: [...seen.values()], rounds, status: 'budget_halt', converged: false };
+      return finish({ items: [...seen.values()], rounds, status: 'budget_halt', converged: false });
     }
   }
   // 不可达 (round===maxRounds 分支必返), 防御性兜底。
-  return { items: [...seen.values()], rounds, status: 'exhausted', converged: false };
+  return finish({ items: [...seen.values()], rounds, status: 'exhausted', converged: false });
 }

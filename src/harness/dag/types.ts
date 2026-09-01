@@ -1060,7 +1060,13 @@ export interface LeafResult {
    * 严格三态 (INV-4-1, 不许压平):
    *   - **整个字段缺席** (`undefined`) = 该节点**没有** self_check (旁路, INV-1-2) — 「这条路不适用」;
    *   - `null` = self_check 存在但**没有**被听见 (SDK 通道, INV-2-1: 无 followUp 钩子) —「路在但被截断」;
-   *   - `{rounds, oracleExit, convergedAt}` = self_check 真的跑了 (INV-4-2 长度 = rounds + 1; INV-4-3 末项 = expect_exit ⟺ convergedAt !== null)。
+   *   - `{rounds, oracleExit, convergedAt}` = self_check 真的跑了。
+   *     **INV-4-2**: `oracleExit.length ∈ {rounds, rounds + 1}` —— 差 1 = 跑了收尾 probe (收敛/闸拒);
+   *     差 0 = 环被轮数上限/零进展在 probe **之前**停掉,「那一次 probe 不存在」不是「跑了没记上」。
+   *     **INV-4-3** 是**单向**蕴含: `convergedAt !== null` ⟹ 末项 `=== expect_exit`; 反向不成立
+   *     (配了 `expect_output` 时退出码对而输出没匹配上, 末项 `=== expect_exit` 但 convergedAt 仍 `null`)。
+   *     ⚠ 这两条 2026-09-02 按探针实测修正过 (此前写成「= rounds + 1」与「⟺」, 都比实装严);
+   *     **实装未动, 只改了注释**。措辞真源 = `agent-leaf.ts` 的 `SelfRepairLedger`。
    *
    * `null` 与 `{rounds: 0, …}` **绝对不互换**: 前者是「路在但截断」, 后者是「判据一次就绿」——
    * 读数板要的是这一格的下一步不同。分辨靠 **字段在不在**, 不靠猜值。
