@@ -270,7 +270,7 @@ async function runArm(t: BenchTask, arm: 'a' | 'b', dir: string, opts: { budgetM
     // A 臂的 token 账在 run 结果里, 这里先记 0 并在 note 里留 runId —— **别编一个看起来像真的数**。
     tokensIn: 0, tokensOut: 0, toolCalls: null,
     seat: seats.agentLeafModel ?? seats.leafModel,
-    note: `dag_run runId=${runId} status=${registry.getStatus(runId)} (⚠ token 账未接, 记 0 是"未采集"不是"真 0")`,
+    note: `dag_run runId=${runId} status=${statusOf() ?? 'unknown'} (⚠ token 账未接, 记 0 是"未采集"不是"真 0")`,
   };
 }
 
