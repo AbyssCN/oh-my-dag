@@ -38,6 +38,7 @@ import { type Static, type TSchema, Type } from 'typebox';
 import { classifyCommand } from './hooks/dangerous-cmd';
 // 写域闸 (写前, 与沙箱边界正交): 节点只准写自己声明的写集。
 import { checkWriteAllowed, describeWriteDenied } from './writeset/write-allow';
+import { checkWriteVersion, describeVersionDenied, observePath, type FileObservation } from './writeset/write-version';
 import { type CommandPolicy, DEFAULT_SANDBOX_CONFIG, judgeCommand } from './hooks/command-policy';
 import { sandboxCommand } from './hooks/shell-sandbox';
 import { gitWriteBlockReason, secretPathInCommand, SECRET_BASENAMES, SECRET_BASENAME_EXEMPT } from './command-leaf';
@@ -512,6 +513,20 @@ export interface OmdAgentToolsOpts {
    */
   writeAllow?: () => readonly string[] | undefined;
   /**
+   * **版本守卫的按调用观察台**(2026-09-01, 判据面 = `writeset/write-version.ts`)。
+   *
+   * 键 = 绝对路径, 值 = 本次调用**看见过**的那一版。`read` / `write` / `edit` 成功之后往里记,
+   * `write` 写前拿它与盘上实际版本比 —— 不符 = 有并发兄弟在你看完之后改过, 当场拒。
+   *
+   * 是 **thunk 不是 Map**: runner 跨调用复用 (MCP 长驻进程), 观察台必须**按调用新建** ——
+   * 烤进装配期就会拿上一个节点看过的版本来放行这一个, 那比没有闸更糟。同
+   * `writeAllow` / `mcpAllow` / `touchSession` 那条纪律。
+   *
+   * 返回 `undefined` = **闸缺席, 放行**(对话位 `chat.ts` / `chat-seat.ts` 那条路 —— 人在场、
+   * 没有并发兄弟, 装上只会白白多一轮 read)。DAG leaf 那条路由 `agent-leaf.ts` 恒装。
+   */
+  fileObservations?: () => Map<string, FileObservation> | undefined;
+  /**
    * 写域闸拒发生时的观察回调 (刀②, 2026-08-30 闸门三角结): 参数 = 被拒目标 (display 归一,
    * 与判词里那个同一形状)。只报不拦 —— 判拒本身照旧 throw。缺省 = 零行为变化。
    * 消费者是 agent-leaf 的按调用计数 → 引擎按「同路径 ≥2 次」上抛 write-wall observation。
@@ -638,6 +653,27 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
         '要写到工作根外面, 把路径加进 .omd/config.json 的 tui.sandbox.writable。',
     );
   };
+  // ── 版本守卫 (2026-09-01, 判据面 = writeset/write-version.ts) ──────────────────────
+  // 与上面两条闸**三方正交**: 沙箱边界判「在不在工作根里」, 写域判「是不是这个节点该动的文件」,
+  // 版本判「从你看过它之后有没有被别人换过」。三条判词分开写, 混在一起会让人去改错的那个。
+  /** 记一笔观察 (读到 / 写完之后的那一版)。闸缺席 → 什么都不做, 零行为变化。 */
+  const observed = (full: string): void => {
+    opts.fileObservations?.()?.set(full, observePath(cwd, full));
+  };
+  /**
+   * 写前判版本。**只给 `write` 用, 不给 `edit`** —— 这不是漏接, 是「一条永远绿的闸不是闸」:
+   * `edit` 在写回的**同一次调用里**先读了全文再做逐字唯一匹配 (见下面 edit 的实现), 它的
+   * 「观察版本」按构造就是写那一刻的版本, 装上去永远判不出失配。而并发兄弟真改了同一段时,
+   * `edit` 的 oldText 逐字匹配**自己就会红** (「找不到」); 改的是别处时那一次 edit 本来就该成功。
+   * 真正会盲盖的是 `write` 的**整体覆写**: 读在 T0, 兄弟写在 T1, 你的全量覆写在 T2 —— T1 那份
+   * 一个字都不剩。这道闸只挡这一路。
+   */
+  const requireFreshVersion = (full: string, tool: string): void => {
+    const table = opts.fileObservations?.();
+    if (!table) return; // 闸缺席 (对话位) —— 与本参数出现之前行为一致。
+    const v = checkWriteVersion({ observed: table.get(full), actual: observePath(cwd, full) });
+    if (!v.allowed) throw new Error(describeVersionDenied(display(cwd, full), v, tool));
+  };
   const walkLimit = opts.grepWalkLimit ?? GREP_WALK_LIMIT;
   const env = new NodeExecutionEnv({ cwd });
   // SDD S3 碰撞台账 (只记不拦): 库锚在 cwd (触碰发生的工作根) 的 `.omd/touch.db`。
@@ -688,6 +724,10 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
       } catch (err) {
         throw new Error(`read 失败: ${display(cwd, full)}: ${(err as Error).message}`);
       }
+      // 版本守卫的观察侧: 读成功 = 「这一版我看见了」。
+      // ⚠ 边界: 带 offset/limit 只读了一片, 记的仍是**整份文件**的版本 —— 本闸判的是
+      //   「有没有被别人换过」, 不是「你读全了没有」, 后者是另一件事, 别把它读进来。
+      observed(full);
       const all = raw.split('\n');
       const start = offset && offset > 0 ? offset - 1 : 0;
       if (start >= all.length && all.length > 0) {
@@ -776,8 +816,13 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
       const { path, content } = params as Static<typeof WRITE_SCHEMA>;
       const full = abs(cwd, path);
       requireWritable(full, 'write');
+      // 版本守卫: 路径闸放行之后、真写之前判一次 —— 顺序是**先路径后版本**, 因为
+      // 「这文件根本不归你」比「你拿的是旧版」更根本, 先报那条才不会让人去重读一个不该写的文件。
+      requireFreshVersion(full, 'write');
       const r = await env.writeFile(full, content);
       if (!r.ok) throw new Error(`write 失败: ${display(cwd, full)}: ${r.error.message}`);
+      // 写完立刻重新观察: 本次写入的结果就是本次调用看见的最新一版 (否则连写两次会自己撞自己)。
+      observed(full);
       // SDD S3 strict 档 (事实): 受控写工具知道写了什么 → hash = sha256(写入内容), 非 NULL。
       touchWrite(touchLedgerLazy, opts.touch, { path: full, op: 'write', hash: sha256Hex(content), source: 'strict' });
       return textResult(`✓ 写入 ${display(cwd, full)} (${content.length} 字节)`, {
@@ -814,6 +859,9 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
       const next = `${raw.slice(0, first)}${newText}${raw.slice(first + oldText.length)}`;
       const w = await env.writeFile(full, next);
       if (!w.ok) throw new Error(`edit 失败 (写回): ${display(cwd, full)}: ${w.error.message}`);
+      // edit 不受版本闸约束 (理由见 requireFreshVersion 的注), 但它**是观察侧**:
+      // 写回之后这份文件的最新一版本次调用是看见了的, 记上, 后续 write 才不会被自己的 edit 判成失配。
+      observed(full);
       // SDD S3 strict 档 (事实): edit 写回的是整份新内容 (next), hash 对它算。
       touchWrite(touchLedgerLazy, opts.touch, { path: full, op: 'write', hash: sha256Hex(next), source: 'strict' });
       return textResult(`✓ 已替换 ${display(cwd, full)} 中 1 处`, { path: display(cwd, full), replaced: true });

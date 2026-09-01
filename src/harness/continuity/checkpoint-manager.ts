@@ -709,7 +709,21 @@ export function hashText(text: string): string {
 export function hashArtifact(filePath: string): string | null {
   try {
     return fileSha256Hex(filePath).slice(0, 16);
-  } catch {
+  } catch (err) {
+    // 仓规 §静默坑 2: **fail-open 可以吞异常, 不许吞证据**。行为一个字节不动 (照返 null),
+    // 只是不再一声不吭 —— 此前这里是个裸 `catch {}`, 于是「文件真不在」与「在但读不了」
+    // 在返回值上塌成同一格, 而两者的修法完全不同 (改路径 vs 改权限)。
+    //
+    // ENOENT 不记, 照 `writeset/head-baseline.ts` 的先例: 它是本函数的**正常一格**
+    // (产物还没产出 / 写集路径本就不存在), 每轮成百上千次, 记它会把真信号淹掉。
+    // 其余错法 (权限 / IO / 目标是目录) 必须留痕 —— 那才是"本该算得出却没算出来"。
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== 'ENOENT') {
+      logger.warn(
+        { path: filePath, code, err: (err as Error).message },
+        '[omd/checkpoint] hashArtifact 读不出内容 → 返 null (fail-open 留证; 非 ENOENT)',
+      );
+    }
     return null;
   }
 }

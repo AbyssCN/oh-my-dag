@@ -57,7 +57,12 @@ export function headBaselineUnsupported(root: string): string | null {
   return null;
 }
 
-function statEntry(root: string, rel: string): HeadBaselineEntry {
+/**
+ * 量一个路径此刻的三位状态。**导出是给 `write-version.ts` 复用的**(2026-09-01):
+ * 版本守卫要判「写的那一刻还是你看见的那一版吗」,而「一个路径长什么样」的口径这里已经有了 ——
+ * 那边另起一套会漂成「救援③说没变、写闸说变了」。改这里等于同时改两处判据,动之前先看那边。
+ */
+export function statEntry(root: string, rel: string): HeadBaselineEntry {
   const abs = isAbsolute(rel) ? rel : join(root, rel);
   try {
     const st = lstatSync(abs);

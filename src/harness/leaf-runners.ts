@@ -157,6 +157,39 @@ export interface LeafWatchdog {
  */
 export type LiveLeafWatchdog = LeafWatchdog & Required<Pick<LeafWatchdog, 'advisorFiredAt' | 'wrapupFiredAt' | 'abortedByGrind'>>;
 
+/**
+ * 一道闸在**本次调用**里的在场态 (2026-09-01)。**缺席是一个有名字的值, 不是空。**
+ *
+ * - `enforced` = 本次调用**声明了**这道闸的判据面 (清单/会话 id 在场), 闸真在判;
+ * - `unavailable` = **没配这道闸**。⚠ 这**不等于**"这个节点没越界 / 没碰文件 / 没调 MCP"
+ *   —— 那是三件事 (仓规 §静默坑 1 NULL≠0≠不适用)。
+ *
+ * ⚠ `unavailable` 之后的**回落方向逐闸不同**, 这个词只说"没配", 不说"因此拒":
+ *   · `writeAllow` → **fail-open 放行** (conductor 铺图路径 / plan 没写 `write_set`);
+ *   · `mcpAllow`   → **fail-closed deny 全部副作用类工具** (leaf 不声明即不授权);
+ *   · `touchSession` → 碰撞台账**这次不记** (只记不拦, 本来就不影响执行)。
+ */
+export type LeafGatePosture = 'enforced' | 'unavailable';
+
+/**
+ * 本次调用三道闸的在场态 (2026-09-01)。
+ *
+ * 为什么要它: 在此之前「闸缺席」与「闸判过且合规」在结果里**长得一模一样** ——
+ * `writeDenials` 缺席既可能是"没配写闸", 也可能是"配了且一次都没越界", 事后分不开
+ * (`AgentLeafInput.writeAllow` 的注写着"闸缺席, 放行", 而那句话没留在任何一条读数里)。
+ * 本字段把缺席变成显式态: 三道闸各报各的, 读结果的人不必反推。
+ *
+ * **只报不判**: 本字段不改变任何一道闸的判据与回落方向 (缺省仍是缺省), 只让它可分辨。
+ */
+export interface LeafGateStates {
+  /** 写域闸 (`AgentLeafInput.writeAllow`)。`[]` = 声明了"什么都不许写" → 仍是 `enforced`。 */
+  writeAllow: LeafGatePosture;
+  /** 外部 MCP 授权闸 (`AgentLeafInput.mcpAllow`)。空清单 = 没声明 → `unavailable` (deny 全部)。 */
+  mcpAllow: LeafGatePosture;
+  /** 碰撞台账会话 (`AgentLeafInput.touchSession`)。`unavailable` = 本次触碰一条都不进台账。 */
+  touchSession: LeafGatePosture;
+}
+
 export interface AgentLeafResult {
   text: string;
   usage: ModelUsage;
@@ -177,6 +210,13 @@ export interface AgentLeafResult {
    * 同处置, 不必分)。引擎按「同路径 ≥2」上抛 write-wall observation 进外环重画输入面。
    */
   writeDenials?: Record<string, number>;
+  /**
+   * 本次调用三道闸的**在场态** (2026-09-01)。形状与语义的真源 = {@link LeafGateStates}。
+   *
+   * 缺席语义 (NULL ≠ 0 ≠ 不适用): **整个字段缺席 = 该 runner 不报在场态** (注入的 fake runner /
+   * 老记录), **不代表**三道闸都没配。生产 agent-leaf 恒写 —— 缺席与 `'unavailable'` 分得开。
+   */
+  gates?: LeafGateStates;
   /**
    * 本次 leaf 经 **read 族工具**读过的文件(D-12,与 filesTouched 同形、同一个 cwd 根)。
    *

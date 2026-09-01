@@ -74,12 +74,13 @@ export function leafMcpPolicy(mcpAllow?: string[]): { sideEffects: { allow: stri
 
 import { SHARED_ENGINEERING_CORE, LEAF_EXECUTION_CORE, LEAF_TOOL_ROUTING } from './harness-prompts';
 import type { SelfCheckSpec } from './conductor-plan';
-import { createOmdAgentTools, type AnyOmdTool, sha256Hex } from './agent-tools';
+import { createOmdAgentTools, type AnyOmdTool, type OmdAgentToolsOpts, sha256Hex } from './agent-tools';
+import type { FileObservation } from './writeset/write-version';
 import { createInspectTool } from './inspect-tool';
 import { createSkillTools, type SkillToolDeps } from './skills/skill-tool';
 import type { LeafProfile } from './profiles/profile';
 import { defaultSkillRoots } from './skills/skills';
-import { createMcpClientTools } from '../mcp/client/meta-tools';
+import { createMcpClientTools, type McpClientToolsOpts } from '../mcp/client/meta-tools';
 import type { McpPoolDeps } from '../mcp/client/pool';
 import type { McpCallLedger } from '../mcp/client/call-ledger';
 import { createHashlineCustomTools, hashlinePatchPaths } from './hashline';
@@ -180,8 +181,8 @@ export function agentScaffold(opts: {
 }
 
 // 类型单一真理源 = leaf-runners.ts (executor-dag 只认接口形状, 不 import 实现) — 这里 re-export 保旧调用面。
-export type { AgentLeafInput, AgentLeafResult, AgentLeafRunner, FileWriteEffect, ShellRun, ToolStep } from './leaf-runners';
-import type { AgentLeafInput, AgentLeafResult, AgentLeafRunner, FileWriteEffect, ShellRun, ToolStep } from './leaf-runners';
+export type { AgentLeafInput, AgentLeafResult, AgentLeafRunner, FileWriteEffect, LeafGatePosture, LeafGateStates, ShellRun, ToolStep } from './leaf-runners';
+import type { AgentLeafInput, AgentLeafResult, AgentLeafRunner, FileWriteEffect, LeafGateStates, ShellRun, ToolStep } from './leaf-runners';
 import { TOOL_STEPS_CAP, TOOL_STEPS_HEAD, SHELL_OUTPUT_TAIL_CAP } from './leaf-runners';
 
 export interface AgentLeafRunnerOpts {
@@ -1483,6 +1484,137 @@ export function assistantText(msg: AgentMessage): string {
     .join('');
 }
 
+/**
+ * 一次调用的 per-call 作用域 (ALS 里那一格)。装配期闭包只挂 getter, 值由 wrapper 的 `run()` 写入。
+ * 抽成具名类型是为了让下面的**装配期 commit 检查**能拿到同一个 store 做探针 (类型必须对得上)。
+ */
+export interface LeafCallScope {
+  session?: string;
+  mcpAllow?: string[];
+  writeAllow?: string[];
+  writeDenials?: Map<string, number>;
+  /**
+   * 版本守卫的观察台 (2026-09-01, 判据面 = `writeset/write-version.ts`)。
+   * **必须按调用新建** —— 跨调用复用等于拿上一个节点看过的版本放行这一个。
+   */
+  fileObservations?: Map<string, FileObservation>;
+}
+
+/**
+ * 装配期 commit 检查用的哨兵值。取一个**不可能是真值**的串: 真的 session 是 `<runId>:<nodeId>`,
+ * 真的写集是路径 —— 哨兵串在两边都不会自然出现, 于是"getter 读到了哨兵"只可能是真读了 ALS。
+ */
+const GATE_COMMIT_PROBE = 'omd-gate-commit-probe/哨兵';
+
+/**
+ * 交给工具工厂的那两个 opts 对象 (**原物, 不是复制**) —— commit 检查的判据面。
+ * 类型刻意宽 (`unknown`): 检查要能对"这个键压根不在"下判断, 收窄的类型会让 tsc 先把它挡掉,
+ * 而历史上出事的正是**运行期条件 spread 把键丢了**这一路 (tsc 一个字都不报)。
+ */
+export interface LeafGateWiring {
+  /** `createOmdAgentTools({...})` 收到的那个对象。 */
+  agentTools: { writeAllow?: unknown; touch?: { session?: unknown } | undefined; fileObservations?: unknown };
+  /** `createMcpClientTools({...})` 收到的那个对象。 */
+  mcpTools: { policy?: unknown };
+}
+
+/**
+ * **装配期事务 (commit)**: 四道闸的接线**当场验一次**, 有一条没接上就抛 —— `createAgentLeafRunner`
+ * 不返回 runner, 这个节点根本不发布 (形状借 DeepSeek Harness 的 `AgentSetup`: setup/commit 抛错则
+ * 两个 id 都不发布; 只借语义, 不引依赖)。
+ *
+ * ## 为什么非要有它
+ *
+ * 2026-08-25 本仓主树实测 (`writeset/touch-ledger.ts:27` 记着原文): 台账 `rows=2924` 而
+ * `strict=0 / inferred=0` —— **agent 工具面一条都没记进来**。成因是 `assemble.ts` 的两处装配
+ * 没传 `opts.touch`, 而当时的接线写成 `...(touchOpt ? { touch: … } : {})`, 于是引擎按调用发的
+ * session **无处可落**。leaf 照跑不误, tsc 干净, 测试全绿, **没有任何东西红** ——
+ * 它被发现纯属另一档 (cli) 的数把它衬托出来。这道 commit 就是把"没红"这件事本身变红。
+ *
+ * ## 判据是两条, 不是一条
+ *
+ * ① **键在不在** —— 条件 spread 丢键 (上面那次的真实形态);
+ * ② **getter 真读 ALS 没有** —— 把 per-call 的东西烤进装配期闭包 (`writeAllow: opts.writeAllow`
+ *    这种写法), 类型一样过, 后果是**拿上一个节点的写集去判这一个**。探针塞哨兵进 ALS, 读不回来
+ *    就是烤死了。
+ *
+ * 两条都是 `tsc` 与既有测试**结构上抓不到**的形态, 所以这道闸不冗余。
+ *
+ * ⚠ 本函数**不判缺省策略**: 四道闸缺省是放行还是拒绝, 由各自的判据面决定 (见
+ * {@link LeafGatePosture})。这里只判"接线在不在", 不动任何判据。
+ *
+ * 反向自检 (leaf-gate-commit.test.ts): 摘掉 `agentTools.touch` / 把 `writeAllow` 换成烤死的常量
+ * thunk / 摘掉 `mcpTools.policy` / 把 `fileObservations` 换成每次新建 Map 的 thunk ——
+ * 四条用例分别当场红。
+ */
+export function commitLeafGates(store: AsyncLocalStorage<LeafCallScope | undefined>, handed: LeafGateWiring): void {
+  const missing: string[] = [];
+  /**
+   * 观察台的哨兵**用对象身份判, 不用值判** (2026-09-01, 第四道闸)。
+   * 版本守卫的观察台是个 Map, 「烤死在装配期」的写法 (`fileObservations: () => new Map()` /
+   * 指向某个常量 Map) 返回的**也是一个 Map** —— 只比"是不是 Map"根本分不出来。
+   * 身份判则一击命中: 只有真读了本次 ALS 的 getter 才会回到**这一个**对象。
+   */
+  const probeObservations = new Map<string, FileObservation>();
+  store.run(
+    {
+      session: GATE_COMMIT_PROBE,
+      mcpAllow: [GATE_COMMIT_PROBE],
+      writeAllow: [GATE_COMMIT_PROBE],
+      writeDenials: new Map(),
+      fileObservations: probeObservations,
+    },
+    () => {
+      const sessionGetter = handed.agentTools.touch?.session;
+      if (typeof sessionGetter !== 'function' || (sessionGetter as () => unknown)() !== GATE_COMMIT_PROBE) {
+        missing.push('touchSession (碰撞台账 session 落不进工具面)');
+      }
+      const writeGetter = handed.agentTools.writeAllow;
+      const seen = typeof writeGetter === 'function' ? (writeGetter as () => unknown)() : undefined;
+      if (!Array.isArray(seen) || seen[0] !== GATE_COMMIT_PROBE) {
+        missing.push('writeAllow (写域闸的按调用写集读不到)');
+      }
+      const policyGetter = handed.mcpTools.policy;
+      const policy = typeof policyGetter === 'function' ? (policyGetter as () => unknown)() : undefined;
+      const allow = (policy as { sideEffects?: { allow?: unknown } } | undefined)?.sideEffects;
+      if (typeof allow !== 'object' || allow === null || !Array.isArray(allow.allow) || allow.allow[0] !== GATE_COMMIT_PROBE) {
+        missing.push('mcpAllow (外部 MCP 授权清单读不到)');
+      }
+      const obsGetter = handed.agentTools.fileObservations;
+      const obs = typeof obsGetter === 'function' ? (obsGetter as () => unknown)() : undefined;
+      if (obs !== probeObservations) {
+        missing.push('fileObservations (版本守卫的按调用观察台读不到)');
+      }
+    },
+  );
+  if (missing.length > 0) {
+    throw new Error(
+      `[agent-leaf] 闸装配失败, 本 runner 不发布 (装配期事务): ${missing.join(' · ')}。` +
+        '声明了要装却没真正装上 —— leaf 照跑会让这些闸静默缺席 (touch-ledger.ts:27 记着这个形态的实测)。',
+    );
+  }
+}
+
+/**
+ * 本次调用三道闸的在场态 (缺席即具名, 见 {@link LeafGateStates})。
+ *
+ * 判据 = **判据面在不在**, 不是"有没有判出问题": `writeAllow: []` 是"声明了什么都不许写" →
+ * `enforced`; `undefined` 才是缺席。per-call 缺席时回落 runner 级兜底 (与三个 getter 的
+ * `store?.x ?? opts.x` 同一条优先序 —— 这里若只看 `input`, 会把 runner 级配好的闸误报成缺席)。
+ */
+export function leafGateStates(
+  input: Pick<AgentLeafInput, 'writeAllow' | 'mcpAllow' | 'touchSession'>,
+  opts: Pick<AgentLeafRunnerOpts, 'writeAllow' | 'mcpAllow' | 'touch'>,
+): LeafGateStates {
+  const mcp = input.mcpAllow ?? opts.mcpAllow;
+  return {
+    writeAllow: (input.writeAllow ?? opts.writeAllow) !== undefined ? 'enforced' : 'unavailable',
+    // mcpAllow 的判据面与 leafMcpPolicy 同源: 空清单在那里就等于没声明 (deny 全部), 这里同判。
+    mcpAllow: mcp && mcp.length > 0 ? 'enforced' : 'unavailable',
+    touchSession: (input.touchSession ?? opts.touch?.session) !== undefined ? 'enforced' : 'unavailable',
+  };
+}
+
 export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeafRunner {
   // sandboxRoot 设 → subprocess-per-leaf under bwrap: 整个 leaf 进程关进只见 worktree 的文件系统视图
   // (cwd=worktree, 主 repo 物理不可见) → 所有命令通道 (bash / 模型幻觉的 shell / 未来工具) + git-show
@@ -1518,11 +1650,12 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
   // (下方 wrapper 用 run() 开, 不用 enterWith —— enterWith 会改到调用方的共享上下文, 并发节点互踩)。
   // per-call 状态 (碰撞台账 session + MCP 授权清单) 落**同一个** ALS: 装配期闭包只挂 getter,
   // 调用期由下方 wrapper 的 run() 写入 —— 并发调用各一个上下文互不串 (enterWith 会串, 见下)。
-  const touchSessionStore = new AsyncLocalStorage<
-    { session?: string; mcpAllow?: string[]; writeAllow?: string[]; writeDenials?: Map<string, number> } | undefined
-  >();
+  const touchSessionStore = new AsyncLocalStorage<LeafCallScope | undefined>();
   const touchOpt = opts.touch; // const 让闭包里的收窄成立 (getter 里引用 touchOpt.session)
-  const baseTools = createOmdAgentTools({
+  // 装配期事务 (2026-09-01): 下面两个 opts 对象**先具名再交出去** —— commit 检查判的就是
+  // "真正交到工具工厂手里的那一份" (见 commitLeafGates)。直接内联字面量的话, 条件 spread
+  // 丢了哪个键在外面一点痕迹都没有, 而那正是 2026-08-25 台账缺口的形态。
+  const agentToolsOpts: OmdAgentToolsOpts = {
     cwd,
     // 逃生口接到 leaf 这条路 (2026-08-14, 夜跑读数第二层问题): 此前 `.omd/config.json` 的
     // `tui.sandbox.allow/deny` 只对 TUI 生效, DAG leaf 吃 DEFAULT_SANDBOX_CONFIG (allow 恒空) ——
@@ -1547,18 +1680,31 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // getter 返 undefined 时 touchWrite 本来就早返回, 且库是**懒开**的 (agent-tools.ts),
     // 所以无条件装 getter 对「没有 session」那条路零行为变化、零文件产生。
     touch: { session: () => touchSessionStore.getStore()?.session ?? touchOpt?.session },
-  });
+    // 版本守卫 (2026-09-01): **DAG leaf 这条路默认开**, 不给开关。
+    // 理由: #253 之后隔离粒度是 per-run 不是 per-leaf (run-worktree.ts:154 只以 runId 作键),
+    // 而 agent 叶默认并发 36 (fleet.ts:40) —— 同一棵 worktree 里的并发兄弟盲盖同一个文件是
+    // 常态。想按「这次有没有并发」开关闸是行不通的: 图可以在运行期长节点, **写的那一刻
+    // 拿不到「后面还会不会起兄弟」这个事实**, 把判据建在拿不到的事实上等于没有判据。
+    // 缺席那一路 (getter 返 undefined) 留给对话位 —— 它们压根不传这个 opt。
+    fileObservations: () => touchSessionStore.getStore()?.fileObservations,
+  };
+  const baseTools = createOmdAgentTools(agentToolsOpts);
   const hashlineTools = opts.hashlineEdit ? createHashlineCustomTools({ cwd }) : [];
   // 外部 MCP 双 meta-tool (SDD D-8): 零注册 → [] (meta-tools.ts:72-73) → 工具面与 prompt 前缀
   // 与接线前字节零变化 (I-1)。策略按调用求值 (getter 读 ALS): per-run 授权清单非空 → {allow},
   // 否则 deny —— leaf 是执行叶子, 不声明即不授权 (chat 座位的 'allow' 缺省不传染叶子)。
-  const mcpTools = createMcpClientTools({
+  const mcpToolsOpts: McpClientToolsOpts = {
     cwd,
     session: () => touchSessionStore.getStore()?.session ?? touchOpt?.session,
     policy: () => leafMcpPolicy(touchSessionStore.getStore()?.mcpAllow ?? opts.mcpAllow),
     ...(opts.mcpDeps?.poolDeps ? { poolDeps: opts.mcpDeps.poolDeps } : {}),
     ...(opts.mcpDeps?.ledger ? { ledger: opts.mcpDeps.ledger } : {}),
-  });
+  };
+  const mcpTools = createMcpClientTools(mcpToolsOpts);
+  // ── 装配期事务的 commit 点 (2026-09-01) ──────────────────────────────────────
+  // 四道闸的接线在这里**当场验一次**: 有一条没接上就抛, runner 不返回 = 这个节点不发布。
+  // 位置必须在这儿 —— 两个 opts 对象已交出去、runner 还没造出来, 正是"发布前"那一刻。
+  commitLeafGates(touchSessionStore, { agentTools: agentToolsOpts, mcpTools: mcpToolsOpts });
 
   // S3 read_skill umbrella (D-S3-5): 同一组装段挂 createSkillTools, roots 显式注入含 cwd 项目根, 与 mcpTools 并列进拼装点。
   // 零 skill 不挂 (skill-tool.ts:52 短路), 保证 I-1 零 skill 仓 tools 数组与 S2 基线字节相同。
@@ -2701,12 +2847,26 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
   // (引擎) 的共享上下文**, 并发节点会互相覆盖 (withScope 文档明说的坑); run() 的上下文随调用
   // 结束自动回收, 无需 exit。
   return async (input) => {
+    // 缺席即具名 (2026-09-01): 三道闸的在场态先算出来 —— 「闸缺席」与「闸判过且合规」此前在
+    // 结果里长得一模一样 (见 LeafGateStates 的注)。**只报不判**: 缺省仍是缺省, 一个字节的
+    // 判据都没动, 变的只是它可分辨。日志与结果两处都留: 日志给现场 (结果不一定落盘),
+    // 结果给引擎 (日志不一定还在)。
+    const gates = leafGateStates(input, opts);
+    logger.info({ cwd, gates }, '[agent-leaf] 本次调用三道闸的在场态 (unavailable = 没配这道闸, 不是"没越界")');
     // 刀② (2026-08-30): 恒入 ALS —— 撞墙计数的 Map 要按调用新建, 而写域闸可能只由装配期
     // opts.writeAllow 启用 (那条路此前不进 store)。getter 都是 `store?.x ?? opts.x` 形,
     // 恒入对「没 session / 没 per-call 清单」的调用零行为变化。
     return touchSessionStore.run(
-      { session: input.touchSession, mcpAllow: input.mcpAllow, writeAllow: input.writeAllow, writeDenials: new Map() },
-      () => runOnce(input),
+      {
+        session: input.touchSession,
+        mcpAllow: input.mcpAllow,
+        writeAllow: input.writeAllow,
+        writeDenials: new Map(),
+        // 版本守卫的观察台按调用新建 (与 writeDenials 同一格): 上一个节点看过什么,
+        // 与这一个节点能不能覆写, 是两件事。
+        fileObservations: new Map(),
+      },
+      async () => ({ ...(await runOnce(input)), gates }),
     );
   };
 }

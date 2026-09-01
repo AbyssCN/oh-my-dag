@@ -144,6 +144,11 @@ describe('#262 碰撞台账 agent 工具面接线 (生产链: engine touchSessio
       cwd,
       sdkQueryFn: (props) =>
         driveBridge(props.options, async (client) => {
+          // 2026-09-01 版本守卫上线之后, 「整体覆写一份本次调用没读过的已存在文件」会被当场拒 ——
+          // 而节点 b 覆写的正是 a 的产物, 这个 fixture 撞的就是那一格。先 read 再 write 是判词点名
+          // 的那条路, 也是真 leaf 会走的路。a 那一跑文件还不存在, read 会失败 → 吞掉 (那一跑是新建)。
+          // ⚠ read 不进台账 (只有写侧记), 所以下面的行数判据一个字都不用改。
+          await client.callTool({ name: 'read', arguments: { path: 'shared.txt' } }).catch(() => undefined);
           await client.callTool({ name: 'write', arguments: { path: 'shared.txt', content: 'x' } });
         }),
     });

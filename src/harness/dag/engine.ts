@@ -343,7 +343,7 @@ export function seenUpstreamOutputs(
  *
  * 把「绝对路径怎么解析到 run 的产物根」收成一处 —— 之前散落在 `:217 / :825 / :837 / :1121`
  * 四处, 任何一处漏写 INV-2/3 锚回都会导致 leaf 报的路径 (绝对 / 相对) 落不到产物根上,
- * 失败方向**全部静默** (hashArtifact 返回 null 不抛不记)。本 helper 是这四处的唯一实现。
+ * 失败方向**全部静默** (损坏路径 ⇒ ENOENT ⇒ hashArtifact 返回 null 且不抛不记)。本 helper 是这四处的唯一实现。
  *
  * INV (与 SDD C-1 一字对齐):
  * - INV-1 相对路径 ⇒ `${root}/${p}`, 与今天逐字相同。
@@ -1783,7 +1783,8 @@ async function executePlan(
         if (h) artifactHashes[rp] = h;
         else {
           // S-50 后半 (2026-08-24): 根因 (三处实现) 已由 `resolveArtifactPath` 收拢, 但**失败仍然静默** ——
-          // `hashArtifact` 对「文件真不在」与「在但读不了」都返回 null 且不抛不记 (坑①: 两种成因塌成一格)。
+          // `hashArtifact` 对「文件真不在」与「在但读不了」**都返回 null** (坑①: 两种成因在返回值上塌成一格;
+          // 2026-09-01 起它对非 ENOENT 会自己留一行 warn, 但**返回值仍分不开** —— 所以下面两路分写照留)。
           // 不记的后果不是这一跑坏掉, 是 **resume 的判毒/复用依据缺一块而没人知道**:
           // 少一个 hash ⇒ 该节点下次被当成"输入变了"重跑, 或反过来被当成没变而复用一个错的产物。
           // 这里只留证据不改行为 (告知层 fail-open), 但两种成因分开写 —— 合成一句"hash 失败"
@@ -5690,8 +5691,16 @@ async function executePlan(
   // ── 运行时写竞争 (2026-08-06, 只报不拦) ────────────────────────────────────────
   // 此前 `write-race` 只有**跑前静态**那一半 (看 output_path 声明), 于是两个并发兄弟经 bash
   // 撞在同一条没声明的路径上时, 没有任何一处知道。判据与分母都在 detectRuntimeWriteRace 上。
-  // ⚠ 路径解析用**这个节点自己的产物根** —— 同 collectRoundArtifacts 那条: R2 隔离档下两个 leaf
-  //   各在自己的 worktree 里写 out.md, 比相对路径会把整个隔离档报成一片红。
+  // ⚠ **隔离是 per-run 不是 per-leaf** (2026-09-01 更正: 此处原注写着"隔离档下两个 leaf 各在
+  //   自己的 worktree 里写 out.md", 与下方 `:5700` D-Q 那条自相矛盾, 而且是错的)。
+  //   证据链: `run-worktree.ts` 的 `runWorktreeDir(cwd, runId)` **只以 runId 作键**, 全仓仅此一处
+  //   `git worktree add`; `mcp/assemble.ts` 一个 run 只造一个 `createAgentLeafRunner`, `cwd` 烤死在
+  //   构造期 (`AgentLeafInput` 里根本没有 cwd 字段); 而 agent 叶默认并发 36 (`fleet.ts` 的
+  //   `AGENT_DEFAULT_FANOUT`)。⇒ **一个 run 的并发 leaf 共享同一棵 worktree、同一个 git index**,
+  //   两个 leaf 的 `out.md` 就是同一个文件 —— 本探针要抓的正是它, 别再推一遍。
+  // ⚠ 路径解析仍逐结果取根 (`r.artifactRoot ?? continuity?.repoRoot ?? process.cwd()`): 兜底链是
+  //   **按节点求值**的, 缺 artifactRoot 的节点会落到 repoRoot 而不是 worktree —— 根不同的两个节点
+  //   比相对路径会误判成撞。归一成绝对路径之后再比, 两边的根是什么都不影响判据。
   const raceProbe = (() => {
     // 两档证据**分开算**: 严格 = 受控写工具的事实; 推断 = 严格 ∪「命令点名要写且盘上核实过」。
     // 合并会让「这条 finding 是真的还是推出来的」永久分不开 —— 而升不升闸恰恰要看这个分野。
