@@ -94,6 +94,7 @@
     "@types/bun": "latest",
     "@types/js-yaml": "^4.0.9",
     "@xterm/headless": "^6.0.0",
+    "knip": "^6.34.0",
     "playwright-core": "^1.62.0",
     "typescript": "^5.7.0",
     "yaml": "^2.9.0"
