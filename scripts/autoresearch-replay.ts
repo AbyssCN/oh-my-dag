@@ -56,6 +56,11 @@ import {
   type PlanFitness,
 } from '../src/eval/replay/fitness';
 import {
+  DEFAULT_VARIANT_DIR,
+  readVariant,
+  variantSpecToPromptOpts,
+} from '../src/eval/replay/variant';
+import {
   conductorSystemPrompt,
   parsePlan,
   PLAN_BOUNDARY,
@@ -352,7 +357,12 @@ export async function defaultLiveProvider(
   }
   const seat = tryResolveSeatModel('conductor', { explicit: conductorCoord });
   const model = seat?.model ?? conductorCoord;
-  const sys = conductorSystemPrompt({ profile: 'full' });
+  // P2 切片 1 (2026-09-01, C-1 / INV-1): 读 `runs/autoresearch/variants/<name>.json`,
+  // 转 opts 后注入 conductorSystemPrompt。文件不存在 → readVariant 返 null → 转换返
+  // undefined → conductorSystemPrompt 输出与无 variant 字段调用**逐字节相同** (snapshot 守恒闸)。
+  const variantDir = join(process.cwd(), DEFAULT_VARIANT_DIR);
+  const variantOpts = variantSpecToPromptOpts(readVariant(variantDir, ctx.variant));
+  const sys = conductorSystemPrompt({ profile: 'full', variant: variantOpts });
   const res = await llmCaller({
     model,
     messages: [

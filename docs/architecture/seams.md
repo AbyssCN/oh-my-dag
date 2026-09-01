@@ -54,7 +54,7 @@
 | 字段 | 必填 | 类型 | 一句话 | 消费方 (前3) |
 |---|---|---|---|---|
 | `maxPlanRetries` |  | `number` | conductor 规划无效输出的有界重试 (默认 2 → ≤3 次)。 | `src/harness/dag/engine.ts`<br>`src/harness/plan/graph-cycle.ts` (2 文件) |
-| `agents` |  | `string[]` | 限定 conductor 可派的 agent roster (进规划 system prompt)。 | `src/harness/pack/pack.ts`<br>`src/harness/inspect-tool.ts`<br>`src/harness/dag/engine.ts` (12 文件) |
+| `agents` |  | `string[]` | 限定 conductor 可派的 agent roster (进规划 system prompt)。 | `src/harness/pack/pack.ts`<br>`src/harness/inspect-tool.ts`<br>`src/harness/dag/engine.ts` (11 文件) |
 | `agentTemplates` |  | `ReadonlyMap<string, AgentTemplate>` | Agent 模板注册表 (name → 角色卡, 见 agent-templates.ts)。 | `src/harness/dag/engine.ts` (1 文件) |
 | `conductorPromptProfile` |  | `'full' \| 'lean' \| 'full-kb' \| 'lean-kb' \| 'bare'` | conductor system prompt 档位 (SDD v2, 2026-07-25): 'full' (默认, 弱 conductor 教练全量) \| 'lean' (只留环境事实, 顶级 conductor 如 k3 用 … | `src/eval/oracles/conductor-modelmix.ts`<br>`src/harness/dag/engine.ts`<br>`src/mcp/assemble.ts` (4 文件) |
 | `oracleCmd` |  | `string` | oracle 命令 (如 "bun run typecheck && bun test"): plan 中 command 与之等价的节点 在执行前被确定性过滤 (空白规范化后精确匹配, 最小无害边重连)。 | `src/mcp/tools/fleet.ts`<br>`src/eval/tasks/oracle-plan-filter.ts`<br>`src/eval/oracles/agent-leaf-prompt.ts` (11 文件) |
@@ -116,4 +116,4 @@ leaf prompt 整形 seam: 注入 leaf 上下文/前缀/压缩级与档位闸 (省
 | `sessionId` |  | `string` | 本次 run 的 Langfuse trace 分组 session id (conductor+leaf 全部经 send 归此 session)。 | `src/tui/tui.ts`<br>`src/tui/backend-embedded.ts`<br>`src/harness/dag/engine.ts` (36 文件) |
 | `onComplete` |  | `(result: ExecutorDagResult) => void \| Promise<void>` | 运行完成钩子 (留痕层接口)。 | `src/mcp/tools/dag-tools.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/plan/iterate.ts` (7 文件) |
 | `onNodeEvent` |  | `(e: DagNodeEvent) => void` | 节点级进度事件 (2026-07-20, MCP 派发简报/活体 status 的数据源): planned = 图定型 (全部节点 id+kind, 每轮 plan/escalation 重规划各发一次) start = 节点起跑 … | `src/mcp/tools/fleet.ts`<br>`src/mcp/tools/dag-tools.ts`<br>`src/mcp/assemble.ts` (11 文件) |
-| `continuity` |  | `{ manager: CheckpointManager; runId: string; resume?: boo…` | W2 continuity (SDD C4): 节点级 checkpoint 写入磁盘 + 崩溃恢复跳过。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/dag-tools.ts`<br>`src/mcp/tools/goal.ts` (57 文件) |
+| `continuity` |  | `{ manager: CheckpointManager; runId: string; resume?: boo…` | W2 continuity (SDD C4): 节点级 checkpoint 写入磁盘 + 崩溃恢复跳过。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/dag-tools.ts`<br>`src/mcp/tools/goal.ts` (58 文件) |

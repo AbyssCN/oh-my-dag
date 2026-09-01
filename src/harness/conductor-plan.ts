@@ -23,6 +23,25 @@ import {
   lintDecisionEducation,
 } from './prompt-lint';
 
+/**
+ * Variant opts shape (P2 切片 1, 2026-09-01) —— conductor 提示面的变异注入面。
+ * 真源 = `src/eval/replay/variant.ts:VariantPromptOpts`; 此处只镜像形状 (避免循环依赖:
+ * variant.ts 也 import `ConductorPromptProfile` from 这里)。
+ *
+ * C-1 / INV-1 守恒: variant 全字段缺省 / undefined → 输出与无 variant opts 调用**逐字节相同**
+ * (snapshot 测试守恒闸)。variant 在场只走「明确在场」的字段增量, 不污染既有段落生成逻辑。
+ */
+export interface VariantFewShotCard {
+  id: string;
+  name: string;
+  body: string;
+}
+
+export interface VariantPromptOpts {
+  fewShotCards?: VariantFewShotCard[];
+  extraAppend?: string[];
+}
+
 /** Frozen-prefix boundary (SDD §2 __SYSTEM_PROMPT_DYNAMIC_BOUNDARY__ analogue). */
 export const PLAN_BOUNDARY = '\n\n===== TASK (dynamic, below the frozen boundary) =====\n\n';
 
@@ -633,6 +652,14 @@ export function conductorSystemPrompt(
      * 规划期就告知, 比画完被闸拒回省一发 (与 D-D 禁嵌套写进 prompt 同理)。省略/true = 不提。
      */
     researchAvailable?: boolean;
+    /**
+     * Variant opts (P2 切片 1, 2026-09-01) —— conductor 提示面变异注入面。
+     * 全字段缺省 / undefined → 与无此字段调用**逐字节相同** (C-1 / INV-1 守恒)。
+     * fewShotCards 在场 → 在 few-shot 段注入 (裸 baseline 段保持不变, 卡追加在末尾);
+     * extraAppend 在场 → 在 TRUST_FENCE_RULE 之前追加; 二者均不替换任何既有内容。
+     * bare 档 (profile='bare') 不触注入 (零附加内容基线)。
+     */
+    variant?: VariantPromptOpts;
   } = {},
 ): string {
   if (opts.profile === 'bare') return bareConductorSystemPrompt();
@@ -1057,8 +1084,48 @@ export function conductorSystemPrompt(
     '    "kind"?: "primitive", "primitive"?: "parallel"|"pipeline"|"loop-until"|"verify"|"judge"|"discovery"|"iterate"|"tournament"|"router"|"race"|"escalation"|"saga"|"escape-hatch", "params"?: object } } }',
     // A8 (2026-07-31): 可信边界规则进**冻结前缀** —— 规则是静态文本 (进得了 prompt cache),
     // 每轮现生成的 token 值走动态段。两者分开放正是为了不让一次注入防御把缓存打掉。
+    // P2 切片 1 (2026-09-01, C-1 / INV-1): variant 注入**只在此刻之前** —— 不替换任何既有
+    // 段落, 只在 TRUST_FENCE_RULE 之前追加。variant 全字段缺省 → 返 [] → 字节等同无 variant。
+    ...buildVariantInjection(opts.variant, opts.profile),
     TRUST_FENCE_RULE,
   ].join('\n');
+}
+
+/**
+ * P2 切片 1: 把 variant opts 转成要 spread 进 prompt 数组的行序列。
+ *
+ * C-1 / INV-1 守恒闸: 全字段缺省 / undefined / bare 档 → 返 `[]` → spread 进数组是 no-op,
+ * 输出与无 variant 字段调用**逐字节相同** (snapshot 测试 `conductor-prompt-snapshot.test.ts` 守恒)。
+ *
+ * 设计取舍: 注入只走「明确在场」的字段, 不替换既有段落。few-shot 卡单独成段, 出现在
+ * TRUST_FENCE_RULE 之前; extraAppend 紧随其后追加。bare 档 (profile='bare') 不触注入,
+ * 守零附加内容基线 (INV-1 #182)。两者都缺席 → 返 [] (byte-identical 闸)。
+ */
+function buildVariantInjection(
+  variant: VariantPromptOpts | undefined,
+  profile: ConductorPromptProfile | undefined,
+): string[] {
+  if (profile === 'bare') return [];
+  if (variant === undefined) return [];
+  const cards = variant.fewShotCards ?? [];
+  const extras = variant.extraAppend ?? [];
+  if (cards.length === 0 && extras.length === 0) return [];
+  const out: string[] = [];
+  if (cards.length > 0) {
+    out.push('');
+    out.push('Variant few-shot cards (autoresearch P2 injected, baseline — consult before composing):');
+    for (const c of cards) {
+      out.push(`- "${c.id}" (${c.name}):`);
+      for (const line of c.body.split('\n')) out.push(`    ${line}`);
+    }
+    out.push('');
+  }
+  if (extras.length > 0) {
+    out.push('');
+    for (const e of extras) out.push(e);
+    out.push('');
+  }
+  return out;
 }
 
 /**
