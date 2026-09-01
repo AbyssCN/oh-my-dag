@@ -170,6 +170,30 @@ const table = (rows: string[], wave?: string): string =>
   ].join('\n');
 
 describe('parseBreakdown — 表解析 (切片 1)', () => {
+  test('QUOTED_PIPE_CELL: 引号内的 | 是内容不是列分隔 (t-verify-quoting 根因, run 32d16141 实测)', () => {
+    // 真实事故形状: verify 列 `jq -e '.generations | length >= 3' …` 被裸 split('|')
+    // 截到 19 字, command 闸对半截命令报「引号未闭合」—— 闸无罪, 截它的是这里。
+    // 证伪方式: splitTableRow 退回 trimmed.split('|') → 本用例红。
+    const fullVerify =
+      "jq -e '.generations | length >= 3' runs/x/sessions/s1/session.json && ugrep -c 'generation' runs/x/journal.md";
+    const text = [
+      '## 契约 (Contracts)',
+      '- **INV-1** — GWT:*Given* x *When* y *Then* z。',
+      '## 分解 (Breakdown)',
+      '',
+      '| 切片 | 写集 | 依赖 | verify |',
+      '|---|---|---|---|',
+      `| 1 实跑 | \`runs/x/journal.md\` | — | \`${fullVerify}\` |`,
+      '| 2 双引号也认 | `runs/x/b.md` | 1 | `awk "{print $1 | 0}" runs/x/b.md` |',
+    ].join('\n');
+    const bd = parseBreakdown(text);
+    expect(bd.slices).toHaveLength(2);
+    expect(bd.slices[0]!.verify).toBe(fullVerify);
+    expect(bd.slices[0]!.writeSet).toEqual(['runs/x/journal.md']);
+    expect(bd.slices[1]!.verify).toContain('| 0}');
+    expect(bd.slices[1]!.deps).toEqual([1]);
+  });
+
   test('真实样例: 本 SDD 自己的 Breakdown 表 (5 切片 + 波形) 全解析', () => {
     // 这份 SDD 就是解析器的真实输入形状 (✅ 标记 · backtick 路径 · 「—(理由)」空依赖 ·
     // 「N、M(理由)」多依赖 · 「+ test」简写)。断言只钉**结构**不钉文案 —— 切片名会随

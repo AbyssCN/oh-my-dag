@@ -101,6 +101,46 @@ export interface SddBreakdown {
   readonly falsify?: Readonly<Record<number, readonly SddFalsify[]>>;
 }
 
+/**
+ * 表行 → 单元格:**认引号的 `|` 切分**(t-verify-quoting 根因修, 2026-09-02)。
+ *
+ * 实测(run 32d16141 s5-green):verify 列 `jq -e '.generations | length >= 3' …` 里
+ * 单引号内的 `|` 被裸 `split('|')` 当成列分隔 → verify 截到 19 字 → command 闸对着
+ * 半截命令报「引号未闭合」。**闸判得对,是本函数上游把命令截了** —— 与 command-leaf
+ * 掩码路径的教训同构:切分器不认引号,引号内内容就会被当结构。
+ *
+ * 规则:`'` / `"` / 反引号三种引号内的 `|` 是内容;引号态不嵌套(先开先闭)。
+ * 未闭合引号(散文撇号等)会吞掉该行余下分隔 → 行的列数变少 → 走既有 fail-loud
+ * 「不足四列」报错,不静默(比裸切分的静默截断严一档)。
+ *
+ * 证伪方式:退回 `trimmed.split('|')` → sdd-direct.test.ts 的「引号内管道不切列」用例红。
+ */
+function splitTableRow(trimmed: string): string[] {
+  const cells: string[] = [];
+  let cur = '';
+  let quote: "'" | '"' | '`' | null = null;
+  for (const ch of trimmed) {
+    if (quote !== null) {
+      if (ch === quote) quote = null;
+      cur += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      quote = ch;
+      cur += ch;
+      continue;
+    }
+    if (ch === '|') {
+      cells.push(cur.trim());
+      cur = '';
+      continue;
+    }
+    cur += ch;
+  }
+  cells.push(cur.trim());
+  return cells;
+}
+
 /** 分解段起点 (与 REQUIRED_SECTIONS 同一族匹配; 段止于下一个 `## `)。 */
 const BREAKDOWN_HEADING = /^##\s*(?:分解|Breakdown)/m;
 /** 波形行: `并行波形:{1,3} → {2}` (允许 backtick / 引用前缀 / 全半角冒号)。 */
@@ -349,7 +389,7 @@ export function parseBreakdown(text: string): SddBreakdown {
   for (const line of section.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed.startsWith('|')) continue;
-    const cells = trimmed.split('|').map((c) => c.trim());
+    const cells = splitTableRow(trimmed);
     if (cells[0] === '') cells.shift();
     if (cells[cells.length - 1] === '') cells.pop();
     if (cells.every((c) => SEPARATOR_CELL.test(c))) continue;
