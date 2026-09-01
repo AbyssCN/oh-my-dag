@@ -4,12 +4,12 @@
  *     坐席检查纯告警不抛。判据 = 凭证维度 (非 key-blind 的 assertModelResolvable)。
  */
 import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { clearProviders, registerProvider } from './providers';
-import { setPiTransportDepsForTest } from './pi-transport';
-import { reportProviderFailure, resetProviderCooldowns } from './provider-health';
+import { piEnvApiKey, setPiTransportDepsForTest } from './pi-transport';
+import { PERIOD_COOLDOWN_MS, reportProviderFailure, resetProviderCooldowns } from './provider-health';
 import { roleModelWithFallback, resetRoleFallbackWarned, warnUnregisteredRoles, usable } from './role-fallback';
 
 const FAKE = { baseUrl: 'http://x.invalid', apiKey: 'k', api: 'openai-compatible' as const };
@@ -139,5 +139,75 @@ describe('claude-code 订阅通道凭证判据 (issue #6 根因修, 2026-08-10)'
         CLAUDE_CODE_OAUTH_TOKEN: 't',
       }),
     ).toBe(true);
+  });
+});
+
+/**
+ * 健康维度按 (channel, model) 精确判 —— 票 t-judge-cred (2026-09-02)。
+ *
+ * 根因: `usable()` 手里拿着全坐标, 却只问 channel 级宽门 `channelInCooldown(provider)` ——
+ * 把 model 那一半扔了。于是同一 channel 里**任何一个** model 的冷却会把整条 channel 判死。
+ * 盘上实测 (run 1a4e83ce, 2026-09-01T11:56Z): `.omd/seat-health.json` 里只有
+ * `opencode-go:deepseek-v4-pro` 一条 403 周期档 (11:51:24Z → 17:51:24Z), judge
+ * `opencode-go:glm-5.2` 就被判不可用 → 静默顺延兜底; 而座位探针对 glm-5.2 发真调用是 ✓。
+ * 两个面判词相反, 且 WARN 把「冷却中」写成「无凭证」, 于是这票一开始被当成凭证 bug。
+ *
+ * 反向自检 (逐条验过):
+ * - 把 `coordInCooldown` 改回 `channelInCooldown(p)` → 第一条当场红 (回到本 bug);
+ * - 删掉 `inCooldown(provider)` 那一跳 → 第二条当场红 (裸名上报的整条 channel 冷却被漏掉);
+ * - 把健康闸整个删掉 → 第二、三条当场红 (修的是粒度, 不是放水)。
+ */
+describe('健康闸按 (channel, model) 精确判 (票 t-judge-cred)', () => {
+  const KEYED = { OPENCODE_API_KEY: 'sk-x' };
+  let prevHealthPath: string | undefined;
+
+  beforeEach(() => {
+    clearProviders();
+    resetProviderCooldowns();
+    isolateAuth();
+    // 周期档会写盘 (`.omd/seat-health.json`, 进程 cwd 锚) → 改道 tmp, 否则测试污染仓内真账本。
+    prevHealthPath = process.env.OMD_SEAT_HEALTH_PATH;
+    process.env.OMD_SEAT_HEALTH_PATH = join(
+      mkdtempSync(join(tmpdir(), 'omd-seat-health-')),
+      'seat-health.json',
+    );
+  });
+  afterEach(() => {
+    clearProviders();
+    resetProviderCooldowns();
+    if (prevHealthPath === undefined) delete process.env.OMD_SEAT_HEALTH_PATH;
+    else process.env.OMD_SEAT_HEALTH_PATH = prevHealthPath;
+  });
+  afterAll(() => {
+    setPiTransportDepsForTest();
+  });
+
+  test('★ 同 channel 里**另一个** model 周期熔断 → 本坐标仍 usable (run 1a4e83ce 原样重放)', () => {
+    reportProviderFailure('opencode-go:deepseek-v4-pro', PERIOD_COOLDOWN_MS);
+    expect(usable('opencode-go:glm-5.2', KEYED)).toBe(true);
+    // 真坏的那一个仍判死 —— 精确到 model 不等于放水。
+    expect(usable('opencode-go:deepseek-v4-pro', KEYED)).toBe(false);
+  });
+
+  test('整条 channel 熔断 (裸名上报) → 该 channel 全坐标不可用 (宽门那一半不许丢)', () => {
+    reportProviderFailure('opencode-go');
+    expect(usable('opencode-go:glm-5.2', KEYED)).toBe(false);
+  });
+
+  test('裸 channel 坐标 → 仍走宽门 (落到哪个 model 未知, 保守判死)', () => {
+    reportProviderFailure('opencode-go:glm-5.2');
+    expect(usable('opencode-go', KEYED)).toBe(false);
+  });
+
+  /**
+   * 结构闸: 凭证的 provider→env-key 映射只有一份 (pi-transport 的 `PI_ENV_KEY_MAP`),
+   * role-fallback 这一侧不许再抄一张 —— 探针的真调用取 key 走的也是它。
+   * 反向自检: 在 `credentialed()` 里补一句 `env.OPENCODE_API_KEY` 兜底 → 第一条当场红;
+   * 从 `PI_ENV_KEY_MAP` 删掉 `opencode-go` 那一行 → 第二条当场红。
+   */
+  test('凭证判据单一真源: role-fallback 不自存 env-key 表', () => {
+    const src = readFileSync(new URL('./role-fallback.ts', import.meta.url), 'utf8');
+    expect(src).not.toMatch(/_API_KEY/);
+    expect(piEnvApiKey('opencode-go', KEYED)).toBe('sk-x');
   });
 });

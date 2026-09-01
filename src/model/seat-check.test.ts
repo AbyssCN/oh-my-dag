@@ -4,10 +4,12 @@
  * GWT: *Given* config 座位指向无凭证 provider, *When* run 启动, *Then* 起跑自检**响亮失败**并指名该座位。
  * P0 前: 无凭证座位静默顺延兜底 / 静默落硬编码 deepseek → 跑到 leaf 调用才 402, 报错还不说是哪个座。
  */
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setPiTransportDepsForTest } from "./pi-transport";
+import { reportProviderFailure, resetProviderCooldowns } from "./provider-health";
 import { assertSeatsUsable, checkSeats } from "./role-fallback";
 import { resetConfigCache } from "./role-models";
 
@@ -91,5 +93,55 @@ describe("assertSeatsUsable — 计划期硬闸 (响亮失败)", () => {
 			// 空闸 = 什么都不检 → 不抛
 			expect(() => assertSeatsUsable([], env)).not.toThrow();
 		});
+	});
+});
+
+/**
+ * 「无凭证」与「冷却中」是两种态, 不许压成一个 —— 票 t-judge-cred (2026-09-02, 仓规静默坑 1)。
+ *
+ * 此前 `checkSeats` 把两者都标成 `no-credential`, `[role-seat]` WARN 于是对一个凭证齐全、
+ * 只是本机记着一次 402/403 的座位喊「无可用凭证」。owner 照这句话去查 `credentialed()`,
+ * 而 `credentialed()` 是对的 —— 一条把人指向错文件的告警比没有告警更贵。
+ *
+ * 反向自检: 把 `seatStatusOf` 的 cooling 分支删掉 (回到二态) → 第一条当场红;
+ *          把凭证那一跳删掉 → 第二条当场红 (真无凭证的座位会被误报成 cooling)。
+ */
+describe("checkSeats — 冷却中 ≠ 无凭证 (票 t-judge-cred)", () => {
+	// auth.json 指向不存在文件 → 凭证只认传入的 env, 不被真机 `~/.pi/agent/auth.json` 干扰
+	// (那份里就有 opencode-go, 不隔离的话「真无凭证」那条恒绿 = 假闸)。
+	beforeEach(() => {
+		setPiTransportDepsForTest({ authPath: "/nonexistent/omd-test-auth.json" });
+		resetProviderCooldowns();
+	});
+	afterAll(() => {
+		setPiTransportDepsForTest();
+		resetProviderCooldowns();
+	});
+
+	test("有凭证但熔断冷却中 → status 'cooling', 且 WARN 文案说的是冷却不是凭证", () => {
+		const env = { ...envWithConfig({ judge: "opencode-go:glm-5.2" }), OPENCODE_API_KEY: "sk-x" };
+		// 默认 30s 瞬时档 → 只在进程内存, 不写 `.omd/seat-health.json` (周期档才写盘)。
+		reportProviderFailure("opencode-go:glm-5.2");
+		try {
+			const judge = withEnv(env, () => checkSeats(env)).find((c) => c.seat === "judge")!;
+			expect(judge.status).toBe("cooling");
+			let msg = "";
+			withEnv(env, () => {
+				try {
+					assertSeatsUsable(["judge"], env);
+				} catch (e) {
+					msg = (e as Error).message;
+				}
+			});
+			expect(msg).toContain("judge=opencode-go:glm-5.2 (熔断冷却中)");
+		} finally {
+			resetProviderCooldowns();
+		}
+	});
+
+	test("真无凭证 (没 key 也没冷却) → 仍是 'no-credential' (修的是分辨率, 不是放水)", () => {
+		const env = envWithConfig({ judge: "opencode-go:glm-5.2" });
+		const judge = withEnv(env, () => checkSeats(env)).find((c) => c.seat === "judge")!;
+		expect(judge.status).toBe("no-credential");
 	});
 });
