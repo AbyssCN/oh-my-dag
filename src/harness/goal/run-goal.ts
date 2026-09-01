@@ -80,6 +80,8 @@ import { resolveProfile, type LeafProfile } from '../profiles/profile';
 import { fingerprintOf, type ReviewFinding } from '../profiles/review-ledger';
 import { maybeRunDesignReview, type DesignReviewResult } from './design-review';
 import { escalationProviderReady, type VerdictTarget, type VerifierFn } from '../verifier';
+import { extractProtectedPaths } from './goal-protections';
+import { withProtectedPaths } from '../agent-tools';
 
 // D-I: 两条轴的类型与分类器都归 ./acceptance (那里是判据轴的单一真源); 此处 re-export 保旧调用面。
 export type { AcceptanceSpec, GoalClassification, GoalTier } from './classify-acceptance';
@@ -668,11 +670,14 @@ function screenshotReviewPrompt(
  * 没有 `agentRunner` = 返 undefined = 重建者缺席 (触发照记, 不假装重建过)。
  * 只要一条命令: 它的产出还要过全部自证门才准冻结, 所以这一发不需要结构化输出的仪式。
  */
-function productionCriterionRebuilder(config: RunGoalConfig): RunGoalConfig['_rebuildCriterion'] | undefined {
+function productionCriterionRebuilder(
+  config: RunGoalConfig,
+  protectedPaths: readonly string[],
+): RunGoalConfig['_rebuildCriterion'] | undefined {
   const agentRunner = config.dag.agentRunner;
   if (!agentRunner) return undefined;
   return async ({ goal, current, trigger, declaredArtifacts }) => {
-    const r = await agentRunner({
+    const r = await withProtectedPaths(protectedPaths, () => agentRunner({
       model: config.dag.conductorModel,
       prompt: [
         '这次运行的**验收判据本身**很可能是坏的 —— 它量不出"做完了"与"还没做"的差别。',
@@ -686,7 +691,7 @@ function productionCriterionRebuilder(config: RunGoalConfig): RunGoalConfig['_re
         '重写**一条**判据命令: 指向仓里真实存在 (或上面声明会被产出) 的路径, 且在活没干完时必然红。',
         '只输出那一条命令本身, 不要解释、不要代码块、不要前缀。',
       ].join('\n'),
-    });
+    }));
     const command = r.text.trim().split('\n').map((l) => l.trim()).filter(Boolean).at(-1) ?? '';
     return command ? { command } : null;
   };
@@ -694,6 +699,7 @@ function productionCriterionRebuilder(config: RunGoalConfig): RunGoalConfig['_re
 
 function productionDesignReviewRunner(
   config: RunGoalConfig,
+  protectedPaths: readonly string[],
   screenshotCommand: string | undefined,
   escalationSeat: string | undefined,
 ): DesignReviewRunner | undefined {
@@ -709,7 +715,9 @@ function productionDesignReviewRunner(
   }
   const initialModel = profile?.seat ?? config.dag.agentLeafModel ?? config.dag.leafModel;
   const call = async (model: string, prompt: string) => {
-    const r = await agentRunner({ prompt, model, ...(profile ? { profile } : {}) });
+    const r = await withProtectedPaths(protectedPaths, () =>
+      agentRunner({ prompt, model, ...(profile ? { profile } : {}) }),
+    );
     return { findings: parseDesignReviewFindings(r.text), usage: { in: r.usage.in, out: r.usage.out } };
   };
   return async (diff) => {
@@ -972,7 +980,7 @@ export function chainEnabled(config: { chain?: boolean }, env: NodeJS.ProcessEnv
  * 装配缺席时**留 warn 一行** (INV-2 fail-open 不吞证据: caller 想装却没原料, 不该静默走零回退)。
  */
 let _productionRouteCallerConfigured = false;
-function ensureProductionRouteCaller(config: RunGoalConfig): boolean {
+function ensureProductionRouteCaller(config: RunGoalConfig, protectedPaths: readonly string[]): boolean {
   if (_productionRouteCallerConfigured) return true;
   const agentRunner = config.dag.agentRunner;
   const leafCoord = config.dag.agentLeafModel ?? config.dag.leafModel;
@@ -987,7 +995,7 @@ function ensureProductionRouteCaller(config: RunGoalConfig): boolean {
   const caller = buildRouteCaller({
     leafCoord,
     call: async ({ prompt, model }) => {
-      const r = await agentRunner({ prompt, model });
+      const r = await withProtectedPaths(protectedPaths, () => agentRunner({ prompt, model }));
       return { text: r.text };
     },
   });
@@ -1187,6 +1195,11 @@ function lockPathFor(key: string, artifactPath?: string): string | undefined {
 async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettleBox): Promise<RunGoalResult> {
   const stages: GoalStage[] = [];
   const sources: string[] = [];
+
+  // SDD D4.2 (2026-09-01): 一次 run 一份 goal 文本 → 一次提取全程复用。
+  // 空 goal / 无命中 → `[]`, 行为与今日逐字节同 (INV-3)。
+  // 与 `goal-protections.ts` 的纯函数定义配套: 词表扩/形态变都走那边。
+  const goalProtectedPaths = extractProtectedPaths(goal);
 
   // ── t-gate-inmigrate (2026-09-01): 三道机械前置闸直调 (闸 A 冻结 / 闸 B 座位 / 闸 C 互斥) ─
   // 必须在 `loadSddContract` 之前 (SDD INV-4) —— 坏契约要烧任何 token 之前被拒, 闸拒同档严度。
@@ -1844,7 +1857,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
     //   **切片 2 装配位**: `ensureProductionRouteCaller(config)` 在本块入口调一次,
     //   幂等, 同一 run 不重复装; 装配缺席 (无 agentRunner / 无 leaf 座) ⇒ warn + 默认
     //   caller 永远 'none', 行为不变 (INV-2 装配面记录在, zero-cost 闸靠 `chainOn` 这一道闸)。
-    ensureProductionRouteCaller(config); // 幂等: 已装就 no-op; 缺原料就 warn + 不装
+    ensureProductionRouteCaller(config, goalProtectedPaths); // 幂等: 已装就 no-op; 缺原料就 warn + 不装
     try {
       const decision = await routeChain(goal, {
         conductorModel: config.dag.conductorModel,
@@ -2278,7 +2291,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
         ]),
       ),
     ];
-    const rebuilder = config._rebuildCriterion ?? productionCriterionRebuilder(config);
+    const rebuilder = config._rebuildCriterion ?? productionCriterionRebuilder(config, goalProtectedPaths);
     let proposal: { command: string; expectExit?: number; negativeSample?: string } | null = null;
     if (rebuilder) {
       try {
@@ -2478,7 +2491,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
       const requestedEscalation = config.designReview.escalationSeat ?? config.dag.conductorEscalationModel;
       const escalationSeat = escalationProviderReady(requestedEscalation) ? requestedEscalation : undefined;
       const runReview = config.designReview._runReview ??
-        productionDesignReviewRunner(config, config.designReview.screenshotCommand, escalationSeat);
+        productionDesignReviewRunner(config, goalProtectedPaths, config.designReview.screenshotCommand, escalationSeat);
       designReview = await maybeRunDesignReview({
         cwd: config.cwd,
         changedFiles: reviewFiles,
