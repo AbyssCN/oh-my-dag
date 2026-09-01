@@ -80,9 +80,12 @@ export function routeCallerPrompt(goal: string): string {
  *   · 不是 JSON (含被 ``` 包裹的合法 JSON)
  *   · 顶层不是对象 (比如 `[]` 或 `"oops"`)
  *   · JSON.parse 抛
- * 全部归 `{ ok:false, raw }`, **raw 留给上层日志一行带片段** (INV-3 fail-open 留证据)。
+ * 全部归 `{ ok:false, raw }`, **raw 留给上层日志一行带片段** (INV-3 fail-open 留证据);
+ * JSON.parse 抛时败因经 `parseError` 一并交出 (仓规 §静默坑 2: 吞异常不许吞证据)。
  */
-export function tryParseJson(text: string): { ok: true; value: RouteRaw } | { ok: false; raw: string } {
+export function tryParseJson(
+  text: string,
+): { ok: true; value: RouteRaw } | { ok: false; raw: string; parseError?: string } {
   const trimmed = text.trim();
   // 剥外层代码块包裹 (模型爱贴 ```json ... ```); 仅剥**外层**一对, 不递归 (deep 包含是另一份契约)
   const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
@@ -94,8 +97,8 @@ export function tryParseJson(text: string): { ok: true; value: RouteRaw } | { ok
   let obj: unknown;
   try {
     obj = JSON.parse(candidate);
-  } catch {
-    return { ok: false, raw: trimmed };
+  } catch (err) {
+    return { ok: false, raw: trimmed, parseError: (err as Error).message };
   }
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
     return { ok: false, raw: trimmed };
