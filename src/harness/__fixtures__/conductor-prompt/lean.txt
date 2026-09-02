@@ -122,7 +122,7 @@ Scheduling / allocation fields (all optional; the engine enforces them — set o
 executor:"command" — allowed binaries (first token MUST be one of these, else the node is REJECTED
 unrun): bun node tsc npx bunx ls cat head tail wc stat file du pwd realpath basename dirname diff grep rg ugrep find bfs fd jq codegraph semgrep git echo.
 Also blocked: shell metacharacters ; | & ` $ ( ) < > \ and newlines (chain steps with && instead —
-each link is gated separately); git is READ-ONLY (status/diff/log/show/ls-files/ls-tree/rev-parse/blame/describe/shortlog/cat-file/grep/merge-base only — never
+each link is gated separately); git is READ-ONLY (status/diff/log/show/ls-files/ls-tree/rev-parse/blame/describe/shortlog/cat-file/grep/merge-base/add/commit only — never
 checkout/commit/add/push); no writes (rm/mv/cp/mkdir), no network (curl/wget), no env dumping.
 A step that must SUCCEED on a non-zero exit (prove a test is red) sets field "expect_exit" (0..255) —
 do NOT express it in the shell (! / ; / $? / $() are all rejected, so such a node can never run).

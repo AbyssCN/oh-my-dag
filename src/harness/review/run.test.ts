@@ -5,12 +5,38 @@
  * CLI 阶梯 (G0 短路 / --no-spec@G3 报错 / --help) 走子进程冒烟 (不需要 provider env)。
  * D-4 观察面 (SDD C-5): onProgress 汇的事件序列 + OMD_REVIEW_EVENT_FILE 子进程通道, 含反向自检。
  */
-import { describe, test, expect } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, test, expect } from 'bun:test';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { clearProviders, getProvider, listProviders, registerProvider } from '../../model/providers';
+import type { ProviderConfig } from '../../model/types';
 import { runReview, DIMS_BY_GATE, SPEC_SKIPPED_NOTE, type ReviewProgressEvent, type RunReviewOpts } from './run';
 import type { ReviewSendFn, VerifiedFinding } from './verify';
+
+/**
+ * provider registry 隔离 —— **本文件的断言只在"注册表空"的世界里成立**。
+ *
+ * 根因 (2026-09-02 定位): 模型坐标经 `roleModelWithFallback` 时, 首选坐标 (`test:spec-model`)
+ * 无凭证 → 按 INV-2 的**进程全局**注册表顺延到第一个有凭证且可解析的 provider。bun 起进程时
+ * 自动加载仓根 `.env` (内含真 `MIMO_BASE_URL` / `MIMO_API_KEY`), 于是任何先跑过
+ * `bootstrapModelRuntime()` 的用例 (scripts/autoresearch-replay · src/eval/replay/mutate ·
+ * src/harness/session/writer 三条生产路径) 都会把 'mimo' 留在注册表里 —— 全量跑时本文件红,
+ * 单跑绿。这是**测试间状态污染**, 不是路由实装错 (生产里"首选无凭证就顺延"正是要的行为)。
+ *
+ * 修法与 `src/model/role-fallback.test.ts` 同款: 用例前清空注册表。**但这里做快照/复原**而不是
+ * 裸 `clearProviders()`, 免得反向污染本文件之后跑的用例。
+ * 反向自检: 删掉 `beforeEach` 那行 → 全量 `bun test` 下本文件当场红, 单跑仍绿。
+ */
+let providerSnapshot: Array<[string, ProviderConfig]> = [];
+beforeAll(() => {
+  providerSnapshot = listProviders().map((n) => [n, getProvider(n)!] as [string, ProviderConfig]);
+});
+beforeEach(() => clearProviders());
+afterAll(() => {
+  clearProviders();
+  for (const [n, cfg] of providerSnapshot) registerProvider(n, cfg);
+});
 
 const REPO_ROOT = join(import.meta.dir, '..', '..', '..');
 const SCRIPT = join(REPO_ROOT, 'scripts', 'dag-review.ts');

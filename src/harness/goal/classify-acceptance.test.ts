@@ -28,7 +28,9 @@ describe('可跑判定 —— 借执行期那一份闸, 不另抄一份', () => 
     expect(acceptanceCommandBlockReason('bun test | tee log')).toContain('not-allowed');
     // 危险命令闸排在白名单/元字符之前 —— 拒因给的是最要紧的那条, 不是最先匹配的那条。
     expect(acceptanceCommandBlockReason('bun test; rm -rf /')).toContain('dangerous');
-    expect(acceptanceCommandBlockReason('git commit -am x')).toContain('git-write');
+    // 2026-09-01 (bd1820aa) owner 显式开口放行 `add` / `commit` (commit 流最小集合) ——
+    // 本行原先打的是 `git commit -am x`, 那次只改了 git-write-gate 的矩阵, 本行漏改而红。
+    expect(acceptanceCommandBlockReason('git checkout .')).toContain('git-write');
     expect(acceptanceCommandBlockReason('   ')).toContain('empty');
   });
 

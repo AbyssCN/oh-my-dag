@@ -70,7 +70,10 @@ describe('N3 · ② 数据外泄', () => {
 describe('N3 · ③ 自动钓鱼 / 自我放大', () => {
   test('git 写被拒 —— **全表唯一一个按能力挡住的格**', () => {
     expect(gate('git push origin main')).toContain('git-write');
-    expect(gate('git commit -am x')).toContain('git-write');
+    // 2026-09-01 (bd1820aa) owner 显式开口放行 `add` / `commit` (commit 流最小集合) ——
+    // 本行原先断言 `git commit -am x` 被拒, 那次只改了 git-write-gate 的矩阵, 本条漏改而红。
+    // 换成仍必拒的 `checkout .` (抹掉 DAG 刚写的文件), 这一格「按能力挡住」的性质不变。
+    expect(gate('git checkout .')).toContain('git-write');
     // 只读子命令照常
     expect(allowed('git log --oneline -1')).toBe(true);
   });

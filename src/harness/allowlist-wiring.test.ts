@@ -96,10 +96,13 @@ describe('GWT-6 (INV-5): 安全边界不动', () => {
     expect(block).not.toBeNull();
   });
 
-  test('git commit 在 python marker 根的 allowlist 上仍被拒', () => {
+  test('git checkout . 在 python marker 根的 allowlist 上仍被拒', () => {
+    // 2026-09-01 (bd1820aa) owner 显式开口放行 `add` / `commit` (commit 流最小集合) ——
+    // 本条原先打的是 `git commit -m x`, 那次只改了 git-write-gate 的矩阵, 本条漏改而红。
+    // INV-5 要钉的是「语言包扩出 python 不松动既有闸」, 换成仍必拒的 `checkout .` 后判据不变。
     const root = freshRoot();
     touch('pyproject.toml');
-    expect(commandBlockReason('git commit -m x', allowlistForRoot(root))).not.toBeNull();
+    expect(commandBlockReason('git checkout .', allowlistForRoot(root))).not.toBeNull();
   });
 
   test('&& 链中含危险首词在 python 根仍被拒 (逐环判不松动)', () => {

@@ -99,10 +99,12 @@ describe('commandRiskTier — 取链上最重的一级, 未登记即 never', () 
   });
 
   test('分级不调闸 —— 被闸拒的命令仍能被分级 (读数不该刷告警)', () => {
-    // `git commit` 过不了闸 (非只读子命令), 但 bin 'git' 是登记过的 → 分级仍给 read_only。
+    // `git checkout .` 过不了闸 (非只读子命令), 但 bin 'git' 是登记过的 → 分级仍给 read_only。
     // 这不是矛盾: 分级看的是 bin 的能力档, 放行与否是闸的事, 而闸确实拒了它。
-    expect(commandBlockReason('git commit -m x', DEFAULT_COMMAND_ALLOWLIST)).not.toBeNull();
-    expect(commandRiskTier('git commit -m x')).toBe('read_only');
+    // 2026-09-01 (bd1820aa) owner 显式开口放行 `add` / `commit` —— 本条原先用 `git commit -m x`
+    // 当"被闸拒"的样本, 那次只改了 git-write-gate 的矩阵, 本条漏改而红; 换一条仍被拒的即可。
+    expect(commandBlockReason('git checkout .', DEFAULT_COMMAND_ALLOWLIST)).not.toBeNull();
+    expect(commandRiskTier('git checkout .')).toBe('read_only');
   });
 
   test('merge-base 放行 (纯只读祖先查询), merge 仍拒 —— 子命令精确匹配不是前缀', () => {

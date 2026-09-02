@@ -132,15 +132,30 @@ describe('git 子命令只读闸', () => {
     expect(r.text).toContain('3 files changed');
   });
 
-  test('改仓库状态的子命令拒 (checkout 会抹掉 DAG 刚写的文件, commit 越权代 owner)', async () => {
-    const { spawn, calls } = fakeSpawn({});
-    const run = createCommandLeafRunner({ allowlist: [...DEFAULT_COMMAND_ALLOWLIST], spawn });
-    for (const c of ['git checkout .', 'git commit -m x', 'git add -A', 'git push', 'git stash', 'git rebase main']) {
+  test('改仓库状态的子命令拒 (checkout 会抹掉 DAG 刚写的文件)', async () => {
+    // 2026-09-01 (bd1820aa) owner 显式开口把 `add` / `commit` 放进 GIT_READONLY_SUBCOMMANDS
+    // (commit 流最小集合), 那次只改了 `src/harness/git-write-gate.test.ts` 的矩阵, 本条漏改 →
+    // 本行原先还列着 `git commit -m x` / `git add -A`, 于是断言陈旧而红。
+    // 闸的语义没废: 从「一切写都拒」收紧到「stage 与 commit 放行, 其他写仍拒」。
+    for (const c of ['git checkout .', 'git push', 'git stash', 'git rebase main']) {
+      const { spawn, calls } = fakeSpawn({});
+      const run = createCommandLeafRunner({ allowlist: [...DEFAULT_COMMAND_ALLOWLIST], spawn });
       const r = await run({ command: c });
       expect(r.text).toContain('blocked git-write');
       expect(r.exitCode).toBe(-1);
+      expect(calls).toEqual([]);
     }
-    expect(calls).toEqual([]);
+  });
+
+  test('放开的 commit 流子命令放行 (反向自检: 把 add/commit 从表里删掉 → 本条当场红)', async () => {
+    // 对照臂, 与上一条成对: 没有它, "拒得对不对"退化成"拒得够不够狠"。
+    for (const c of ['git add -A', 'git commit -m x']) {
+      const { spawn, calls } = fakeSpawn({ [c]: { stdout: '', exitCode: 0 } });
+      const run = createCommandLeafRunner({ allowlist: [...DEFAULT_COMMAND_ALLOWLIST], spawn });
+      const r = await run({ command: c });
+      expect(r.text).not.toContain('blocked');
+      expect(calls.length).toBe(1);
+    }
   });
 
   test('flag 先于子命令仍能定位 (git -C dir status)', async () => {

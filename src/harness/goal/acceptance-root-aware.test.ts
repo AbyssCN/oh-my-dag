@@ -117,7 +117,10 @@ describe('INV-6: 缺 root 字节兼容', () => {
   });
 
   test('不带 root: git 写子命令闸仍在原位 → git-write', () => {
-    expect(acceptanceCommandBlockReason('git commit -am x')).toContain('git-write');
+    // 2026-09-01 (bd1820aa) owner 显式开口放行 `add` / `commit` (commit 流最小集合) ——
+    // 本条原先打的是 `git commit -am x`, 那次只改了 git-write-gate 的矩阵, 本条漏改而红。
+    // 判据是「git 写闸有没有掉线」, 换成仍必拒的 `checkout .` 后不变。
+    expect(acceptanceCommandBlockReason('git checkout .')).toContain('git-write');
   });
 
   test('不带 root: 空命令闸仍在原位 → empty', () => {
