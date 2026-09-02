@@ -66,20 +66,6 @@ const fakeExecuteDag = (): ExecutorDagResult =>
     reusedNodes: [],
   }) as unknown as ExecutorDagResult;
 
-/** 契约段的假图: `filesTouched` 就是判 wrote 的**执行期事实** (给 [] = 跑了但空手而归)。 */
-const fakeContractDag = (filesTouched: string[]): ExecutorDagResult =>
-  ({
-    plan: { name: 'goal-contract', nodes: {} },
-    results: {
-      contract: { id: 'contract', status: 'done', kind: 'agent', output: '契约正文', deps: [], usage: { in: 1, out: 1 }, filesTouched },
-    },
-    reusedNodes: [],
-  }) as unknown as ExecutorDagResult;
-
-/** 契约段任务文本里的 spec 路径占位句式 — 从图上抓 path, 不抄 goalSlug 的实现。 */
-const specPathFromPlan = (plan: { nodes: Record<string, { goal?: string }> }): string =>
-  /存盘到 (.+?)。/.exec(plan.nodes.contract?.goal ?? '')?.[1] ?? '';
-
 const noopAgentRunner = (async () => ({ text: '', usage: { in: 0, out: 0 }, filesTouched: [] })) as unknown as AgentLeafRunner;
 
 const baseCfg = (over: Partial<ExecutorDagConfig> = {}): Pick<RunGoalConfig, 'cwd' | 'dag' | '_today' | '_classify'> => ({
@@ -90,88 +76,38 @@ const baseCfg = (over: Partial<ExecutorDagConfig> = {}): Pick<RunGoalConfig, 'cw
 });
 
 describe('runGoal — onContract 每条路都恰好调一次', () => {
-  test('simple 档 → not-needed/tier-simple (压根没有契约段)', async () => {
-    const seen: SpecWrite[] = [];
-    await runGoal('g', { ...baseCfg(), tier: 'simple', _runDag: async () => fakeExecuteDag(), onContract: (s) => seen.push(s) });
-    expect(seen).toEqual([{ kind: 'not-needed', source: 'tier-simple' }]);
-  });
+  // D-26/D-27 (2026-09-02): 契约段的唯一触发换成了 sddPath, tier 不再门控它 —— simple 档与
+  // complex 档 (无 sddPath) 现在落同一个 source ('loop'), 不再靠 tier / agentRunner 有没有
+  // 配来细分。旧的 'tier-simple' / 'no-agent-runner' 两条来源保留在类型里 (账本兼容), 但
+  // run-goal.ts 自己已经不产它们了。
+  test('simple 档 / complex 档 (无 sddPath) → 都是 not-needed/loop (压根没有契约段, 与 tier 无关)', async () => {
+    const seenSimple: SpecWrite[] = [];
+    await runGoal('g', { ...baseCfg(), tier: 'simple', _runDag: async () => fakeExecuteDag(), onContract: (s) => seenSimple.push(s) });
+    expect(seenSimple).toEqual([{ kind: 'not-needed', source: 'loop' }]);
 
-  test('complex 档缺 agentRunner → not-needed/no-agent-runner (缺件, 与"不需要"分得开)', async () => {
-    const seen: SpecWrite[] = [];
-    await runGoal('g', { ...baseCfg(), tier: 'complex', _runDag: async () => fakeExecuteDag(), onContract: (s) => seen.push(s) });
-    expect(seen).toEqual([{ kind: 'not-needed', source: 'no-agent-runner' }]);
-    // 两条 not-needed 的 source 不同 —— 合并成一个字面量 'not-needed' 就分不出"补配置"与"什么都不用做"。
-    expect(seen[0]!.source).not.toBe('tier-simple');
-  });
-
-  test('契约段真产出文件 → wrote, path = 契约段任务文本里那一份 (不是猜的)', async () => {
-    const seen: SpecWrite[] = [];
-    let planPath = '';
-    await runGoal('写一份契约', {
+    // 即使配了 agentRunner, complex 档没有 sddPath 时依旧不展开契约段 (INV-11)。
+    const seenComplex: SpecWrite[] = [];
+    await runGoal('g', {
       ...baseCfg({ agentRunner: noopAgentRunner }),
       tier: 'complex',
-      _runDag: async (plan) => {
-        if (plan.name !== 'goal-contract') return fakeExecuteDag();
-        planPath = specPathFromPlan(plan as unknown as { nodes: Record<string, { goal?: string }> });
-        return fakeContractDag([planPath]);
-      },
-      onContract: (s) => seen.push(s),
+      _runDag: async () => fakeExecuteDag(),
+      onContract: (s) => seenComplex.push(s),
     });
-    expect(planPath).toEndWith('.md');
-    expect(seen).toEqual([{ kind: 'wrote', source: 'contract', path: planPath }]);
-  });
-
-  test('★ 反向自检 (判据 ③a): 契约段跑了但一个文件都没碰 → missing, 不是 wrote 也不是缺席', async () => {
-    const seen: SpecWrite[] = [];
-    await runGoal('写一份契约', {
-      ...baseCfg({ agentRunner: noopAgentRunner }),
-      tier: 'complex',
-      _runDag: async (plan) => (plan.name === 'goal-contract' ? fakeContractDag([]) : fakeExecuteDag()),
-      onContract: (s) => seen.push(s),
-    });
-    expect(seen).toEqual([{ kind: 'missing', source: 'contract' }]);
-  });
-
-  test('契约段抛错 → missing/contract-error (引擎出事 ≠ 跑了空手而归)', async () => {
-    const seen: SpecWrite[] = [];
-    await runGoal('写一份契约', {
-      ...baseCfg({ agentRunner: noopAgentRunner }),
-      tier: 'complex',
-      _runDag: async (plan) => {
-        if (plan.name === 'goal-contract') throw new Error('契约段炸了');
-        return fakeExecuteDag();
-      },
-      onContract: (s) => seen.push(s),
-    });
-    expect(seen).toEqual([{ kind: 'missing', source: 'contract-error' }]);
+    expect(seenComplex).toEqual([{ kind: 'not-needed', source: 'loop' }]);
   });
 
   test('★ 时机 (判据 ③b): 回调在 execute 段**之前**发 —— 挪到整趟收尾之后这条红', async () => {
     const order: string[] = [];
-    await runGoal('写一份契约', {
-      ...baseCfg({ agentRunner: noopAgentRunner }),
-      tier: 'complex',
-      _runDag: async (plan) => {
-        order.push(plan.name === 'goal-contract' ? 'contract-dag' : 'execute-dag');
-        return plan.name === 'goal-contract' ? fakeContractDag(['/gone/2026-08-19-x.md']) : fakeExecuteDag();
+    await runGoal('g', {
+      ...baseCfg(),
+      tier: 'simple',
+      _runDag: async () => {
+        order.push('execute-dag');
+        return fakeExecuteDag();
       },
       onContract: () => order.push('onContract'),
     });
-    expect(order).toEqual(['contract-dag', 'onContract', 'execute-dag']);
-  });
-
-  test('★ 时机 (判据 ③b): 记账那一刻盘上文件已经不在 (worktree 被清) → 照样 wrote', async () => {
-    const seen: SpecWrite[] = [];
-    await runGoal('写一份契约', {
-      ...baseCfg({ agentRunner: noopAgentRunner }),
-      tier: 'complex',
-      // 假图只报 filesTouched, **不真写盘** —— 等价于"worktree 已经被清"的那一刻。
-      _runDag: async (plan) => (plan.name === 'goal-contract' ? fakeContractDag([specPathFromPlan(plan as unknown as { nodes: Record<string, { goal?: string }> })]) : fakeExecuteDag()),
-      onContract: (s) => seen.push(s),
-    });
-    const w = seen[0] as Extract<SpecWrite, { kind: 'wrote' }>;
-    expect(w.kind).toBe('wrote'); // 判定原料是执行期事实, 不是盘上现状
-    expect(existsSync(w.path)).toBe(false); // 而盘上确实没有这个文件 —— 改成 existsSync 扫盘就会读成 missing
+    expect(order).toEqual(['onContract', 'execute-dag']);
   });
 
   test('回调抛错只留痕不掀桌: goal 照常跑完 (记账挂了不该让整趟陪葬)', async () => {

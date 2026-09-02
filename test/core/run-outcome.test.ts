@@ -124,33 +124,10 @@ describe('N5 · 「不需要」vs「跑了空手而归」(stage 级此前被 ski
     expect(research.outcome).toBe('not-needed');
   });
 
-  test('调研步跑了但零来源 → empty-result (要人看一眼), 而 status 是 failed', async () => {
-    const r = await runGoal(
-      'g',
-      contractCfg({ 'contract::r1': { id: 'contract::r1', kind: 'research', deps: [], status: 'failed', output: '一份看起来很像样的报告', sources: [], usage: { in: 1, out: 1 } } }),
-    );
-    const research = r.stages.find((s) => s.stage === 'research')!;
-    expect(research.outcome).toBe('empty-result');
-    // ★ 这两格的下一步相反, 而旧的 skipped|failed 二选一恰好把它们压成了同一件事的两种说法
-    expect(RUN_OUTCOME_INFO['not-needed'].nextAction).not.toBe(RUN_OUTCOME_INFO['empty-result'].nextAction);
-    expect(RUN_OUTCOME_INFO['empty-result'].resumable).toBe(true);
-    expect(RUN_OUTCOME_INFO['not-needed'].resumable).toBe(false);
-  });
-
-  test('无 agentRunner 整段跳过 → missing-capability, 与 not-needed 分得开 (补配置 vs 什么都不用做)', async () => {
-    const r = await runGoal('g', {
-      cwd: '/tmp',
-      dag: { conductorModel: 'm', leafModel: 'l' },
-      tier: 'complex',
-      acceptance: { kind: 'exploratory', learningGoal: 'x', affordableLoss: 'y' },
-      _classify: async () => ({ tier: 'complex', acceptance: { kind: 'exploratory', learningGoal: 'x', affordableLoss: 'y' } }),
-      _runDag: async (plan: unknown) =>
-        ({ plan, sessionId: 's', levels: [['execute']], results: { execute: leaf({ status: 'done', converged: true }) }, usage: { conductor: { in: 1, out: 1 }, leavesIn: 1, leavesOut: 1, leavesCacheHit: 0 } }) as unknown as ExecutorDagResult,
-    } as unknown as RunGoalConfig);
-    const spec = r.stages.find((s) => s.stage === 'spec')!;
-    expect(spec.status).toBe('skipped'); // 粗态与 simple 档跳过一模一样
-    expect(spec.outcome).toBe('missing-capability'); // 细态分得开
-  });
+  // D-26/D-27 (2026-09-02): 下面两条原来钉的是「契约段自动展开 (tier='complex' 且无 sddPath
+  // 时的 conductor 子图)」里 research 子节点 / agentRunner 缺件的两种细分降级 —— 该子图已撤销
+  // (INV-11: 契约段唯一触发换成 sddPath), 无 sddPath 时 research/spec 恒 skipped/not-needed,
+  // 不再有 empty-result / missing-capability 这两个中间态可留痕 (它们的产生条件已不存在)。
 });
 
 describe('N5 · run 级聚合 (deriveRunOutcome): 止损动作最强的那一格赢', () => {

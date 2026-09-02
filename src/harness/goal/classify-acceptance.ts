@@ -29,6 +29,7 @@ import {
 import { logger } from '../logger';
 import { type EnvFacts, probeEnvFacts, renderEnvFacts } from '../env-facts';
 import type { GenerateFn } from '../dag/types';
+import type { RouteDecision } from './chain-router';
 import {
   type AcceptanceCommandBlockOpts,
   type AcceptanceProbe,
@@ -88,6 +89,13 @@ export interface GoalClassification {
   negativeSample?: NegativeSample;
   /** 见 {@link AcceptanceProbe}。缺席 = 没探 / 没记录。 */
   acceptanceProbe?: AcceptanceProbe;
+  /**
+   * D-19 / INV-12: 与 tier/acceptance 同一发出的路由决策 —— 取代 `chain-router.routeChain`
+   * 在默认路径上的独立第二次调用。可选是因为**历史续跑状态** (goal-state.json 里存的
+   * `classified`) 可能来自本字段加入之前的老 run, 老行没有这一格; 生产 `classifyGoal`
+   * 恒填 (见其函数头), 缺席只发生在读老状态或测试没给的场景, 消费侧一律 `?? {kind:'none'}`。
+   */
+  route?: RouteDecision;
 }
 
 /**
@@ -424,7 +432,23 @@ export function classifyPrompt(goal: string, probe?: ClassifyPromptProbe): strin
  * 确定性失败是纯烧钱 (模型刚才就是照着规则写的, 它不知道自己踩的是哪一条)。只重试一次: 两次还
  * 写不出可跑命令, 那多半是这个目标真的机器判不了, 那时降级探索型是**对的答案**而不是失败。
  */
+/**
+ * D-19 / INV-12 (2026-09-02): 对外这一个入口出**恰一次**结构化调用, 同时带出 tier / acceptance /
+ * route 三条轴 —— `route` 是从 `chain-router.ts` 摘出来的第二次独立调用 (`routeChain`) 合并
+ * 进来的那一格, 不再另起一发。v1 的封闭枚举里没有能命中的模板 (`CHAIN_TEMPLATE_IDS` 是空集,
+ * `GRAPH_SHAPES` 卡的消费也留给 v2, 见 chain-router.ts 头注), 于是这里恒定 `{kind:'none'}`:
+ * 没有模板可命中时多问模型一次问不出更多信息, 纯烧 token。v2 接模板登记表时直接在 `classifyGoalCore`
+ * 内加分支即可, 调用方 (`run-goal.ts`) 不需要再改一次调用点。
+ */
 export async function classifyGoal(
+  goal: string,
+  deps: Parameters<typeof classifyGoalCore>[1],
+): Promise<GoalClassification> {
+  const result = await classifyGoalCore(goal, deps);
+  return { ...result, route: result.route ?? { kind: 'none' } };
+}
+
+async function classifyGoalCore(
   goal: string,
   deps: {
     generate?: GenerateFn;

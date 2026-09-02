@@ -18,10 +18,12 @@
  * - `contract-error`  —— 契约段抛错 (引擎自己出事), 与"跑了但没产出文件"不是一回事。
  * - `sdd-direct`      —— `sddPath` 直通: spec 早就结晶在盘上, 这一跑零转录。
  * - `reused`          —— 闸 C 复用续跑前的契约段 (`specPath` 可能本来就缺席 —— 首跑就没写入磁盘)。
- * - `tier-simple`     —— simple 档压根不跑契约段 (D-5)。
- * - `no-agent-runner` —— complex 档但缺 agentRunner, 契约段整体跳过 (缺件, 不是"不需要")。
+ * - `tier-simple`     —— (D-26/D-27 前的旧值, 保留字面量不删——见下) simple 档不跑契约段。
+ * - `no-agent-runner` —— (D-26/D-27 前的旧值, 保留字面量不删) complex 档但缺 agentRunner。
+ * - `loop`            —— D-26/D-27 (2026-09-02): 无 sddPath, 契约段唯一触发换成了 `sddPath`
+ *   之后这条路**不区分** tier / agentRunner 有没有配, 一律不跑契约段, 走循环默认执行。
  */
-export type SpecWriteSource = 'contract' | 'contract-error' | 'sdd-direct' | 'reused' | 'tier-simple' | 'no-agent-runner';
+export type SpecWriteSource = 'contract' | 'contract-error' | 'sdd-direct' | 'reused' | 'tier-simple' | 'no-agent-runner' | 'loop';
 
 /**
  * 三值, **不是布尔** (#209 判据 ②): 有 spec / 无 spec / 该档不跑契约段。
@@ -31,10 +33,10 @@ export type SpecWriteSource = 'contract' | 'contract-error' | 'sdd-direct' | 're
 export type SpecWrite =
   | { kind: 'wrote'; source: SpecWriteSource; path: string }
   | { kind: 'missing'; source: SpecWriteSource }
-  | { kind: 'not-needed'; source: Extract<SpecWriteSource, 'tier-simple' | 'no-agent-runner'> };
+  | { kind: 'not-needed'; source: Extract<SpecWriteSource, 'tier-simple' | 'no-agent-runner' | 'loop'> };
 
-/** `not-needed` 的两条来源 —— 判定用它, 别在调用点各写一份字面量比较。 */
-const NOT_NEEDED_SOURCES = new Set<SpecWriteSource>(['tier-simple', 'no-agent-runner']);
+/** `not-needed` 的三条来源 —— 判定用它, 别在调用点各写一份字面量比较。 */
+const NOT_NEEDED_SOURCES = new Set<SpecWriteSource>(['tier-simple', 'no-agent-runner', 'loop']);
 
 /**
  * 由「哪条路 + 这一刻的 specPath」定这一位。
@@ -43,7 +45,7 @@ const NOT_NEEDED_SOURCES = new Set<SpecWriteSource>(['tier-simple', 'no-agent-ru
  * `existsSync()` 的结果 —— 后者在 worktree 清理之后恒 false, 那正是本票要修的错法。
  */
 export function classifySpecWrite(source: SpecWriteSource, specPath: string | undefined): SpecWrite {
-  if (NOT_NEEDED_SOURCES.has(source)) return { kind: 'not-needed', source: source as 'tier-simple' | 'no-agent-runner' };
+  if (NOT_NEEDED_SOURCES.has(source)) return { kind: 'not-needed', source: source as 'tier-simple' | 'no-agent-runner' | 'loop' };
   return specPath ? { kind: 'wrote', source, path: specPath } : { kind: 'missing', source };
 }
 
