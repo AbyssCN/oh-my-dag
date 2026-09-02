@@ -221,6 +221,9 @@ export function mineStalePlans(
 
 // ── ⑥ seam 目录漂移 ───────────────────────────────────────────────────────
 
+/** seam 目录的盘上路径 —— id 与 `path` 共用同一个值 (写两遍就会漂)。 */
+export const SEAM_CATALOG_PATH = 'docs/architecture/seams.md';
+
 /**
  * `bun scripts/gen-seam-catalog.ts --check` 的退出码 + 输出 → 0 或 1 条 item。
  * 退出 0 = 不漂 → 空数组 (不是"读不到", 那是 errors[] 的事)。
@@ -229,9 +232,9 @@ export function mineSeamDrift(res: { code: number; out: string }): HygieneItem[]
   if (res.code === 0) return [];
   return [
     {
-      id: 'seam-drift:docs/architecture/seams.md',
+      id: `seam-drift:${SEAM_CATALOG_PATH}`,
       source: 'seam-drift',
-      path: 'docs/architecture/seams.md',
+      path: SEAM_CATALOG_PATH,
       summary: 'seam 目录与类型真源漂移 (gen-seam-catalog --check 退出非 0)',
       evidence: [stripAnsi(res.out).trim().split('\n').slice(0, 5).join('\n')],
       metrics: { exitCode: res.code },

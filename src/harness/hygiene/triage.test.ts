@@ -34,6 +34,14 @@ describe('INV-3 GWT-3 两段坏输入都进 fallback', () => {
     expect(r.fallback).toContain('todo:b');
   });
 
+  test('整批塌时错误原文经返回值交出去 (吞异常不吞证据)', () => {
+    // 有方括号但里面不是合法 JSON → 走 JSON.parse 那条; 连方括号都没有 → 走"找不到数组"那条。
+    expect(parseTriageBatch('[ { 半截 ]', IDS).parseError).toContain('JSON.parse 失败');
+    expect(parseTriageBatch('我判断不了这批。', IDS).parseError).toContain('找不到 JSON 数组');
+    // 好输入不该带判词 —— parseError 缺席 = 这批没塌, 不是"塌了但没记"。
+    expect(parseTriageBatch(JSON.stringify(IDS.map((id) => good(id))), IDS).parseError).toBeUndefined();
+  });
+
   test('完全没有数组 (只有一句话) → 全部回退', () => {
     expect(parseTriageBatch('我判断不了这批。', IDS).fallback.sort()).toEqual([...IDS].sort());
   });

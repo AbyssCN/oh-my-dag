@@ -14,6 +14,9 @@
  *   · 单条不合 schema → 那条的 id (取得到才放, 取不到的由"期望集里缺席"这一路兜住) 进;
  *   · 条目 id 不在期望集 (模型编了一个 id) → 那个**编出来的 id** 也进, 让人看见它编了什么。
  * 分不清这三种时不许合成一个 `unknown` —— 调用方需要知道是"批量塌"还是"个别条坏"。
+ *
+ * **整批塌时错误原文经返回值交出去** (`parseError`), 不吞在 catch 里 (仓规 §静默坑 2):
+ * 「这批 JSON 坏在哪」是下一步唯一有用的信息, 只有调用方拿得到它才谈得上修分诊提示词。
  */
 import { z } from 'zod';
 import { reproAllowed } from './repro-allow';
@@ -55,21 +58,28 @@ function extractJsonArray(raw: string): string | null {
 export function parseTriageBatch(
   raw: string,
   expectedIds: string[],
-): { entries: TriageEntry[]; fallback: string[] } {
+): { entries: TriageEntry[]; fallback: string[]; parseError?: string } {
   const expected = new Set(expectedIds);
   const fallback = new Set<string>();
   const entries: TriageEntry[] = [];
 
   const json = extractJsonArray(raw);
-  if (json === null) return { entries: [], fallback: [...expected] };
+  if (json === null) {
+    return { entries: [], fallback: [...expected], parseError: `原文里找不到 JSON 数组 (前 120 字: ${raw.slice(0, 120)})` };
+  }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(json);
-  } catch {
-    return { entries: [], fallback: [...expected] };
+  } catch (e) {
+    // fail-open 吞异常但不吞证据: 错误原文经返回值交给调用方 (它才能据此改提示词)。
+    return { entries: [], fallback: [...expected], parseError: `JSON.parse 失败: ${(e as Error).message}` };
   }
-  if (!Array.isArray(parsed)) return { entries: [], fallback: [...expected] };
+  // TS 收窄用 —— `extractJsonArray` 只交出 `[` 开头的片段, 解析得出来就一定是数组,
+  // 所以这条实践上到不了; 留着是为了让下面的 for-of 有类型, 不是为了防一个不会发生的场景。
+  if (!Array.isArray(parsed)) {
+    return { entries: [], fallback: [...expected], parseError: `顶层不是数组, 而是 ${typeof parsed}` };
+  }
 
   for (const row of parsed) {
     const res = TriageEntrySchema.safeParse(row);
