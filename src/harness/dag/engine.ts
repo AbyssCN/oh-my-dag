@@ -2357,7 +2357,6 @@ async function executePlan(
       return { ok: true, sub, expand };
     };
 
-    let sub: ConductorPlan;
     let expand: ReturnType<typeof expandConductorNode>;
     try {
       const defaultThinking = config.conductorThinkingLevel ?? config.seatThinking?.(conductorCoord) ?? 'high';
@@ -2386,7 +2385,6 @@ async function executePlan(
           };
         }
       }
-      sub = attempt.sub;
       expand = attempt.expand;
     } catch (err) {
       // generate() 自身抛错 (transport/quota/config 类) —— 不重试: 无 backoff 的立即重试对
