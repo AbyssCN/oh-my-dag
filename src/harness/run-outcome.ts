@@ -61,6 +61,14 @@ export type RunOutcomeKind =
    * 但整跑也不许念成「交付没达标」—— 实测 (216f30a1 / b378929b) 两种被混念的代价是每单一次人工验尸。
    */
   | 'delivered-with-red'
+  /**
+   * **跨模型终审判红一次, finding 回灌同一 lead 节点重派一次之后仍不能证明修复** (P3 S6b / D-14, 2026-09-02)。
+   * 直接证据 = 编排循环路径 ∧ 回灌发生过 ∧ (回灌后机械 oracle 红 ∨ 本 run 无机械 oracle)。
+   * 与 `oracle-failed` 分开: 那格是「环说成了而判据没过」; 这格是「终审说没成, 且引擎按 INV-7 不再复审」。
+   * 与 `delivered-with-red` 分开: 那格判据绿。owner 2026-09-02 裁: 新增一格, 不复用 `delivered-with-red`
+   * (复用会把两种成因混进同一列, 污染 outcome-partial 的既有分母)。
+   */
+  | 'verifier-rejected'
   /** 环判定「没有外部输入推不动」(空转 / §8.4 熔断 / 检测者喊停)。**加轮数没用。** */
   | 'blocked'
   /** 预算耗尽而停(第四条停止轴)。与 `blocked` 分开的理由是下一步不同:加预算 resume 很可能就成。 */
@@ -176,6 +184,15 @@ export const RUN_OUTCOME_INFO: Record<RunOutcomeKind, RunOutcomeInfo> = {
     evidence:
       '冻结判据退出码符合期望 (accept 真跑真绿, 或被红级联压死后在收尾独立复验绿), 且图内 ≥1 节点红',
     nextAction: '产物可收编 (隔离档已自动 commit, 见 #165②) —— 人审**红节点**是否要紧 (成因见节点级表), 别整轮重跑',
+    resumable: false,
+  },
+  'verifier-rejected': {
+    spendBucket: 'delivery',
+    loopState: 'STALLED',
+    evidence:
+      '编排循环路径: verifier 判红 (RunGoalResult.verifierDissent 有原文) → finding 回灌 lead 节点重派 1 次 → 回灌后机械 oracle 仍红, 或本 run 无机械 oracle 可证明修复',
+    nextAction:
+      '读 verifierDissent 原文与第二轮 lead 报告 —— **别加轮数**: 第二次 finding 不进引擎环 (INV-7 终审恰一次), 要么人裁 finding 不成立, 要么改 goal/判据再跑',
     resumable: false,
   },
   blocked: {

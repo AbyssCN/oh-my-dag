@@ -7,6 +7,10 @@ import type { ExecutorDagConfig, ExecutorDagResult } from '../dag/types';
 import type { AgentLeafInput, AgentLeafResult } from '../leaf-runners';
 import { fingerprintOf } from '../profiles/review-ledger';
 import { runGoal, type RunGoalConfig } from './run-goal';
+import { pinLegacyExecutionPath } from './pin-legacy-path';
+
+// P3 S6b (2026-09-02): 本文件钉 P3 之前的执行路径 (fake _runDag 产 `execute` 节点); 循环路径的判据见 orchestrating-loop.test.ts。
+pinLegacyExecutionPath();
 
 const screenshotCommand = './.omd/screenshot.sh';
 

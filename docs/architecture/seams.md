@@ -7,7 +7,7 @@
 **有哪些接缝 · 每个字段谁在消费 · 换实现该去哪换**。消费方是 token 级扫描的上界
 (只扫代码 —— 注释与字符串字面量里提到字段名不算消费), 列出命中最多的前 3 个文件。
 
-> 8 个 seam · 54 个字段 · 扫描范围 src/**/*.ts (排除测试)
+> 8 个 seam · 55 个字段 · 扫描范围 src/**/*.ts (排除测试)
 
 ## DagSeatsSeam
 
@@ -41,7 +41,7 @@
 | `generate` |  | `GenerateFn` | 注入式模型调用 (inproc leaf, 默认 callModel)。 | `src/harness/dag/engine.ts`<br>`src/harness/goal/run-goal.ts`<br>`src/harness/goal/rubric-judge.ts` (9 文件) |
 | `agentRunner` |  | `AgentLeafRunner` | agent-kind leaf 的执行器 (带工具子 agent, 能改文件)。 | `src/mcp/assemble.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/goal/run-goal.ts` (8 文件) |
 | `commandRunner` |  | `CommandLeafRunner` | command-kind leaf 的执行器 (确定性 CLI, 零 LLM, 方案 A)。 | `src/harness/goal/run-goal.ts`<br>`src/harness/dag/engine.ts`<br>`src/mcp/assemble.ts` (9 文件) |
-| `researchRunner` |  | `ResearchLeafRunner` | research-kind leaf 的执行器 (真 web 检索 + 有界内环, D-6)。 | `src/mcp/assemble.ts`<br>`src/harness/dag/engine.ts` (2 文件) |
+| `researchRunner` |  | `ResearchLeafRunner` | research-kind leaf 的执行器 (真 web 检索 + 有界内环, D-6)。 | `src/mcp/assemble.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/goal/run-goal.ts` (3 文件) |
 | `judgeSend` |  | `typeof Gateway.send` | 注入式 judge 调用 (测试)。 | `src/harness/dag/engine.ts` (1 文件) |
 | `router` |  | `LeafModelRouter` | executor leaf 模型选型路由器 (B-2 bandit, 见 model-router.ts)。 | `src/mcp/assemble.ts`<br>`src/mcp/tools/config-tools.ts`<br>`src/harness/dag/engine.ts` (5 文件) |
 | `repoChecks` |  | `RepoCheck[]` | **leaf 级仓规检查清单** (D2 切片 2, #266 修补节点): 引擎对每个 agent leaf 跑完 之后、终态写入之前, 对该 leaf 的写集跑清单里每条 check。 | `src/harness/agent-leaf.ts`<br>`src/mcp/assemble.ts` (2 文件) |
@@ -67,7 +67,7 @@
 
 | 字段 | 必填 | 类型 | 一句话 | 消费方 (前3) |
 |---|---|---|---|---|
-| `maxFanout` |  | `number` | 内层 fan-out 并发上限 (传给 primitives.parallel)。 | `src/mcp/tools/dag-tools.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/fleet.ts` (14 文件) |
+| `maxFanout` |  | `number` | 内层 fan-out 并发上限 (传给 primitives.parallel)。 | `src/mcp/tools/dag-tools.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/goal/run-goal.ts` (16 文件) |
 | `warmThenFanout` |  | `boolean` | 暖发调度 (契约 §10.2): 全局先串行暖 1 发(写 cache)→ 再并行轰其余(命中共享冻结前缀)。 | `src/mcp/assemble.ts`<br>`src/eval/oracles/conductor-modelmix.ts`<br>`src/eval/oracles/fullstack-dag.ts` (4 文件) |
 | `warmGraceMs` |  | `number` | 暖发**宽限窗口上界** (ms, t-initial-pump 2026-09-02): 暖发那一发起跑后, 最多按住 pool 这么久不派新节点; 暖发提前 settle 则立刻放开 (上界, 不是定长延迟)。 | `src/harness/dag/engine.ts` (1 文件) |
 | `kindFanout` |  | `{ agent?: number; command?: number; inproc?: number }` | per-kind 并发闸 (fanout 最大化设计, 2026-07-21): inproc 叶纯 API 等待、无本地足迹 → 默认不限 (只受 maxFanout/图宽/provider 池); agent 叶 (本地工具调用)… | `src/harness/dag/dag-scheduler.ts`<br>`src/mcp/assemble.ts`<br>`src/harness/dag/engine.ts` (3 文件) |
@@ -88,6 +88,7 @@ leaf prompt 整形 seam: 注入 leaf 上下文/前缀/压缩级与档位闸 (省
 | `leafTierThresholdBytes` |  | `number` | g1「塞得下单 leaf prompt」阈值 (字节), 决定改写建议走「单 cat+leaf」还是「conductor 展开 per-item 对」。 | `src/harness/dag/engine.ts`<br>`src/mcp/assemble.ts` (2 文件) |
 | `planCriticGate` |  | `boolean` | **plan-critic 静态闸进活规划环** (#247, 2026-08-24, 片 2): parsePlan 成功后跑一次 `critique()`, 只 enforce 无外部输入子集 `{PP-I01, PP-I02, … | `src/mcp/assemble.ts`<br>`src/harness/dag/engine.ts` (2 文件) |
 | `faninSummary` |  | `FaninSummaryConfig` | fan-in **定向摘要** (引擎接缝, 2026-07-21): 一个 producer 的输出被 ≥2 个下游 consumer 消费时, 不再把全文复制 ≥2 份灌进各 consumer, 而是跑 1 发定向摘要 (按下游目… | `src/harness/dag/engine.ts` (1 文件) |
+| `leafFace` |  | `(node: { id: string; executor?: string }) => LeafFace \| u…` | **按节点下发整副工具面 + system prompt** 的钩子 (P3 S6b, 2026-09-02; 编排循环的 lead 节点用)。 | `src/harness/dag/engine.ts`<br>`src/harness/goal/run-goal.ts` (2 文件) |
 
 ## DagLoopControlSeam
 
@@ -98,13 +99,13 @@ leaf prompt 整形 seam: 注入 leaf 上下文/前缀/压缩级与档位闸 (省
 | `freezeCriterion` |  | `{ command: string; expectExit?: number; /** 期望输出子串。与 expe…` | 冻结判据 + (S-37 下沉 2026-08-17): 基线赦免谓词。 | `src/harness/dag/engine.ts`<br>`src/harness/goal/run-goal.ts` (2 文件) |
 | `judgeArtifacts` |  | `boolean \| ArtifactBudget` | **产物内容进 judge 视图** (S1, 2026-08-03)。 | `src/harness/dag/engine.ts` (1 文件) |
 | `ownerDirectives` |  | `(round: number, nonce: string) => string` | **owner 指令通道** (S3, 2026-07-31 / D-S)。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/goal.ts` (2 文件) |
-| `loopBudget` |  | `{ /** 累计 leaf+conductor token(in+out)上限。 */ tokens?: numb…` | **环的预算上限**(2026-07-31)—— Loop Engineering 四条停止轴里我们唯一缺的那条。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/goal.ts` (2 文件) |
+| `loopBudget` |  | `{ /** 累计 leaf+conductor token(in+out)上限。 */ tokens?: numb…` | **环的预算上限**(2026-07-31)—— Loop Engineering 四条停止轴里我们唯一缺的那条。 | `src/harness/dag/engine.ts`<br>`src/harness/goal/run-goal.ts`<br>`src/mcp/tools/goal.ts` (3 文件) |
 | `_budgetAnchor` |  | `number` | #158 预算时间轴的**锚时刻** (epoch ms)。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/goal.ts` (2 文件) |
 | `repeatedActionThreshold` |  | `number` | **§8.4 动作级熔断**的阈值 (缺省 2)。 | `src/harness/dag/engine.ts` (1 文件) |
 | `judgeFailureThreshold` |  | `number` | **闸级熔断**的阈值 (缺省 2, 2026-08-16)。 | `src/harness/dag/engine.ts` (1 文件) |
-| `verifier` |  | `VerifierFn` | 跨模型校验器 (model-agnostic skeptic, 见 verifier.ts)。 | `src/harness/verify-seats.ts`<br>`src/harness/verifier.ts`<br>`src/model/auto-assign.ts` (15 文件) |
+| `verifier` |  | `VerifierFn` | 跨模型校验器 (model-agnostic skeptic, 见 verifier.ts)。 | `src/harness/verify-seats.ts`<br>`src/harness/goal/run-goal.ts`<br>`src/harness/verifier.ts` (15 文件) |
 | `escalateAfterRound` |  | `number` | 从第几轮起用 `conductorEscalationModel` 重画 (默认 2 = 第 1 轮弱 conductor, 后续升级)。 | `src/harness/plan/iterate.ts`<br>`src/harness/dag/engine.ts` (2 文件) |
-| `maxEscalations` |  | `number` | verifier-fail → 升级重规划的最大次数 (默认 1)。 | `src/harness/verifier.ts`<br>`src/mcp/assemble.ts`<br>`src/harness/dag/engine.ts` (4 文件) |
+| `maxEscalations` |  | `number` | verifier-fail → 升级重规划的最大次数 (默认 1)。 | `src/harness/verifier.ts`<br>`src/mcp/assemble.ts`<br>`src/harness/dag/engine.ts` (5 文件) |
 | `frozenNodes` |  | `readonly string[]` | **冻结判据节点**(SDD 2026-08-22 「冻结判据在重规划轮里并不冻结」)。 | `src/harness/dag/engine.ts`<br>`src/harness/dag/replan-spin.ts`<br>`src/harness/goal/run-goal.ts` (3 文件) |
 | `deterministicReplan` |  | `() => ConductorPlan \| undefined` | **平铺图确定性重规划** (SDD 2026-08-22 「升级重规划成事件」续 / 平铺图 v2)。 | `src/harness/goal/run-goal.ts`<br>`src/harness/dag/engine.ts` (2 文件) |
 
@@ -117,4 +118,4 @@ leaf prompt 整形 seam: 注入 leaf 上下文/前缀/压缩级与档位闸 (省
 | `sessionId` |  | `string` | 本次 run 的 Langfuse trace 分组 session id (conductor+leaf 全部经 send 归此 session)。 | `src/tui/tui.ts`<br>`src/tui/backend-embedded.ts`<br>`src/harness/chat/agent.ts` (35 文件) |
 | `onComplete` |  | `(result: ExecutorDagResult) => void \| Promise<void>` | 运行完成钩子 (留痕层接口)。 | `src/mcp/tools/dag-tools.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/plan/iterate.ts` (6 文件) |
 | `onNodeEvent` |  | `(e: DagNodeEvent) => void` | 节点级进度事件 (2026-07-20, MCP 派发简报/活体 status 的数据源): planned = 图定型 (全部节点 id+kind, 每轮 plan/escalation 重规划各发一次) start = 节点起跑 … | `src/mcp/tools/dag-tools.ts`<br>`src/mcp/tools/fleet.ts`<br>`src/mcp/assemble.ts` (6 文件) |
-| `continuity` |  | `{ manager: CheckpointManager; runId: string; resume?: boo…` | W2 continuity (SDD C4): 节点级 checkpoint 写入磁盘 + 崩溃恢复跳过。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/dag-tools.ts`<br>`src/mcp/tools/goal.ts` (8 文件) |
+| `continuity` |  | `{ manager: CheckpointManager; runId: string; resume?: boo…` | W2 continuity (SDD C4): 节点级 checkpoint 写入磁盘 + 崩溃恢复跳过。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/dag-tools.ts`<br>`src/harness/goal/run-goal.ts` (8 文件) |

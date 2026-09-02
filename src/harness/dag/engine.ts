@@ -4637,9 +4637,12 @@ async function executePlan(
         // P2e: 配了目标预算 → 这一发的超时不许超过剩余额度 (未配 → undefined, 不下发字段,
         // 老调用方逐字节零回归)。
         const leafBudgetMs = remainingBudgetMs();
+        // P3 S6b: 按节点工具面钩子 (编排循环的 lead 节点)。缺席 / 返回 undefined → 不传字段, 老叶逐字节零回归。
+        const leafFace = config.leafFace?.({ id, executor: node.executor });
         const r = await config.agentRunner!({
           prompt,
           model,
+          ...(leafFace ? { face: leafFace } : {}),
           ...(leafBudgetMs !== undefined ? { leafTimeoutMs: leafBudgetMs } : {}),
           // S-1: 判据下发。缺席 = 该节点没判据 (旁路) 或判据被自证闸拒 —— 两者在 leaf 侧行为相同,
           // 分辨靠上面那条 WARN, 不靠 leaf 猜。

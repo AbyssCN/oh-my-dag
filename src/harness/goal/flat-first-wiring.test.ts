@@ -43,6 +43,10 @@ import type {
   ExecutorDagResult,
   GenerateFn,
 } from '../dag/types';
+import { pinLegacyExecutionPath } from './pin-legacy-path';
+
+// P3 S6b (2026-09-02): 本文件钉 P3 之前的执行路径 (fake _runDag 产 `execute` 节点); 循环路径的判据见 orchestrating-loop.test.ts。
+pinLegacyExecutionPath();
 
 // FLAT_FIRST_WIRED — GWT-4/5 锚串 (本仓闸判据逐字在本文件可定位)。
 // 反向自检: 把这串挪走 → 「开关开 → 轻规划被调 1 次」与「L1 升档 L2」两组核心断言同时红。

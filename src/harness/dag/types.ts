@@ -5,7 +5,7 @@ import type * as Gateway from '../../model/gateway';
 import type { AgentTemplate } from '../agent-templates';
 import type { ConductorPlan } from '../conductor-plan';
 import type { CavemanLevel } from '../caveman';
-import type { AgentLeafRunner, CommandLeafRunner, LeafGateStates, LeafModelRouter, LeafWatchdog, ResearchLeafRunner, ShellRun, ToolStep } from '../leaf-runners';
+import type { AgentLeafRunner, CommandLeafRunner, LeafFace, LeafGateStates, LeafModelRouter, LeafWatchdog, ResearchLeafRunner, ShellRun, ToolStep } from '../leaf-runners';
 import type { CheckpointManager } from '../continuity/checkpoint-manager';
 import type { VerifierFn } from '../verifier';
 import type { FaninSummaryConfig } from '../fanin-summary';
@@ -382,6 +382,13 @@ export interface DagLeafShapingSeam {
    * 的行为旋钮惯例——默认档由引擎给); `{ enabled: false }` 关闭。fail-open: 摘要失败 → 回退全文注入。
    */
   faninSummary?: FaninSummaryConfig;
+  /**
+   * **按节点下发整副工具面 + system prompt** 的钩子 (P3 S6b, 2026-09-02; 编排循环的 lead 节点用)。
+   * 引擎在每次 agent 派发前调一次; 返回值在场 → 原样进 `AgentLeafInput.face`, 该叶的工具面与
+   * system prompt 由它定 (精益面 / 座位极简面 / profile / scaffold 全不进); 返回 undefined → 老路径逐字节不变。
+   * 不进 plan (闭包不可序列化); 装配点 = run-goal 的编排循环路径, 只对 `lead` 这一个 id 返回值。
+   */
+  leafFace?: (node: { id: string; executor?: string }) => LeafFace | undefined;
 }
 
 /** 内环控制 seam: 判据进环/judge 视图/预算/熔断/升级 —— 环的四条停止轴与跨模型校验。 */

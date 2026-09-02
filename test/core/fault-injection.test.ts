@@ -49,6 +49,11 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { awaitDeath, awaitExitBounded, awaitWhileAlive, readAllBounded } from '../../src/harness/proc/await-exit';
+import { pinLegacyExecutionPath } from '../../src/harness/goal/pin-legacy-path';
+
+// P3 S6b (2026-09-02): 本文件钉 P3 之前的执行路径 (v1 conductor 内环轮语义 / fake _runDag 产 `execute` 节点);
+// 循环路径的判据见 src/harness/goal/orchestrating-loop.test.ts。
+pinLegacyExecutionPath();
 
 const CHILD = join(import.meta.dir, 'fault-injection-child.ts');
 const RUN_ID = 'crash-run';

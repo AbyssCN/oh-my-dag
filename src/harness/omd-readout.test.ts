@@ -191,7 +191,7 @@ describe('omd-readout · runId 归并 (草案 §4)', () => {
   test('成功分母只计一次: 两段都成功的 run-A 在 outcome_distribution 里只占一个 success', () => {
     const { readoutNow } = makeFixture();
     expect(readoutNow().outcome_distribution).toEqual({
-      success: 2, 'not-converged': 1, 'oracle-failed': 0, 'delivered-with-red': 0, blocked: 1,
+      success: 2, 'not-converged': 1, 'oracle-failed': 0, 'delivered-with-red': 0, 'verifier-rejected': 0, blocked: 1,
       'budget-exhausted': 0, cancelled: 0, 'infra-error': 0, 'missing-capability': 0, 'not-needed': 0,
       'empty-result': 0, unclassified: 0, 未记: 1, total: 5,
     });
@@ -333,7 +333,7 @@ describe('omd-readout · 复用率 (草案 T8 · 2026-08-06 改口径)', () => {
     const empty = readout({ db: emptyDb });
     expect(empty.runs).toEqual([]);
     expect(empty.outcome_distribution).toEqual({
-      success: 0, 'not-converged': 0, 'oracle-failed': 0, 'delivered-with-red': 0, blocked: 0,
+      success: 0, 'not-converged': 0, 'oracle-failed': 0, 'delivered-with-red': 0, 'verifier-rejected': 0, blocked: 0,
       'budget-exhausted': 0, cancelled: 0, 'infra-error': 0, 'missing-capability': 0, 'not-needed': 0,
       'empty-result': 0, unclassified: 0, 未记: 0, total: 0,
     });

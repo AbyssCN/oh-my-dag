@@ -10,6 +10,7 @@ import type { AcceptanceOutcome } from './acceptance-run';
 import type { SelfCheckSpec } from './conductor-plan';
 import type { AgentEvent } from '@earendil-works/pi-agent-core';
 import type { LeafProfile } from './profiles/profile';
+import type { AnyOmdTool } from './agent-tools';
 import type { CriteriaDiff } from './dag/spin-rung2';
 
 // ── agent leaf(带工具的 pi session,能改文件)────────────────────────
@@ -117,6 +118,27 @@ export interface AgentLeafInput {
    * 缺席 = 本次调用不受目标预算约束, 沿用 opts 级兜底 (老调用方逐字节零回归)。
    */
   leafTimeoutMs?: number;
+  /**
+   * P3 S6b (2026-09-02): **按调用指定的工具面 + system prompt**(编排循环的 lead 节点用)。
+   * 在场 = 本次调用的工具面恒等于 `toolNames` ∩ runner 内置工具 ∪ `customTools`, system prompt 恒等于
+   * `systemPrompt`; 精益面 / 座位极简面 / profile 三条缺省策略与 scaffold 前缀**全部不进**。
+   * 缺席 = 老路径逐字节不变。只由引擎按 `ExecutorDagConfig.leafFace` 钩子按节点下发,
+   * 不进 plan (闭包不可序列化)。
+   */
+  face?: LeafFace;
+}
+
+/**
+ * P3 S6b: 一次 agent 调用的完整面 —— 工具名单 + 追加工具 + 整份 system prompt。
+ * `customTools` 是**按调用**的闭包 (lead 的七张派工卡要拿当次 run 的引擎 config 派子图),
+ * 所以不能烤进 runner 装配期的 `AgentLeafRunnerOpts.customTools`。
+ */
+export interface LeafFace {
+  /** runner 内置工具里要保留的名字 (如 read / ls / grep / bash)。 */
+  toolNames: readonly string[];
+  /** 按调用追加的工具 (lead 的七张派工卡)。 */
+  customTools?: readonly AnyOmdTool[];
+  systemPrompt: string;
 }
 
 /**

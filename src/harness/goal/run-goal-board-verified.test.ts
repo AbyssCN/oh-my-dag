@@ -22,6 +22,10 @@ import type { AcceptanceSpec, GoalClassification, GoalTier } from './classify-ac
 import type { ExecutorDagConfig, ExecutorDagResult } from '../dag/types';
 import type { ConductorPlan } from '../conductor-plan';
 import { readBoard, type BoardEntry } from '../board/run-board';
+import { pinLegacyExecutionPath } from './pin-legacy-path';
+
+// P3 S6b (2026-09-02): 本文件钉 P3 之前的执行路径 (fake _runDag 产 `execute` 节点); 循环路径的判据见 orchestrating-loop.test.ts。
+pinLegacyExecutionPath();
 
 const ACC_EXEC: AcceptanceSpec = { kind: 'executable', command: 'bun test', expectExit: 0 };
 const ACC_EXPLORE: AcceptanceSpec = { kind: 'exploratory', learningGoal: '学到什么', affordableLoss: '一轮' };

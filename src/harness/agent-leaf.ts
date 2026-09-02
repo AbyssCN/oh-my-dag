@@ -1983,12 +1983,15 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // 这只是"没人指定时按座位挑"的缺省。
     // P3 S4 精益面 (D-10 / INV-4): 作用域三条件齐 → 四只手 (+ 条件件 run_acceptance), prompt 走 v2。
     // mcpAllow 非空 → 不进精益 (退回全面, mcp 工具照挂); 座位极简机制排在它后面 (精益优先)。
-    const leanScope = opts.leanLeaf === true && !input.profile && !opts.tools && !(input.mcpAllow && input.mcpAllow.length > 0);
+    // P3 S6b: 按调用下发的整副面 (lead 节点)。在场 → 三条缺省策略 (精益 / 座位极简 / profile) 全不进,
+    // 工具面与 system prompt 都由它定; 缺席 → 下面逐字节老路径。
+    const face = input.face;
+    const leanScope = !face && opts.leanLeaf === true && !input.profile && !opts.tools && !(input.mcpAllow && input.mcpAllow.length > 0);
     const leanTools = availableTools.filter((t) => LEAN_LEAF_TOOLS.includes(t.name));
     const wantLeanFace = leanScope && leanTools.length > 0;
     if (leanScope && leanTools.length === 0) logger.warn({ model, want: LEAN_LEAF_TOOLS }, '[agent-leaf] 精益工具面一个都没匹配上 → 退回全工具面');
     const seatWantsMinimal =
-      !wantLeanFace && !input.profile && !opts.tools && (opts.minimalToolFaceSeats ?? DEFAULT_MINIMAL_TOOLFACE_SEATS).includes(modelId);
+      !face && !wantLeanFace && !input.profile && !opts.tools && (opts.minimalToolFaceSeats ?? DEFAULT_MINIMAL_TOOLFACE_SEATS).includes(modelId);
     // 全工具面 = 这一发**升级后**要用的那副 (也是其它座位从头到尾用的那副)。
     const fullTools = input.profile ? toolsForProfile(leafProfile) : defaultTools;
     // 极简面**不过 `excluded`**: hashlineEdit 把 `edit` 排掉, 而台账只认 write/edit —— 见
@@ -2001,9 +2004,17 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // P3 S2 (INV-4): `run_acceptance` 只在本次派了冻结判据时追加到面上 —— 没判据的节点连这个名字都看不到,
     // 不给模型一个「调了就拒」的假手;有判据时极简面与全面都带它 (它就是验收那只手)。
     const withAcceptance = Boolean(input.self_check) && acceptanceTool !== undefined;
-    const perCallToolsBase = wantLeanFace ? leanTools : wantMinimalFace ? minimalTools : fullTools;
+    // P3 S6b: face 在场 → 名单 ∩ 内置 ∪ 追加卡。名单里一个都没匹配上不静默: 留一行, 仍按 face 走
+    // (lead 没有手比 lead 拿到一副别人的手更容易被发现)。
+    const faceTools = face
+      ? [...availableTools.filter((t) => face.toolNames.includes(t.name)), ...(face.customTools ?? [])]
+      : null;
+    if (face && faceTools!.length === 0) logger.warn({ model, want: face.toolNames }, '[agent-leaf] 按调用 face 的工具名单一个都没匹配上 (工具面为空)');
+    const perCallToolsBase = faceTools ?? (wantLeanFace ? leanTools : wantMinimalFace ? minimalTools : fullTools);
     const perCallTools = withAcceptance ? [...perCallToolsBase, acceptanceTool!] : perCallToolsBase;
-    const perCallSystemPrompt = wantLeanFace
+    const perCallSystemPrompt = face
+      ? face.systemPrompt
+      : wantLeanFace
       ? buildLeafSystemPromptV2({
           writeRoot: cwd,
           ...(input.writeAllow ?? opts.writeAllow ? { writeSet: input.writeAllow ?? opts.writeAllow } : {}),
@@ -2034,12 +2045,15 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     const wantRouting = opts.toolRouting ?? true;
     const wantDiscipline = opts.disciplineCore ?? true;
     const profile = opts.promptProfile ?? 'auto';
-    const scaffold = agentScaffold({
-      profile,
-      model,
-      toolRouting: wantRouting,
-      disciplineCore: wantDiscipline,
-    });
+    // P3 S6b: face 在场 → 不挂 leaf 脚手架 (lead 常驻 prompt 自成一体, INV-8 ≤8k 常驻不许被 scaffold 撑破)。
+    const scaffold = face
+      ? ''
+      : agentScaffold({
+          profile,
+          model,
+          toolRouting: wantRouting,
+          disciplineCore: wantDiscipline,
+        });
     const disciplined = scaffold ? `${scaffold}\n\n${prompt}` : prompt;
     // S2 (2026-08-25, 片 2) rung 2 证据注入 (D-4): fresh-context 丢消息历史不得丢这些显式证据,
     // seat-upgrade 也带一份 (高一档模型没看过档 1 上下文, 缺它就只能凭空白 prompt 干)。缺省 = 普通

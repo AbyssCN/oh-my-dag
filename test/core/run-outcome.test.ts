@@ -20,6 +20,11 @@ import { summarizeGoal } from '../../src/mcp/tools/goal';
 import { createDagRecorder } from '../../src/harness/dag/dag-record';
 import { RUN_OUTCOME_INFO, RUN_OUTCOME_ORDER, deriveRunOutcome, type RunOutcomeKind } from '../../src/harness/run-outcome';
 import type { ExecutorDagResult } from '../../src/harness/dag/types';
+import { pinLegacyExecutionPath } from '../../src/harness/goal/pin-legacy-path';
+
+// P3 S6b (2026-09-02): 本文件钉 P3 之前的执行路径 (v1 conductor 内环轮语义 / fake _runDag 产 `execute` 节点);
+// 循环路径的判据见 src/harness/goal/orchestrating-loop.test.ts。
+pinLegacyExecutionPath();
 
 // ── goal 侧夹具: simple 档 (不走契约段) + 注入式 _runDag, 一个 execute 节点定生死 ──────
 const leaf = (over: Record<string, unknown>) => ({ id: 'execute', kind: 'conductor', deps: [], output: '', usage: { in: 1, out: 1 }, rounds: 2, ...over });

@@ -24,6 +24,10 @@ import type { GoalClassification } from './classify-acceptance';
 import * as chainRouter from './chain-router';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagConfig, ExecutorDagResult } from '../dag/types';
+import { pinLegacyExecutionPath } from './pin-legacy-path';
+
+// P3 S6b (2026-09-02): 本文件钉 P3 之前的执行路径 (fake _runDag 产 `execute` 节点); 循环路径的判据见 orchestrating-loop.test.ts。
+pinLegacyExecutionPath();
 
 const executeDag = (): ExecutorDagResult =>
   ({

@@ -867,6 +867,10 @@ describe('runGoal — D-2 声明写集面 (S-2, run 级 runtime 面)', () => {
 import { resolveBackend } from '../pathfinder/backend';
 import { loadMap } from '../pathfinder/map-store';
 import { computeFrontier } from '../pathfinder/frontier';
+import { pinLegacyExecutionPath } from './pin-legacy-path';
+
+// P3 S6b (2026-09-02): 本文件钉 P3 之前的执行路径 (fake _runDag 产 `execute` 节点); 循环路径的判据见 orchestrating-loop.test.ts。
+pinLegacyExecutionPath();
 
 /** 一份带未决段的 spec 正文 (经 `_readSpec` 注入, 不真正写入磁盘)。 */
 const SPEC_WITH_OPEN = [
