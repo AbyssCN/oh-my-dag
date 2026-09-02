@@ -263,6 +263,7 @@ async function evaluateVariantFitness(
     planValidityRate: 0,
     fakeSerialPairsTotal: 0,
     speedupTheoreticalMedian: null,
+    speedupCostBasis: null,
     shapeDeclarationRate: 0,
     planningTokensTotal: 0,
     n: 0,

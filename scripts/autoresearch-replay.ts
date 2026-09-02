@@ -54,6 +54,7 @@ import {
   computeFitness,
   type AggregatedFitness,
   type PlanFitness,
+  type SpeedupCostBasis,
 } from '../src/eval/replay/fitness';
 import {
   DEFAULT_VARIANT_DIR,
@@ -233,7 +234,7 @@ function shapedCleanRawText(): string {
   return SHAPED_CLEAN_RAW_CACHE;
 }
 
-/** fake-serial fixture - 所有 budgetBasis → speedupTheoretical=null。 */
+/** fake-serial fixture - 所有 budgetBasis → 成本口径退化成 unit (speedupCostBasis='unit')。 */
 function noBudgetFakeSerialRawText(): string {
   if (NO_BUDGET_FAKE_SERIAL_RAW_CACHE === null) {
     const raw = fakeSerialRawText();
@@ -250,7 +251,7 @@ function noBudgetFakeSerialRawText(): string {
  * 4 桶, 各桶的 fitness 维度差异分布 (取样 1 题):
  *   - 0 (clean):                          fakeSerialPairs=0 · speedup=1   · shapeDeclared=false · planValidity=true
  *   - 1 (fake-serial):                    fakeSerialPairs=5 · speedup=4/3 · shapeDeclared=false · planValidity=true
- *   - 2 (fake-serial, 去掉 budgetBasis):  fakeSerialPairs=5 · speedup=null · shapeDeclared=false · planValidity=true
+ *   - 2 (fake-serial, 去掉 budgetBasis):  fakeSerialPairs=5 · speedup=4/3 (unit 口径) · shapeDeclared=false · planValidity=true
  *   - 3 (clean + shape 注入):              fakeSerialPairs=0 · speedup=1   · shapeDeclared=true  · planValidity=true
  *
  * 不同 variant 经 stableHash 分桶, 碰撞率 25%/pair, 但**每个 variant 自身 deterministic**:
@@ -394,6 +395,8 @@ export interface ReplayItemResult {
   planValidity: boolean;
   fakeSerialPairs: number;
   speedupTheoretical: number | null;
+  /** 上一维用的成本账 (declared / unit / mixed); plan 解析失败 → null (不适用)。 */
+  speedupCostBasis: SpeedupCostBasis | null;
   shapeDeclared: boolean;
   planningTokens: number;
 }
@@ -436,6 +439,7 @@ export async function evaluateSplit(input: EvaluateSplitInput): Promise<Evaluate
         planValidity: false,
         fakeSerialPairs: 0,
         speedupTheoretical: null,
+        speedupCostBasis: null,
         shapeDeclared: false,
         planningTokens: tokens,
       };
@@ -444,6 +448,7 @@ export async function evaluateSplit(input: EvaluateSplitInput): Promise<Evaluate
         planValidity: false,
         fakeSerialPairs: 0,
         speedupTheoretical: null,
+        speedupCostBasis: null,
         shapeDeclared: false,
         planningTokens: tokens,
       });
@@ -456,6 +461,7 @@ export async function evaluateSplit(input: EvaluateSplitInput): Promise<Evaluate
       planValidity: fit.planValidity,
       fakeSerialPairs: fit.fakeSerialPairs,
       speedupTheoretical: fit.speedupTheoretical,
+      speedupCostBasis: fit.speedupCostBasis,
       shapeDeclared: fit.shapeDeclared,
       planningTokens: fit.planningTokens,
     });

@@ -279,6 +279,17 @@ export interface DagSchedulingSeam {
    */
   warmThenFanout?: boolean;
   /**
+   * 暖发**宽限窗口上界** (ms, t-initial-pump 2026-09-02): 暖发那一发起跑后, 最多按住 pool
+   * 这么久不派新节点; 暖发提前 settle 则立刻放开 (上界, 不是定长延迟)。`warmThenFanout`
+   * 关时无意义。缺省 20_000。
+   *
+   * ⚠ 为什么需要它: 暖发买的是「共享冻结前缀写进 prompt-cache」, 这件事在**首个模型往返
+   * 返回**时就已到手 —— 而旧实装是 `await` 到整个 leaf **settle** 才放 pool。生产读数
+   * (run 32d16141, 三片零依赖) 里那一发跑了 925s, 于是另外两片白等了 15 分钟。缓存写成
+   * 这件事今天没有信号面 (leaf runner 不上报首个往返), 所以只能给上界。
+   */
+  warmGraceMs?: number;
+  /**
    * per-kind 并发闸 (fanout 最大化设计, 2026-07-21): inproc 叶纯 API 等待、无本地足迹 →
    * 默认不限 (只受 maxFanout/图宽/provider 池); agent 叶 (本地工具调用) 与 command 叶
    * (本地 CLI) 物理共享本机 CPU/磁盘 → 各自独立小闸。省略的 kind = 不限。

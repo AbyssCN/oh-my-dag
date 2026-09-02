@@ -23,6 +23,7 @@ import {
   computeFitness,
   estimateTokens,
   fakeSerialPairsOf,
+  speedupCostBasisOf,
   speedupTheoreticalOf,
   type PlanFitness,
 } from './fitness';
@@ -184,8 +185,9 @@ describe('speedupTheoretical 维 — plan 口径', () => {
     expect(computeFitness({ plan, rawText }).speedupTheoretical).toBeCloseTo(4 / 3, 6);
   });
 
-  test('全无 budgetBasis → null (尺未修, NULL ≠ 0)', () => {
-    // 真值链: costOf 全返 0 → total=0 → 提前返 null。
+  test('全无 budgetBasis → 走单位成本口径 (仍可算, 口径记 unit)', () => {
+    // 真值链: 三节点全未声明 → costOf 各返 1 → total=3, 关键链 3 → speedup=1;
+    //   口径列 speedupCostBasis='unit' (与 declared 分列, 不假装是声明值)。
     const rawText = readFileSync(join(FIXTURE_DIR, 'plan-clean.json'), 'utf8');
     const obj = JSON.parse(rawText) as Record<string, unknown>;
     delete obj['_fixtureIntent'];
@@ -197,14 +199,118 @@ describe('speedupTheoretical 维 — plan 口径', () => {
     const res = parsePlan(mutated, { knownTemplates: new Set(), knownServers: new Set() });
     expect(res.ok).toBe(true);
     if (!res.ok) throw new Error('unreachable');
-    expect(computeFitness({ plan: res.plan, rawText: mutated }).speedupTheoretical).toBeNull();
-    // 直调也返 null
-    expect(speedupTheoreticalOf(res.plan)).toBeNull();
+    const fit = computeFitness({ plan: res.plan, rawText: mutated });
+    expect(fit.speedupTheoretical).toBe(1);
+    expect(fit.speedupCostBasis).toBe('unit');
+    expect(speedupTheoreticalOf(res.plan)).toBe(1);
+  });
+
+  test('全部声明 calls=0 → null (NULL ≠ 0: 声明为零 ≠ 未声明)', () => {
+    // 真值链: 三节点都**显式**声明 calls=0 → costOf 全返 0 → total=0 → 返 null;
+    //   口径仍是 'declared' —— 「声明了零成本」与「没声明」在账本上必须分得开。
+    // 反向自检: 把 costOf 改成「声明值 ≤ 0 也当 1」⇒ 本条从 null 变 1 ⇒ 红。
+    const rawText = readFileSync(join(FIXTURE_DIR, 'plan-clean.json'), 'utf8');
+    const obj = JSON.parse(rawText) as Record<string, unknown>;
+    delete obj['_fixtureIntent'];
+    delete obj['_fixtureTruthChain'];
+    for (const n of Object.values(obj['nodes'] as Record<string, Record<string, unknown>>)) {
+      (n['budgetBasis'] as Record<string, unknown>)['calls'] = 0;
+    }
+    const mutated = JSON.stringify(obj);
+    const res = parsePlan(mutated, { knownTemplates: new Set(), knownServers: new Set() });
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error('unreachable');
+    const fit = computeFitness({ plan: res.plan, rawText: mutated });
+    expect(fit.speedupTheoretical).toBeNull();
+    expect(fit.speedupCostBasis).toBe('declared');
   });
 
   test('空 plan → null (无节点)', () => {
     const empty: ConductorPlan = { name: 'empty', nodes: {} };
     expect(speedupTheoreticalOf(empty)).toBeNull();
+    // 无节点 = 口径不适用 (第三态), 不是 'unit' 也不是 'declared'。
+    expect(speedupCostBasisOf(empty)).toBeNull();
+  });
+});
+
+// =====================================================================
+// SPEEDUP_UNIT_COST — 未声明 budgetBasis 的 plan 也必须量得出加速比
+// =====================================================================
+describe('SPEEDUP_UNIT_COST — 未声明成本按单位成本 1 计', () => {
+  /** 3 节点扇出 + 1 汇合, 全无 budgetBasis。Σcost=4, 关键链 = 汇合 + 任一扇出 = 2 → 2.0。 */
+  const fanoutText = JSON.stringify({
+    name: 'fanout-no-budget',
+    schema_version: '1.0',
+    outputs: ['join'],
+    nodes: {
+      a: { executor: 'command', command: 'echo a', output_type: 'none', expect_exit: 0 },
+      b: { executor: 'command', command: 'echo b', output_type: 'none', expect_exit: 0 },
+      c: { executor: 'command', command: 'echo c', output_type: 'none', expect_exit: 0 },
+      join: {
+        executor: 'command',
+        command: 'echo join',
+        output_type: 'none',
+        expect_exit: 0,
+        depends_on: ['a', 'b', 'c'],
+      },
+    },
+  });
+
+  function fanoutPlan(): ConductorPlan {
+    const res = parsePlan(fanoutText, { knownTemplates: new Set(), knownServers: new Set() });
+    if (!res.ok) throw new Error(`fanout plan 自身坏: ${res.error}`);
+    return res.plan;
+  }
+
+  test('无 budgetBasis 的并行 plan → speedup 非 null 且 > 1', () => {
+    // 真值链: 4 节点全未声明 → costOf 各返 1 (unit 口径);
+    //   Σcost = 4; 关键链 = join(1) + max(a,b,c)(1) = 2; 4/2 = 2。
+    // 反向自检: 把 costOf 的 unit 兜底 (未声明 → 1) 撤回 0 ⇒ total=0 → 返 null ⇒ 本条红。
+    const speedup = speedupTheoreticalOf(fanoutPlan());
+    expect(speedup).not.toBeNull();
+    expect(speedup as number).toBeGreaterThan(1);
+    expect(speedup as number).toBeCloseTo(2, 6);
+  });
+
+  test('未声明 → speedupCostBasis="unit"', () => {
+    // 反向自检: 把 speedupCostBasisOf 的 declared 计数改成恒 = 节点数 ⇒ 返 'declared' ⇒ 红。
+    const plan = fanoutPlan();
+    expect(speedupCostBasisOf(plan)).toBe('unit');
+    expect(computeFitness({ plan, rawText: fanoutText }).speedupCostBasis).toBe('unit');
+  });
+
+  test('全声明 → speedupCostBasis="declared"', () => {
+    const { plan, rawText } = loadFixture('plan-clean.json');
+    expect(speedupCostBasisOf(plan)).toBe('declared');
+    expect(computeFitness({ plan, rawText }).speedupCostBasis).toBe('declared');
+  });
+
+  test('部分声明 → speedupCostBasis="mixed", speedup 仍可算', () => {
+    // 真值链: clean fixture 三节点串行, 删掉 test 节点的 budgetBasis →
+    //   compile(1 declared) + test(1 unit) + package(1 declared) = 3; 关键链 3 → speedup=1;
+    //   声明数 2/3 → 'mixed'。
+    const rawText = readFileSync(join(FIXTURE_DIR, 'plan-clean.json'), 'utf8');
+    const obj = JSON.parse(rawText) as Record<string, unknown>;
+    delete obj['_fixtureIntent'];
+    delete obj['_fixtureTruthChain'];
+    delete (obj['nodes'] as Record<string, Record<string, unknown>>)['test']!['budgetBasis'];
+    const mutated = JSON.stringify(obj);
+    const res = parsePlan(mutated, { knownTemplates: new Set(), knownServers: new Set() });
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error('unreachable');
+    const fit = computeFitness({ plan: res.plan, rawText: mutated });
+    expect(fit.speedupCostBasis).toBe('mixed');
+    expect(fit.speedupTheoretical).toBe(1);
+  });
+
+  test('aggregate 混批 → speedupCostBasis="mixed"; 同口径批保留原口径', () => {
+    // 反向自检: 把 aggregateFitness 的口径合并改成 "取第一条" ⇒ 混批返 'declared' ⇒ 红。
+    const declaredFit = computeFitness(loadFixture('plan-clean.json'));
+    const unitFit = computeFitness({ plan: fanoutPlan(), rawText: fanoutText });
+    expect(aggregateFitness([declaredFit, unitFit]).speedupCostBasis).toBe('mixed');
+    expect(aggregateFitness([declaredFit]).speedupCostBasis).toBe('declared');
+    expect(aggregateFitness([unitFit]).speedupCostBasis).toBe('unit');
+    expect(aggregateFitness([]).speedupCostBasis).toBeNull();
   });
 });
 
@@ -247,6 +353,7 @@ describe('aggregateFitness — 多 plan 聚合', () => {
         planValidity: true,
         fakeSerialPairs: 0,
         speedupTheoretical: null,
+        speedupCostBasis: null,
         shapeDeclared: false,
         planningTokens: 100,
       },
@@ -254,6 +361,7 @@ describe('aggregateFitness — 多 plan 聚合', () => {
         planValidity: true,
         fakeSerialPairs: 1,
         speedupTheoretical: null,
+        speedupCostBasis: null,
         shapeDeclared: false,
         planningTokens: 200,
       },
@@ -267,6 +375,7 @@ describe('aggregateFitness — 多 plan 聚合', () => {
         planValidity: true,
         fakeSerialPairs: 0,
         speedupTheoretical: 2,
+        speedupCostBasis: 'declared',
         shapeDeclared: true,
         planningTokens: 100,
       },
@@ -274,6 +383,7 @@ describe('aggregateFitness — 多 plan 聚合', () => {
         planValidity: true,
         fakeSerialPairs: 0,
         speedupTheoretical: 1.5,
+        speedupCostBasis: 'declared',
         shapeDeclared: false,
         planningTokens: 100,
       },

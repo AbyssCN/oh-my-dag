@@ -56,6 +56,7 @@ function makeCandidate(id: string, partial: Partial<AggregatedFitness> = {}): Ca
     planValidityRate: 1,
     fakeSerialPairsTotal: 0,
     speedupTheoreticalMedian: 1,
+    speedupCostBasis: 'declared',
     shapeDeclarationRate: 0,
     planningTokensTotal: 100 * n,
     n,

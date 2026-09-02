@@ -402,7 +402,9 @@ describe('DagScheduler 收敛判据', () => {
 });
 
 describe('DagScheduler 暖发挑节点', () => {
-  test('挑第一个非 command 的就绪节点, 且不记账', () => {
+  // t-initial-pump (2026-09-02): 暖发从「调用方 await 到 settle 的串行一发」改成「起跑后只按住
+  // 一个宽限窗口」→ 它与其余节点真并发, 必须占槽记账, 否则 isDrained 会在它还在飞时判成收敛。
+  test('挑第一个非 command 的就绪节点, 并记账 (与 takeRunnable 同一笔, release 退)', () => {
     const nodes: Record<string, NodeSpec> = {
       c0: { executor: 'command' },
       c1: { executor: 'command' },
@@ -411,8 +413,10 @@ describe('DagScheduler 暖发挑节点', () => {
     };
     const { sched } = mk(nodes);
     expect(sched.takeWarmStart()).toBe('p0'); // 跳过队首两个 command
-    expect(sched.runningCount).toBe(0);
+    expect(sched.runningCount).toBe(1);
     expect(sched.readyCount).toBe(3); // 已摘出 ready
+    sched.release('p0'); // 同一笔账退得掉 (增减配对)
+    expect(sched.runningCount).toBe(0);
   });
 
   test('整层都是 command → 返 null (不暖, 也不摘任何节点)', () => {

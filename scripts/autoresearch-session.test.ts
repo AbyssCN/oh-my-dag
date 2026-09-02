@@ -163,6 +163,7 @@ function makeAgg(over: Partial<AggregatedFitness> = {}): AggregatedFitness {
     planValidityRate: 1,
     fakeSerialPairsTotal: 0,
     speedupTheoreticalMedian: 1,
+    speedupCostBasis: 'declared',
     shapeDeclarationRate: 0,
     planningTokensTotal: 100,
     n: 1,

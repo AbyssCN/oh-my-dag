@@ -357,7 +357,9 @@ function makeConfigStatus(router?: ConfigToolDeps['router']): OmdMcpTool {
         const badSeats = seats.filter((c) => c.status !== 'ok');
         lines.push('', `全座位自检 (${seats.length} 座, ${badSeats.length} 个不可用):`);
         for (const c of seats) {
-          const state = c.status === 'ok' ? '✓' : c.status === 'unset' ? '✗未配' : '✗无凭证';
+          // 三态各印各的: 「冷却中」的下一步是等窗过/换座位, 印成「无凭证」会把人支去配 key。
+          const state =
+            c.status === 'ok' ? '✓' : c.status === 'unset' ? '✗未配' : c.status === 'cooling' ? '✗冷却中' : '✗无凭证';
           lines.push(`  ${c.seat.padEnd(12)} ${(c.coord ?? '—').padEnd(34)} ${state}`);
         }
         if (s.multimodalPool.length) lines.push('', `多模态池: ${s.multimodalPool.join(', ')}`);

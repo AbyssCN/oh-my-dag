@@ -7,7 +7,7 @@
 **有哪些接缝 · 每个字段谁在消费 · 换实现该去哪换**。消费方是 token 级扫描的上界,
 列出命中最多的前 3 个文件。
 
-> 8 个 seam · 53 个字段 · 扫描范围 src/**/*.ts (排除测试)
+> 8 个 seam · 54 个字段 · 扫描范围 src/**/*.ts (排除测试)
 
 ## DagSeatsSeam
 
@@ -69,6 +69,7 @@
 |---|---|---|---|---|
 | `maxFanout` |  | `number` | 内层 fan-out 并发上限 (传给 primitives.parallel)。 | `src/mcp/tools/dag-tools.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/fleet.ts` (16 文件) |
 | `warmThenFanout` |  | `boolean` | 暖发调度 (契约 §10.2): 全局先串行暖 1 发(写 cache)→ 再并行轰其余(命中共享冻结前缀)。 | `src/mcp/assemble.ts`<br>`src/harness/dag/engine.ts`<br>`src/eval/oracles/conductor-modelmix.ts` (6 文件) |
+| `warmGraceMs` |  | `number` | 暖发**宽限窗口上界** (ms, t-initial-pump 2026-09-02): 暖发那一发起跑后, 最多按住 pool 这么久不派新节点; 暖发提前 settle 则立刻放开 (上界, 不是定长延迟)。 | `src/harness/dag/engine.ts` (1 文件) |
 | `kindFanout` |  | `{ agent?: number; command?: number; inproc?: number }` | per-kind 并发闸 (fanout 最大化设计, 2026-07-21): inproc 叶纯 API 等待、无本地足迹 → 默认不限 (只受 maxFanout/图宽/provider 池); agent 叶 (本地工具调用)… | `src/harness/dag/dag-scheduler.ts`<br>`src/mcp/assemble.ts`<br>`src/harness/fleet.ts` (4 文件) |
 | `channelFanout` |  | `Record<string, number>` | per-channel 并发闸 (SDD v2 D-23, TFFInfer 多 Stream 同构): key = provider 前缀 (调度期由 node.model ?? kind 静态模型推出), value = 该渠道并… | `src/mcp/assemble.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/dag/dag-scheduler.ts` (3 文件) |
 | `cancelSignal` |  | `AbortSignal` | **协作式取消** (D-P): 叫停这次 run。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/dag-tools.ts`<br>`src/mcp/tools/goal.ts` (4 文件) |
@@ -116,4 +117,4 @@ leaf prompt 整形 seam: 注入 leaf 上下文/前缀/压缩级与档位闸 (省
 | `sessionId` |  | `string` | 本次 run 的 Langfuse trace 分组 session id (conductor+leaf 全部经 send 归此 session)。 | `src/tui/tui.ts`<br>`src/tui/backend-embedded.ts`<br>`src/harness/dag/engine.ts` (37 文件) |
 | `onComplete` |  | `(result: ExecutorDagResult) => void \| Promise<void>` | 运行完成钩子 (留痕层接口)。 | `src/mcp/tools/dag-tools.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/plan/iterate.ts` (7 文件) |
 | `onNodeEvent` |  | `(e: DagNodeEvent) => void` | 节点级进度事件 (2026-07-20, MCP 派发简报/活体 status 的数据源): planned = 图定型 (全部节点 id+kind, 每轮 plan/escalation 重规划各发一次) start = 节点起跑 … | `src/mcp/tools/fleet.ts`<br>`src/mcp/tools/dag-tools.ts`<br>`src/mcp/assemble.ts` (11 文件) |
-| `continuity` |  | `{ manager: CheckpointManager; runId: string; resume?: boo…` | W2 continuity (SDD C4): 节点级 checkpoint 写入磁盘 + 崩溃恢复跳过。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/dag-tools.ts`<br>`src/mcp/tools/goal.ts` (58 文件) |
+| `continuity` |  | `{ manager: CheckpointManager; runId: string; resume?: boo…` | W2 continuity (SDD C4): 节点级 checkpoint 写入磁盘 + 崩溃恢复跳过。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/dag-tools.ts`<br>`src/mcp/tools/goal.ts` (57 文件) |

@@ -22,7 +22,7 @@ import { assertModelResolvable } from './index';
 import { CLAUDE_SDK_PROVIDER } from './claude-sdk-complete';
 import { getProvider, listProviders } from './providers';
 import { piHasCredential } from './pi-transport';
-import { channelInCooldown } from './provider-health';
+import { channelInCooldown, inCooldown } from './provider-health';
 import { ALL_SEATS, type OmdSeat, tryResolveSeatModel, resolveConfiguredPools } from './role-models';
 import { logger } from '../logger';
 
@@ -76,13 +76,43 @@ function resolvable(coord: string): boolean {
 }
 
 /**
+ * 健康维度的闸: **全坐标按 (channel, model) 精确查**, 裸 channel 名才走宽门。
+ *
+ * 2026-09-02 根因修 (票 t-judge-cred): 此前无条件走 `channelInCooldown(provider)` —— 手里明明
+ * 有 model 那一半却扔掉, 于是同一 channel 里**任何一个** model 的冷却把整条 channel 判死。
+ * 盘上实测 (run 1a4e83ce, 2026-09-01T11:56Z): `.omd/seat-health.json` 只有
+ * `opencode-go:deepseek-v4-pro` 一条 403 周期档 (11:51:24Z → 17:51:24Z), judge
+ * `opencode-go:glm-5.2` 就被判不可用 → 静默顺延兜底, 而座位探针对 glm-5.2 真调用当场 ✓。
+ * 这正是 provider-health 头注里 (channel, model) 粒度要治的病 (D-18), 只是 role-fallback
+ * 这一侧没跟着改 —— 那句「role-fallback 只知 channel 不知 model」在本函数上已过期。
+ *
+ * `inCooldown(provider)` 那一跳不能省: 整条 channel 的冷却记在**裸 channel 名那把 key** 上
+ * (`reportProviderFailure` 收裸名时的形态), 只查 channel 与 model 合成的那把会漏掉它。
+ */
+function coordInCooldown(coord: string, provider: string): boolean {
+  // 裸 channel 名: 下游按 defaultModel 落到哪个 model 此刻未知 → 保守走宽门。
+  if (coord === provider) return channelInCooldown(provider);
+  return inCooldown(coord) || inCooldown(provider);
+}
+
+/**
+ * 一个坐标的三态判据 —— **「没凭证」与「冷却中」不许压成一个** (仓规静默坑 1: NULL ≠ 0 ≠ 不适用)。
+ * 前者要配 key, 后者是本机对一次 402/403/429 的**会过期的信念**; 写成同一句话, 读告警的人会
+ * 去查凭证那条链, 而那条链是好的 (票 t-judge-cred 的来历就是这一次误导)。
+ */
+function seatStatusOf(coord: string, env: Record<string, string | undefined>): Exclude<SeatStatus, 'unset'> {
+  const p = providerOf(coord);
+  if (!credentialed(p, env)) return 'no-credential';
+  return coordInCooldown(coord, p) ? 'cooling' : 'ok';
+}
+
+/**
  * 首选坐标是否可用 = **凭证维度 且 运行时健康维度** (双闸)。
- * 凭证: 有 key/OAuth (credentialed)。健康: 不在熔断冷却窗内 (inCooldown, 补 provider-health)。
+ * 凭证: 有 key/OAuth (credentialed)。健康: 该坐标不在熔断冷却窗内 (见 coordInCooldown)。
  * 任一不满足 → 视为不可用 → roleModelWithFallback 顺延兜底。
  */
 export function usable(coord: string, env: Record<string, string | undefined>): boolean {
-  const p = providerOf(coord);
-  return credentialed(p, env) && !channelInCooldown(p);
+  return seatStatusOf(coord, env) === 'ok';
 }
 
 // warn-once 去重 (per role→fallback): 「起跑一行 WARN」不刷屏 —— dream 每次 session 结束都会走这条,
@@ -130,8 +160,11 @@ export function coordUsable(coord: string, env: Record<string, string | undefine
   return usable(coord, env);
 }
 
-/** 一个座位的自检结论。 */
-export type SeatStatus = 'ok' | 'unset' | 'no-credential';
+/**
+ * 一个座位的自检结论。`no-credential` (没 key) 与 `cooling` (有 key, 但本机记着一次
+ * 402/403/429 的冷却窗) 是两种态, 下一步也不同 —— 配凭证 vs 等窗过 / 换座位。
+ */
+export type SeatStatus = 'ok' | 'unset' | 'no-credential' | 'cooling';
 export interface SeatCheck {
   seat: OmdSeat;
   /** 解析到的坐标; status='unset' 时无。 */
@@ -148,13 +181,19 @@ export function checkSeats(env: Record<string, string | undefined> = process.env
   return ALL_SEATS.map((seat): SeatCheck => {
     const r = tryResolveSeatModel(seat, { env });
     if (!r) return { seat, status: 'unset' };
-    return { seat, coord: r.model, status: usable(r.model, env) ? 'ok' : 'no-credential' };
+    return { seat, coord: r.model, status: seatStatusOf(r.model, env) };
   });
 }
 
+/** 一条坏座位的人读描述 —— 三态各说各的, 告警与硬闸共用这一份 (不许各拼各的)。 */
+function seatDetail(c: SeatCheck): string {
+  if (c.status === 'unset') return `${c.seat}=<未配>`;
+  return `${c.seat}=${c.coord} (${c.status === 'cooling' ? '熔断冷却中' : '无凭证'})`;
+}
+
 /**
- * **计划期硬闸** (INV-MODEL-5 的"响亮失败"): 本次 run 真要用的座位里有未配 / 无凭证的 → 抛,
- * 错误里指名座位与坐标。
+ * **计划期硬闸** (INV-MODEL-5 的"响亮失败"): 本次 run 真要用的座位里有未配 / 无凭证 / 冷却中的
+ * → 抛, 错误里指名座位、坐标与是哪一种态。
  *
  * 为什么只闸「真要用的」而不是全部 16 座: dream/continuity 是 opt-in 后台角色, 没配它们不该
  * 挡住一次 dag_run。全景在 {@link checkSeats}, 那是告警面不是闸。
@@ -165,9 +204,7 @@ export function assertSeatsUsable(
 ): void {
   const bad = checkSeats(env).filter((c) => seats.includes(c.seat) && c.status !== 'ok');
   if (bad.length === 0) return;
-  const detail = bad
-    .map((c) => (c.status === 'unset' ? `${c.seat}=<未配>` : `${c.seat}=${c.coord} (无凭证)`))
-    .join(', ');
+  const detail = bad.map(seatDetail).join(', ');
   throw new Error(
     `[omd/model] 起跑自检失败 —— ${bad.length} 个座位不可用: ${detail}。` +
       `修: omd_set_key / omd_register_provider 配凭证, 或 omd_set_role 换座位, 或 omd models auto 重分配。` +
@@ -216,12 +253,10 @@ export function checkPools(env: Record<string, string | undefined> = process.env
 export function warnUnregisteredRoles(env: Record<string, string | undefined> = process.env): void {
   const bad = checkSeats(env).filter((c) => c.status !== 'ok');
   if (bad.length > 0) {
-    const detail = bad
-      .map((c) => (c.status === 'unset' ? `${c.seat}=<未配>` : `${c.seat}=${c.coord}`))
-      .join(', ');
+    const detail = bad.map(seatDetail).join(', ');
     logger.warn(
       { unusable: detail, count: bad.length },
-      `[role-seat] ${bad.length} 个座位未配或无可用凭证: ${detail} ` +
+      `[role-seat] ${bad.length} 个座位未配 / 无凭证 / 冷却中: ${detail} ` +
         `— 运行时按注册表顺延兜底 (issue #6); 配齐凭证或改 .omd/config.json 消除本告警。`,
     );
   }
