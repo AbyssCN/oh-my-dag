@@ -15,6 +15,9 @@
  *   ② 把 `if (sdd) { if (priorContract...) ... else sdd-direct }` 的分支顺序颠倒
  *      (sdd-direct 判在 priorContract 判之前) → 第二格红 (复用分支永不可达, summary 变成
  *      "SDD 直通" 而不是 "闸 C")。
+ *   ③ (P2 回流修正, 2026-09-02) 把 run-goal.ts:1394 条件里的 `existsSync(priorContract.specPath)`
+ *      摘掉 (只留 `priorContract` 真值判断) → 第三格红 (specPath 指向盘上不存在的文件时仍误判复用,
+ *      summary 变成"闸 C"而不是"SDD 直通")。
  */
 import { describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
@@ -118,23 +121,34 @@ describe('INV-11 ② —— 有 sdd + prior.contract 命中 → 走闸 C 复用�
     );
 
     const sddPath = join(cwd, 'sdd.md');
-    writeFileSync(sddPath, '# 契约\n\n## 契约\n做这件事。\n\n## 分解\n1. 做 → verify: `bun test`\n');
+    writeFileSync(
+      sddPath,
+      '# 契约\n\n## 契约\nNEW_SDD_MARKER 做这件事。\n\n## 分解\n1. 做 → verify: `bun test`\n',
+    );
 
     const runDagCalls: string[] = [];
+    const plans: ConductorPlan[] = [];
     const r = await runGoal(goal, {
       cwd,
       sddPath,
       dag: { conductorModel: 'c:m', leafModel: 'l:m', continuity: { manager: {} as never, runId } } as ExecutorDagConfig,
       _runDag: async (plan: ConductorPlan) => {
         runDagCalls.push(plan.name);
+        plans.push(plan);
         return executeDag();
       },
     });
 
     // 不重转录: execute 之外没有第二次 _runDag 调用 (契约段没有一个独立子图要跑)。
     expect(runDagCalls).toEqual(['goal-execute']);
-    expect(r.specPath).toBe(priorSpecPath);
+    // P1 回流修正 (review 264df08b): sdd 在场时 specPath/evidence 取本轮 sdd, 不许被旧契约
+    // 顶掉 —— 复用分支只并入不冲突的旧勘察增量 (repoContext/sources)。
+    expect(r.specPath).toBe(sddPath);
     expect(r.repoContext).toBe('src/a.ts:1 — 老勘察事实');
+    const execPlan = plans.find((p) => p.name === 'goal-execute')!;
+    const execGoal = String((execPlan.nodes.execute as { goal?: unknown }).goal ?? '');
+    expect(execGoal).toContain('NEW_SDD_MARKER');
+    expect(execGoal).not.toContain('旧契约正文');
     const survey = r.stages.find((s) => s.stage === 'survey')!;
     expect(survey.status).toBe('done');
     expect(survey.summary).toContain('闸 C');
@@ -153,6 +167,47 @@ describe('INV-11 ② —— 有 sdd + prior.contract 命中 → 走闸 C 复用�
       _runDag: async () => executeDag(),
     });
     expect(r.stages.find((s) => s.stage === 'spec')!.summary).toContain('SDD 直通');
+    expect(r.specPath).toBe(sddPath);
+  });
+
+  test('P2 回流修正: prior.contract.specPath 记了但盘上文件已不在 → 不复用, 照走 sdd-direct (状态不是真源, 盘上文件才是)', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omd-contract-gate-c3-'));
+    const goal = '续跑一个契约文件已被清掉的目标';
+    const runId = 'gate-c3-run';
+    const goalHash = createHash('sha256').update(goal).digest('hex');
+    const stateDir = join(cwd, '.omd', 'continuity', runId);
+    mkdirSync(stateDir, { recursive: true });
+
+    // ⚠ 故意不写这个文件到盘上 —— specPath 记了但盘上文件没了。
+    const missingSpecPath = join(cwd, 'docs', 'plan', 'gone-contract.md');
+
+    writeFileSync(
+      join(stateDir, 'goal-state.json'),
+      JSON.stringify({
+        goalHash,
+        classified: { tier: 'complex', acceptance: { kind: 'exploratory', learningGoal: 'x', affordableLoss: 'y' } },
+        contract: {
+          specPath: missingSpecPath,
+          evidence: '# 旧契约正文 (盘上文件已清)',
+          repoContext: 'src/a.ts:1 — 老勘察事实',
+          sources: [],
+        },
+      }),
+    );
+
+    const sddPath = join(cwd, 'sdd.md');
+    writeFileSync(sddPath, '# 契约\n\n## 契约\n做这件事。\n\n## 分解\n1. 做 → verify: `bun test`\n');
+
+    const r = await runGoal(goal, {
+      cwd,
+      sddPath,
+      dag: { conductorModel: 'c:m', leafModel: 'l:m', continuity: { manager: {} as never, runId } } as ExecutorDagConfig,
+      _runDag: async () => executeDag(),
+    });
+
+    const survey3 = r.stages.find((s) => s.stage === 'survey')!;
+    expect(survey3.status).toBe('skipped'); // sdd-direct 的 survey 是 skipped; 闸 C 复用是 done
+    expect(survey3.summary).not.toContain('闸 C');
     expect(r.specPath).toBe(sddPath);
   });
 });

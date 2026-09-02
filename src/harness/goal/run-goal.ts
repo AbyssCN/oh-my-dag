@@ -155,18 +155,19 @@ export interface RunGoalConfig {
    * 上限 4 (schema 钳)。轮的语义是**逐轮重展开**, 不是重跑同一张子图。
    */
   maxRounds?: number;
-  /** research 节点内环轮数 (有界, INV-GOAL-4)。默认 1。 */
+  /** research 节点内环轮数 (有界, INV-GOAL-4)。默认 1。⚠ S6a 起暂无消费点 (见 goal.ts:638)。 */
   researchRounds?: number;
   /**
    * 契约段 (survey/research/spec 那个 conductor 节点) 的内环轮数。默认 1 = 只画一次。
    * >1 才启用**补调研**: 契约写完若判未达成, 下一轮重画时可以长出一个上一轮没有的调研步 (D-G′/D-A)。
+   * ⚠ S6a 起暂无消费点 (唯一读点随契约段自动展开撤销一起删除)。
    */
   specRounds?: number;
   /** 强制档位 (成本轴); 省略 = 自动分类 (D-5)。**不覆盖判据轴** —— 验收分型仍照跑 (D-I)。 */
   tier?: GoalTier;
   /** 强制验收分型 (判据轴, D-I); 省略 = 自动分类。 */
   acceptance?: AcceptanceSpec;
-  /** spec 写入磁盘目录 (默认 <cwd>/docs/plan)。 */
+  /** spec 写入磁盘目录 (默认 <cwd>/docs/plan)。⚠ S6a 起暂无消费点 (同上)。 */
   specDir?: string;
   /**
    * 直通入口 (SDD 2026-08-10-solve-sdd-direct-entry): 已结晶 SDD 的路径。给了 → 契约段子图
@@ -341,6 +342,9 @@ export interface RunGoalConfig {
    * 命中 `kind:'chain'` ⇒ `compileChain` 编译出 ConductorPlan (拓扑 = 编译器输出, conductor
    * 无改拓扑权 D-6); 命中 `kind:'shape'` / `kind:'none'` / 越界 ⇒ 降级, 走 L1 (flatFirst) 或
    * v1 conductor 通路 (零回退)。
+   * ⚠ `classifyGoalCore` 目前没有实装 route 槽, `classified.route` 恒 `{kind:'none'}`
+   * (classify-acceptance.ts 函数头有 P1 回流修正说明) —— 这个开关打开也暂时降级到底,
+   * 不产生行为差异, 待 v2/S7 接回。
    */
   chain?: boolean;
  }
@@ -1393,18 +1397,21 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
     // 命中, 复用分支就变成永远够不着的死代码 (旧默认下产过 spec 的续跑既不复用也不重跑)。
     if (priorContract && (!priorContract.specPath || existsSync(priorContract.specPath))) {
       specSource = 'reused';
-      specPath = priorContract.specPath;
-      evidence = priorContract.evidence;
+      // P1 回流修正 (review 264df08b, 2026-09-02): sdd 在场时 specPath/evidence 禁止被旧契约
+      // 顶掉 —— sdd-direct 本身已是零转录 (survey 跳过), 用上一轮的旧正文覆盖本轮新 sddPath 会让
+      // execute 任务文本挂着"按下面这份 SDD 契约实施"的措辞却塞进旧内容, 新 sdd 被静默吞掉。
+      // 只并入不与 sdd 冲突的旧勘察增量 (repoContext/sources); specPath/evidence 仍取本轮 sdd
+      // (已在 :1194/:1195 初始化为 sdd.path / sdd.text, 这里不再赋值)。
       repoContext = priorContract.repoContext;
       sources.push(...priorContract.sources);
       stages.push({
         stage: 'survey',
         status: 'done',
         outcome: 'success',
-        summary: `复用续跑前契约段 (闸 C): ${repoContext ? `${repoContext.split('\n').length} 行仓内事实` : '首跑无勘察输出'}`,
+        summary: `复用续跑前契约段勘察增量 (闸 C): ${repoContext ? `${repoContext.split('\n').length} 行仓内事实` : '首跑无勘察输出'}`,
       });
       stages.push({ stage: 'research', status: 'skipped', outcome: 'not-needed', summary: '复用续跑前契约段 (闸 C): 不重新调研' });
-      stages.push({ stage: 'spec', status: 'done', outcome: 'success', summary: specPath ?? '复用首跑契约正文 (spec 未写入磁盘那次, 正文当契约)' });
+      stages.push({ stage: 'spec', status: 'done', outcome: 'success', summary: `SDD 直通 + 闸 C 勘察复用: ${sdd.path}` });
     } else {
       specSource = 'sdd-direct';
       // 直通 (G-1): 契约已结晶 —— 不勘察不调研不转录, SDD 全文 (含并行波形) 原样进 execute。
@@ -1695,9 +1702,13 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
     //   SDD 是 owner 显式交付物, chain 是 goal 文本的图式匹配, 两者语义不同档。
     //
     //   D-19 / INV-12 (2026-09-02): 这一格**不再**独立调 `chain-router.routeChain` 发第二次
-    //   结构化调用 —— 路由决策与 tier/acceptance 同一发出 (`classified.route`, classifyGoal
-    //   函数头有说明)。默认路径动手前的 LLM 调用因此收敛到 classify 那一次 (INV-12)。
-    //   `routeChain` 本身仍导出 (S7 的回退路径与 `run` 入口另有消费点), 只是这条路不再调它。
+    //   结构化调用 —— `classified.route` 恒 `{kind:'none'}`(classify-acceptance.ts 的 route
+    //   槽本片未实装, 见其函数头 P1 回流修正), 默认路径动手前的 LLM 调用因此收敛到 classify
+    //   那一次 (INV-12), 但代价是这一格实质上永不可达。
+    //   ⚠ `routeChain` / `configureRouteCaller` 仍导出, 但**全仓非测试代码实扫 0 处调用**
+    //   (旧默认路径唯一的调用点、旧 `route-caller.ts` 的唯一装配点都随本片删掉了) —— 之前
+    //   在 `chainEnabled`/`OMD_CHAIN` 打开时真的会路由的能力被本片静默停摆, 不是"另有消费点
+    //   在别处接着用"; 谁要接回它 (v2/S7) 需要重新装配 caller, 不能假设它还活着。
     const decision = classified.route ?? { kind: 'none' as const };
     if (decision.kind === 'chain') {
       try {
@@ -1718,8 +1729,11 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
       }
     } else {
       // 'shape' 在 v1 不消费 (D-4 留 v2 接 GRAPH_SHAPES 卡填充), 'none' 兜底, 都走降级。
+      // P2 回流修正: `routePresent` 分辨「classified.route 缺席 (老续跑状态/未分类)」与
+      // 「真判过 none (生产恒填, 见 classify-acceptance.ts route 字段注释)」—— 别靠这行日志
+      // 之外的猜, 靠这一列 (仓规静默坑 1: NULL ≠ 0)。
       logger.info(
-        { decisionKind: decision.kind },
+        { decisionKind: decision.kind, routePresent: classified.route !== undefined },
         '[run-goal] D4 chain 路由未命中 → 降级 (走 flatFirst / v1 conductor, 行为逐字节照旧)',
       );
     }

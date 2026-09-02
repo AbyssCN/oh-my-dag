@@ -434,11 +434,16 @@ export function classifyPrompt(goal: string, probe?: ClassifyPromptProbe): strin
  */
 /**
  * D-19 / INV-12 (2026-09-02): 对外这一个入口出**恰一次**结构化调用, 同时带出 tier / acceptance /
- * route 三条轴 —— `route` 是从 `chain-router.ts` 摘出来的第二次独立调用 (`routeChain`) 合并
- * 进来的那一格, 不再另起一发。v1 的封闭枚举里没有能命中的模板 (`CHAIN_TEMPLATE_IDS` 是空集,
- * `GRAPH_SHAPES` 卡的消费也留给 v2, 见 chain-router.ts 头注), 于是这里恒定 `{kind:'none'}`:
- * 没有模板可命中时多问模型一次问不出更多信息, 纯烧 token。v2 接模板登记表时直接在 `classifyGoalCore`
- * 内加分支即可, 调用方 (`run-goal.ts`) 不需要再改一次调用点。
+ * route 三条轴。**⚠ 2026-09-02 P1 回流修正**: 这里恒定 `{kind:'none'}` 是因为 `classifyGoalCore`
+ * 的结构化调用**没有实装 route 槽**(prompt/schema 都没问它) —— 不是因为 `CHAIN_TEMPLATE_IDS`
+ * 是空集。上一版这句話推错了: `chain-router.parseRouteRaw` 的 `'chain'` 分支走的是调用方直接给的
+ * inline `StageChain`, 全文零处读 `CHAIN_TEMPLATE_IDS`(该常量只影响 v2 尚未接入的模板匹配),
+ * 所以 main 上一个真 caller(旧 `route-caller.ts` + `configureRouteCaller`)完全可以命中
+ * `kind:'chain'`。本片把默认路径上唯一调用 `routeChain`/`configureRouteCaller` 的接线摘掉之后,
+ * 全仓非测试代码对它俩的引用降到 0 (`chain-router.ts` 自身定义除外) —— `chain` / `OMD_CHAIN`
+ * 这条此前**真的会路由**的能力在这一片被静默停摆, 不是"模板本来就是空的所以没差"。
+ * ponytail: route 槽真实合并进 classify 的结构化调用(把 `chain-router.ts` 的路由 prompt 片段
+ * 折进 `classifyPrompt`)留给 v2/S7 —— 这里先诚实记成恒 none 的占位, 不假装是模板集为空的必然结果。
  */
 export async function classifyGoal(
   goal: string,
