@@ -14,6 +14,10 @@ const WorkSchema = z
     write_set: z.array(z.string()).optional(),
     /** resume: 复用同一节点 id(引擎按 id 续同一上下文),不是起一个新 worker(见 manual)。 */
     resume_of: z.string().min(1).optional(),
+    /** review-fix (P2⑤,2026-09-02):true → 只返 manual,不 compile。不是 D-4 的调度字段,
+     * 显式声明进 schema 是为了让只认发布的 JSON Schema 说话的调用方也够得到这条路 ——
+     * `.strict()` 会在 `isHelpRequest` 短路之前就把未声明的 `help` 拒收(见 tools/index.ts)。 */
+    help: z.boolean().optional(),
   })
   .strict();
 
@@ -31,7 +35,8 @@ function slugId(text: string): string {
 
 const SHORT =
   'Start ONE worker for one bounded change. Default for any task with a single owner of the code. ' +
-  'Params: goal (one sentence), brief (min 40 chars: reproduction output, scope, what not to touch).';
+  'Params: goal (one sentence), brief (min 40 chars: reproduction output, scope, what not to touch). ' +
+  'Pass help:true for the full manual.';
 
 export const workTool: LeadTool<WorkParams> = {
   name: 'work',

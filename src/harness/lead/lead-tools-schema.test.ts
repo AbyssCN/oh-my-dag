@@ -42,7 +42,7 @@ const VALID_PARAMS: Record<LeadToolName, Record<string, unknown>> = {
   spawn: { tasks: [{ goal: 'a', brief: 'b' }, { goal: 'c', brief: 'd' }] },
   map: { list_from: 'ls src', per_item: 'process {item}' },
   explore: { questions: ['谁在调用 foo()?'] },
-  best_of: { n: 2, goal: '优化性能', brief: 'y'.repeat(40) },
+  best_of: { n: 2, goal: '优化性能', brief: 'y'.repeat(40), write_set: ['src/x.ts'] },
   research: { question: '这个库怎么用?' },
   decompose: { goal: '一个还拆不出来的目标' },
 };
@@ -75,6 +75,11 @@ describe('lead-tools-schema (INV-2)', () => {
       });
     }
   }
+
+  test('best_of: 已删除的 `mode` 字段传入即拒(review-fix P1②——二值判据下 mode 是死旋钮,不许悄悄复活)', () => {
+    const bad = { ...VALID_PARAMS.best_of, mode: 'first-green' };
+    expect(bestOfTool.schema.safeParse(bad).success).toBe(false);
+  });
 
   for (const tool of TOOLS) {
     test(`${tool.name}: 缺必填字段 → 拒绝体首行 === 该卡 manual 首行`, () => {

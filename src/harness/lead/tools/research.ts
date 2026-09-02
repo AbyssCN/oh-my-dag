@@ -12,6 +12,8 @@ const ResearchSchema = z
     question: z.string().min(1),
     lenses: z.array(z.string().min(1)).max(6).optional(),
     depth: z.enum(['first', 'second-pass']).optional(),
+    /** review-fix (P2⑤,2026-09-02):见 tools/work.ts 同名字段注释。 */
+    help: z.boolean().optional(),
   })
   .strict();
 
@@ -19,7 +21,7 @@ type ResearchParams = z.infer<typeof ResearchSchema>;
 
 const SHORT =
   'Web research on one question. Only when the run has a search provider. depth:"second-pass" digs only ' +
-  'what the first pass left uncited or unread.';
+  'what the first pass left uncited or unread. Pass help:true for the full manual.';
 
 export const researchTool: LeadTool<ResearchParams> = {
   name: 'research',

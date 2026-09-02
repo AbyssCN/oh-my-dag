@@ -18,6 +18,8 @@ const DecomposeSchema = z
     goal: z.string().min(1),
     hint: z.enum(['router', 'loop-until', 'iterate', 'escalation', 'saga', 'verify']).optional(),
     max_nodes: z.number().int().positive().max(64).optional(),
+    /** review-fix (P2⑤,2026-09-02):见 tools/work.ts 同名字段注释。 */
+    help: z.boolean().optional(),
   })
   .strict();
 
@@ -25,7 +27,7 @@ type DecomposeParams = z.infer<typeof DecomposeSchema>;
 
 const SHORT =
   'A stronger model draws a subgraph for a goal you cannot split and one worker cannot finish. Optional hint ' +
-  'names a control-flow: router, loop-until, iterate, escalation, saga, verify.';
+  'names a control-flow: router, loop-until, iterate, escalation, saga, verify. Pass help:true for the full manual.';
 
 export const decomposeTool: LeadTool<DecomposeParams> = {
   name: 'decompose',
