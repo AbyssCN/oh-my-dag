@@ -710,10 +710,9 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         .boolean()
         .optional()
         .describe(
-          'D4.1 切片 1 (R9): 阶段链路由 opt-in 开关。⚠ S6a (2026-09-02) 起该参数暂无消费点 —— ' +
-            'classify 合一之后 route 决策恒 `{kind:none}` (route 槽本片未实装, 只是占位), ' +
-            'routeChain 的默认路径调用点已摘掉, 打开这个开关目前不产生任何行为差异。' +
-            '留待 v2/S7 把 route 真正接回 classify 的结构化调用后再恢复其路由效果。',
+          'D4 阶段链路由开关 (P3 S7, 2026-09-02 起**默认开**; false / OMD_CHAIN=0 关)。路由决策来自 classify 那一次' +
+            '结构化调用的 route 槽 (不另发第二次调用)。位次 = sddPath > 编排循环 (默认) > chain > flat-first > v1: ' +
+            '编排循环开着时它是回退档, 只在 OMD_ORCHESTRATING_LOOP=0 的对照臂上真的路由 (R-1 「D4 路由命中率」只在那里量)。',
         ),
     },
     handler: async (args) => {

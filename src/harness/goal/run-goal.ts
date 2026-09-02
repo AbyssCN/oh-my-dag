@@ -1104,8 +1104,10 @@ function withLoopConfig(
 
 export function chainEnabled(config: { chain?: boolean }, env: NodeJS.ProcessEnv = process.env): boolean {
   if (config.chain !== undefined) return config.chain;
-  const v = env.OMD_CHAIN;
-  return v === '1' || v === 'true';
+  // P3 S7 / D-17 (2026-09-02): D4 路由**默认开** (此前 opt-in, batch 8 的 33 份 trace 零路由日志)。
+  // `OMD_CHAIN=0|false|off` 关; 其余含缺席 = 开。实际作用域 = 循环显式关闭时的回退路径 (loop 开时恒截胡)。
+  const v = (env.OMD_CHAIN ?? '').trim().toLowerCase();
+  return !(v === '0' || v === 'false' || v === 'off');
 }
 
 /** INV-1 棘轮的四个动作 —— 「不必动」「动不了」「真动了」不许压平。 */
@@ -1649,6 +1651,35 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
    */
   let loopPlan: ConductorPlan | undefined;
   let chainHit = false;
+  /**
+   * P3 S7 (D-17 / D-19 / INV-12): D4 chain 默认开, 位次 = sdd-direct > loop > **chain** > flat-first > v1。
+   * 路由决策来自 classify 那**一次**结构化调用的 `route` 槽 (S7 把槽真实装进 classifyPrompt / normalize,
+   * 见 classify-acceptance.ts), 不再另调 `routeChain`。这里先算出 chainPlan, 下面的 if-链按 D-17 位次消费;
+   * 未命中 / 编译失败 → chainPlan 缺席, 自然落到 flat-first / v1 (fail-open 不吞证据, 两条日志分得开)。
+   * 只在 loop 关着时才算 (loop 开时循环恒截胡, 这一格结构上量不到 —— R-1 「D4 路由命中率」只在对照臂上量)。
+   */
+  let chainPlan: ConductorPlan | undefined;
+  if (!sdd && !loopOn && chainOn && runnable) {
+    const decision = classified.route ?? { kind: 'none' as const };
+    if (decision.kind === 'chain') {
+      try {
+        chainPlan = compileChain(decision.chain);
+        logger.info(
+          { stages: decision.chain.stages.length, name: chainPlan.name },
+          '[run-goal] D4 chain 路由命中 → compileChain 产物进 execPlan (conductor 无改拓扑权, D-6)',
+        );
+      } catch (err) {
+        const msg = String(err instanceof Error ? err.message : err).slice(0, 240);
+        logger.warn({ err: msg }, '[run-goal] D4 chain 路由/编译失败 → 降级 (走 flatFirst / v1 conductor, 不静默)');
+      }
+    } else {
+      // `routePresent` 分辨「classified.route 缺席 (老续跑状态/未分类)」与「真判过 none」(仓规静默坑 1: NULL ≠ 0)。
+      logger.info(
+        { decisionKind: decision.kind, routePresent: classified.route !== undefined },
+        '[run-goal] D4 chain 路由未命中 → 降级 (走 flatFirst / v1 conductor, 行为逐字节照旧)',
+      );
+    }
+  }
   if (sdd && runnable) {
     // INV-D3-1: 同一份判定 —— fatal / fallback 与 goal.ts `sddIgnitionDryRunGate` 共用。
     const ignition = dryRunSddIgnition(sdd.text);
@@ -1809,6 +1840,9 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
       { nodes: Object.keys(compiledLoop.nodes), acceptance: runnable !== null },
       '[run-goal] P3 编排循环默认路径 → lead 节点 + 机械 oracle (D-17; OMD_ORCHESTRATING_LOOP=0 回到下一档)',
     );
+  } else if (chainPlan !== undefined) {
+    flatPlan = chainPlan;
+    chainHit = true;
   } else if (flatFirstOn && runnable) {
     // ── L1 免仪式平铺 (SDD 2026-08-31, 片 3 接线位) ─────────────────────────
     //
@@ -1859,56 +1893,6 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
         '[run-goal] L1 轻规划/编译失败 → fail-loud (opt-in 显式开关, 不静默降级 v1)',
       );
       return bail(`L1 轻规划/编译失败 (opt-in 显式): ${msg}`, 'infra-error');
-    }
-  } else if (chainOn && runnable) {
-    // ── D4 切片 3 (SDD 2026-08-31-dynamic-workflow-design, D-4 / D-6 / INV-4):
-    //   阶段链路由 + 编译 —— 加在 SDD-direct 与 L1 flat-first 之间的一层。
-    //
-    //   触发 = config.chain ?? env.OMD_CHAIN (chainEnabled 读, 同 flatFirstEnabled 形状);
-    //   命中 = route 返 kind:'chain' ⇒ compileChain 出的 ConductorPlan 进 execPlan 级联,
-    //     conductor 无改拓扑权 (D-6); 未命中 / 越界 ⇒ **降级**, 走下面的 L1
-    //     (flatFirst 开时) 或 v1 conductor (兜底)。
-    //
-    //   优先级: SDD 已结晶 ⇒ 让 SDD 走 (本块嵌在 `else if` 里, SDD 路径在本块之前);
-    //   chain 命中 ⇒ compileChain 产物; 未命中 ⇒ 降级。**不在 SDD 与 chain 之间二选一** —
-    //   SDD 是 owner 显式交付物, chain 是 goal 文本的图式匹配, 两者语义不同档。
-    //
-    //   D-19 / INV-12 (2026-09-02): 这一格**不再**独立调 `chain-router.routeChain` 发第二次
-    //   结构化调用 —— `classified.route` 恒 `{kind:'none'}`(classify-acceptance.ts 的 route
-    //   槽本片未实装, 见其函数头 P1 回流修正), 默认路径动手前的 LLM 调用因此收敛到 classify
-    //   那一次 (INV-12), 但代价是这一格实质上永不可达。
-    //   ⚠ `routeChain` / `configureRouteCaller` 仍导出, 但**全仓非测试代码实扫 0 处调用**
-    //   (旧默认路径唯一的调用点、旧 `route-caller.ts` 的唯一装配点都随本片删掉了) —— 之前
-    //   在 `chainEnabled`/`OMD_CHAIN` 打开时真的会路由的能力被本片静默停摆, 不是"另有消费点
-    //   在别处接着用"; 谁要接回它 (v2/S7) 需要重新装配 caller, 不能假设它还活着。
-    const decision = classified.route ?? { kind: 'none' as const };
-    if (decision.kind === 'chain') {
-      try {
-        // compileChain 抛 (词表外 word / listFrom 形态错 / parsePlan 拒) → catch 里降级
-        // (INV-6: fail-open 不吞证据, 失败语义与 SDD-direct 的 fail-fast 刻意相反 —— 路由是
-        // opt-in 实验, 降级比当场炸更合适)。
-        flatPlan = compileChain(decision.chain);
-        chainHit = true;
-        logger.info(
-          { stages: decision.chain.stages.length, name: flatPlan.name },
-          '[run-goal] D4 chain 路由命中 → compileChain 产物进 execPlan (conductor 无改拓扑权, D-6)',
-        );
-      } catch (err) {
-        const msg = String(err instanceof Error ? err.message : err).slice(0, 240);
-        logger.warn(
-          { err: msg },
-          '[run-goal] D4 chain 路由/编译失败 → 降级 (走 flatFirst / v1 conductor, 不静默)',
-        );
-      }
-    } else {
-      // 'shape' 在 v1 不消费 (D-4 留 v2 接 GRAPH_SHAPES 卡填充), 'none' 兜底, 都走降级。
-      // P2 回流修正: `routePresent` 分辨「classified.route 缺席 (老续跑状态/未分类)」与
-      // 「真判过 none (生产恒填, 见 classify-acceptance.ts route 字段注释)」—— 别靠这行日志
-      // 之外的猜, 靠这一列 (仓规静默坑 1: NULL ≠ 0)。
-      logger.info(
-        { decisionKind: decision.kind, routePresent: classified.route !== undefined },
-        '[run-goal] D4 chain 路由未命中 → 降级 (走 flatFirst / v1 conductor, 行为逐字节照旧)',
-      );
     }
   }
   const execPlan: ConductorPlan = loopPlan ?? flatPlan ?? {

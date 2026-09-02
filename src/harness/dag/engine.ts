@@ -253,6 +253,7 @@ import { verifiedShellWriteTargets } from '../writeset/shell-writes';
 import { resolveNodeWriteAllow } from '../writeset/write-allow';
 import { blamePathCandidates, failureExcerpt } from '../failure-trace';
 import { findRedOracles, renderOracleRedVerdict } from './oracle-red';
+import { acquireLeafSlot, configureLeafSlots } from './fanout-semaphore';
 import { attributeBlame, renderAttribution } from './blame-attribution';
 import { captureRollbackAnchor } from '../writeset/rollback-anchor';
 import { serializeWriteRaces, staticLintPlan } from '../plan/static-lint';
@@ -3788,7 +3789,11 @@ async function executePlan(
         text = r.text;
         usageAcc = addUsage(usageAcc, r.usage);
       } else {
-        const r = await generate({
+        // P3 S8: inproc 叶同样占进程级在飞槽 (它也是一次模型调用)。
+        const leafSlot = await acquireLeafSlot();
+        let r: Awaited<ReturnType<typeof generate>>;
+        try {
+        r = await generate({
           messages: [
             { role: 'system', content: config.leafSystemPrefix ?? LEAF_SYSTEM_PREFIX },
             { role: 'user', content: `${listerGoal}${schemaNote}${depCtx}\n\n只回一个 JSON 对象, 必含数组键 "${spec.over}"。别的不要。` },
@@ -3798,6 +3803,9 @@ async function executePlan(
           traceNodeId: id,
           thinkingLevel: config.inprocThinkingLevel ?? config.seatThinking?.(config.leafModel) ?? 'high',
         });
+        } finally {
+          leafSlot();
+        }
         text = r.text;
         usageAcc = addUsage(usageAcc, r.usage);
       }
@@ -4639,7 +4647,16 @@ async function executePlan(
         const leafBudgetMs = remainingBudgetMs();
         // P3 S6b: 按节点工具面钩子 (编排循环的 lead 节点)。缺席 / 返回 undefined → 不传字段, 老叶逐字节零回归。
         const leafFace = config.leafFace?.({ id, executor: node.executor });
-        const r = await config.agentRunner!({
+        // P3 S7 (D-18): agent 叶 thinking 按座位逐调用解析 —— node.thinking > 座位档; 座位表没给档时**不下发**
+        // 字段, 让 agent-leaf 各通道保持自己的缺省 (pi xhigh / SDK medium), 不顺手降 worker 档。
+        const agentThinking = node.thinking ?? config.seatThinking?.(model);
+        // P3 S8 (D-25 / INV-14): 进程级在飞槽 —— 嵌套 run (S6b) 各自的 maxFanout 只看得见自己那张图,
+        // 这把闸看得见整个进程的总数。release 走 finally (抛错也放槽)。
+        const leafSlot = await acquireLeafSlot();
+        let r: Awaited<ReturnType<NonNullable<typeof config.agentRunner>>>;
+        try {
+        r = await config.agentRunner!({
+          ...(agentThinking ? { thinkingLevel: agentThinking } : {}),
           prompt,
           model,
           ...(leafFace ? { face: leafFace } : {}),
@@ -4678,6 +4695,9 @@ async function executePlan(
             : {}),
           onEvent: leafProgress,
         });
+        } finally {
+          leafSlot();
+        }
         recordGeneration({
           traceId: obsTraceId,
           name: `agent:${id}`,
@@ -6486,6 +6506,8 @@ async function runDagInternalCore(
   // **D-6 启动期孤儿回收**: 进程级一次性闸, run + solve 经引擎入口只触发一次。reapOrphansOnce
   // 内部已 fail-open (INV-6/7), 这里不包 try —— 模块保证不抛, 抛了也只 warn 后吞掉。
   reapOrphansOnce();
+  // P3 S8: 进程级 leaf 在飞上限 —— 装配层给了才配 (缺席不动既有 cap: MCP 长驻进程里别的 run 可能已配)。
+  if (config.maxInflightLeaves !== undefined) configureLeafSlots(config.maxInflightLeaves);
   // sessionId: 本次 run 的 conductor+leaf 全部经 send → 同一 Langfuse session (B2)。
   // 可注入 (config.sessionId): 调用方传则跨平面关联 (派活飞轮 dispatchId ↔ Langfuse session)。
   //

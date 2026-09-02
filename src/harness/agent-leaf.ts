@@ -188,6 +188,22 @@ export type { AgentLeafInput, AgentLeafResult, AgentLeafRunner, FileWriteEffect,
 import type { AgentLeafInput, AgentLeafResult, AgentLeafRunner, FileWriteEffect, LeafGateStates, ShellRun, ToolStep } from './leaf-runners';
 import { TOOL_STEPS_CAP, TOOL_STEPS_HEAD, SHELL_OUTPUT_TAIL_CAP } from './leaf-runners';
 
+/**
+ * P3 S7 (D-18, 2026-09-02): 一次 agent 调用的 thinking 档, 纯函数。优先序 (显式永远赢):
+ *   `explicit` (opts.thinkingLevel, A/B 钉档) > `env` (OMD_AGENT_EFFORT) > `seat` (引擎按座位表逐调用传) > `channelDefault`。
+ * 座位表没给档 (`seat` 缺席) 时落回通道缺省 —— **不是** 'high' 兜底: 两个通道的缺省不同 (pi xhigh / SDK medium),
+ * 引擎侧不许替 runner 选一个 (D-18「S7 不顺手降 worker 档」)。
+ * 证伪方式 (leaf-thinking-seat.test.ts): 把 `seat ??` 那一跳去掉 → 座位档永不生效即红; 把 channelDefault 换成常量 'high' → SDK 那条红。
+ */
+export function resolveLeafThinking(input: {
+  explicit?: ThinkingLevel;
+  env?: ThinkingLevel;
+  seat?: ThinkingLevel;
+  channelDefault: ThinkingLevel;
+}): ThinkingLevel {
+  return input.explicit ?? input.env ?? input.seat ?? input.channelDefault;
+}
+
 export interface AgentLeafRunnerOpts {
   /** 工具写盘的工作根。默认 process.cwd()。每个 agent leaf 应被 scope 到此根下的原子产物。 */
   cwd?: string;
@@ -1840,8 +1856,9 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
   if (envEffort && !envLevel) {
     logger.warn({ OMD_AGENT_EFFORT: envEffort, allowed: EFFORTS }, '[omd/agent-leaf] OMD_AGENT_EFFORT 值不在词表内 → 忽略, 走通道缺省');
   }
-  const thinkingLevel = opts.thinkingLevel ?? envLevel ?? 'xhigh';
-  const sdkThinkingLevel = opts.thinkingLevel ?? envLevel ?? 'medium';
+  // P3 S7 (D-18): 通道缺省只在这里定; 逐调用的档在 runOnce 里经 `resolveLeafThinking` 算 (座位档按调用到达)。
+  const CHANNEL_DEFAULT_PI: ThinkingLevel = 'xhigh';
+  const CHANNEL_DEFAULT_SDK: ThinkingLevel = 'medium';
 
   // 工具集: 自有六件 + hashline (开则注入并**排除内置 edit**, 强制行锚定 patch) + 调用方自定。
   // 建一次复用整 runner: hashline 的快照 store 要跨 read/edit 共享, 而 runner 的 cwd 是固定的。
@@ -1979,6 +1996,9 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       );
     }
     const { provider, modelId } = parseModelRef(model);
+    // P3 S7 (D-18): 本次调用的 thinking 档, 两个通道分开算 (缺省不同, 不能共用一个数)。
+    const thinkingLevel = resolveLeafThinking({ explicit: opts.thinkingLevel, env: envLevel, seat: input.thinkingLevel, channelDefault: CHANNEL_DEFAULT_PI });
+    const sdkThinkingLevel = resolveLeafThinking({ explicit: opts.thinkingLevel, env: envLevel, seat: input.thinkingLevel, channelDefault: CHANNEL_DEFAULT_SDK });
     // 座位级极简工具面 (owner 2026-08-18)。显式的 profile.tools / opts.tools 永远胜过它 ——
     // 这只是"没人指定时按座位挑"的缺省。
     // P3 S4 精益面 (D-10 / INV-4): 作用域三条件齐 → 四只手 (+ 条件件 run_acceptance), prompt 走 v2。

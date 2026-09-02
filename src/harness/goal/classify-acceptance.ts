@@ -29,7 +29,8 @@ import {
 import { logger } from '../logger';
 import { type EnvFacts, probeEnvFacts, renderEnvFacts } from '../env-facts';
 import type { GenerateFn } from '../dag/types';
-import type { RouteDecision } from './chain-router';
+import { parseRouteRaw, type RouteDecision, type RouteRaw } from './chain-router';
+import { STAGE_WORDS } from './stage-chain';
 import {
   type AcceptanceCommandBlockOpts,
   type AcceptanceProbe,
@@ -125,6 +126,12 @@ interface RawClassification {
   /** G4 反面样本(扁平两格 —— 弱模型对嵌套对象的成功率明显低于扁平字段)。 */
   negative_sample_path?: unknown;
   negative_sample_content?: unknown;
+  /**
+   * P3 S7 (D-19 / INV-12, 2026-09-02): 路由槽 —— 与 tier / acceptance **同一发**结构化调用带出。
+   * 形状 = chain-router 的 `RouteRaw` (`{kind:'none'}` | `{kind:'chain', chain:{stages:[…]}}`), 钳到封闭枚举
+   * 由 `parseRouteRaw` 做 (越界 / 空 stages → none + 一行证据)。缺席 = none (老模型输出零改造照旧)。
+   */
+  route?: unknown;
 }
 
 /**
@@ -138,6 +145,16 @@ interface RawClassification {
  * Python 仓写 `bun test` 在此拒; 不给 → 退回 base 白名单(既有调用零改动即绿, INV-6 / INV-11)。
  */
 export function normalizeClassification(raw: RawClassification, opts?: AcceptanceCommandBlockOpts): GoalClassification {
+  // P3 S7: route 槽与另两条轴同一发出, 归一化在这一层套上 —— 各分支 (执行型 / rubric / 探索型 / 降级) 一个都不漏。
+  // 缺席 → none (不留证据行: 缺席是老输出的常态, 不是越界); 在场 → parseRouteRaw 钳 + 越界留证据 (INV-6)。
+  const route: RouteDecision =
+    raw.route === undefined || raw.route === null
+      ? { kind: 'none' }
+      : parseRouteRaw(raw.route as RouteRaw, (line) => logger.warn({ line }, '[omd/goal] classify route 槽越界 → 降级 none'));
+  return { ...normalizeAxes(raw, opts), route };
+}
+
+function normalizeAxes(raw: RawClassification, opts?: AcceptanceCommandBlockOpts): GoalClassification {
   const tier: GoalTier = String(raw.tier ?? '').toLowerCase().includes('simple') ? 'simple' : 'complex';
   const kind = String(raw.acceptance_kind ?? '').toLowerCase();
 
@@ -408,10 +425,20 @@ export function classifyPrompt(goal: string, probe?: ClassifyPromptProbe): strin
     '  例: 命令 `grep -q "100" docs/from-api.md` → 反面样本 path=`docs/from-api.md`,',
     '      content=`本文档汇总了接口支持的格式与限制。` (没有那个数 → 命令失败 → 这条判据是判别的)',
     '',
+    // P3 S7 (D-19 / INV-12): 路由槽合进同一发 —— 动手前只许一次 LLM 调用, 路由不另起第二发。
+    '',
+    '判断三 `route` (拓扑轴 — 这件事天然是不是一条线性阶段链):',
+    '  缺省 {"kind":"none"}: 交给执行环自己决定形状 (绝大多数目标选这个)。',
+    '  只有当目标**天然是 ≥2 个串行阶段、且前一阶段的产物是后一阶段的输入** (先调研再实施再验证 /',
+    '  先列清单再逐项处理) 才给 {"kind":"chain","chain":{"stages":[{"id":短id,"word":词表词,"goal"?:一句话,"command"?:确定性命令}]}}。',
+    `  \`word\` 只许这 ${STAGE_WORDS.length} 个: ${STAGE_WORDS.join(' / ')}; agent/research/verify/judge/synthesize 必给 goal, command 必给 command。`,
+    '  写不出 ≥2 个各自有产物的阶段 → 老实 none, 别硬拆。',
+    '',
     '形状: {"tier":"simple"|"complex","acceptance_kind":"executable"|"rubric"|"exploratory",',
     '       "command"?:string,"negative_sample_path"?:string,"negative_sample_content"?:string,',
     '       "checklist"?:[{"id":string,"requirement":string}],',
-    '       "learning_goal"?:string,"affordable_loss"?:string}',
+    '       "learning_goal"?:string,"affordable_loss"?:string,',
+    '       "route"?:{"kind":"none"}|{"kind":"chain","chain":{"stages":[{"id":string,"word":string,"goal"?:string,"command"?:string}]}}}',
     '',
     evidenceSection,
     '',
@@ -434,16 +461,10 @@ export function classifyPrompt(goal: string, probe?: ClassifyPromptProbe): strin
  */
 /**
  * D-19 / INV-12 (2026-09-02): 对外这一个入口出**恰一次**结构化调用, 同时带出 tier / acceptance /
- * route 三条轴。**⚠ 2026-09-02 P1 回流修正**: 这里恒定 `{kind:'none'}` 是因为 `classifyGoalCore`
- * 的结构化调用**没有实装 route 槽**(prompt/schema 都没问它) —— 不是因为 `CHAIN_TEMPLATE_IDS`
- * 是空集。上一版这句話推错了: `chain-router.parseRouteRaw` 的 `'chain'` 分支走的是调用方直接给的
- * inline `StageChain`, 全文零处读 `CHAIN_TEMPLATE_IDS`(该常量只影响 v2 尚未接入的模板匹配),
- * 所以 main 上一个真 caller(旧 `route-caller.ts` + `configureRouteCaller`)完全可以命中
- * `kind:'chain'`。本片把默认路径上唯一调用 `routeChain`/`configureRouteCaller` 的接线摘掉之后,
- * 全仓非测试代码对它俩的引用降到 0 (`chain-router.ts` 自身定义除外) —— `chain` / `OMD_CHAIN`
- * 这条此前**真的会路由**的能力在这一片被静默停摆, 不是"模板本来就是空的所以没差"。
- * ponytail: route 槽真实合并进 classify 的结构化调用(把 `chain-router.ts` 的路由 prompt 片段
- * 折进 `classifyPrompt`)留给 v2/S7 —— 这里先诚实记成恒 none 的占位, 不假装是模板集为空的必然结果。
+ * route 三条轴。P3 S7 把 route 槽真实装进了 `classifyPrompt` (判断三) 与 `normalizeClassification`
+ * (经 `parseRouteRaw` 钳到封闭枚举); S6a 期间这里恒 `{kind:'none'}` 的占位由此撤销。
+ * `routeChain` / `configureRouteCaller` 仍导出但**全仓非测试代码零调用** —— 路由不再是第二发。
+ * 无分类器 (缺 generate/model) 的回落分支不经 normalize, 这里的 `?? none` 只兜那一条。
  */
 export async function classifyGoal(
   goal: string,

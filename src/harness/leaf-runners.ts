@@ -126,6 +126,12 @@ export interface AgentLeafInput {
    * 不进 plan (闭包不可序列化)。
    */
   face?: LeafFace;
+  /**
+   * P3 S7 (D-18, 2026-09-02): **本次调用**的 thinking 档 —— 引擎侧按 `node.thinking ?? seatThinking(model)` 算出后
+   * 按调用传; 座位表没给档时**缺席** (不是 'high' 兜底), 让 runner 各通道保持自己的缺省 (pi xhigh / SDK medium)。
+   * 优先序在 agent-leaf `resolveLeafThinking`: opts.thinkingLevel (A/B 钉档) > OMD_AGENT_EFFORT > 本字段 > 通道缺省。
+   */
+  thinkingLevel?: 'off' | 'low' | 'medium' | 'high' | 'xhigh';
 }
 
 /**

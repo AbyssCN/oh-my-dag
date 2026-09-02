@@ -273,6 +273,13 @@ export interface DagSchedulingSeam {
   /** 内层 fan-out 并发上限 (传给 primitives.parallel)。省略 → primitives 的 OMD_MAX_FANOUT/CPU 兜底。 */
   maxFanout?: number;
   /**
+   * **进程级** leaf 在飞上限 (P3 S8 / D-25 / INV-14, 2026-09-02): 一个进程里同时在飞的模型型 leaf (agent + inproc) 总数。
+   * 与 `maxFanout` 的分工: 那个是**一张图**内的并发 (嵌套 run 各自一份, 互相看不见); 这个是整个进程的总数
+   * (`dag/fanout-semaphore.ts`, 引擎起跑时 `configureLeafSlots` 一次)。省略 = 不动既有 cap (MCP 长驻进程里
+   * 别的 run 可能已配); 装配层缺省 = `OMD_MAX_INFLIGHT_LEAVES` ?? 题内缺省 cap (不第二次解析 OMD_MAX_FANOUT)。
+   */
+  maxInflightLeaves?: number;
+  /**
    * 暖发调度 (契约 §10.2): 全局先串行暖 1 发(写 cache)→ 再并行轰其余(命中共享冻结前缀)。
    * 关 = 同时轰(thundering herd, 共享前缀全 miss)。默认 false(单/双节点不值那一发串行延迟)。
    * ⚠ 2026-07-06 修正: agent leaf **同样受益** —— pi system + 工具 schema + DISCIPLINE_CORE +

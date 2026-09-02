@@ -764,6 +764,9 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       ...models,
       seatThinking,
       maxFanout: defaultMaxFanout,
+      // P3 S8 (D-25): 进程级 leaf 在飞上限 —— `OMD_MAX_INFLIGHT_LEAVES` 显式, 否则沿用题内缺省 cap (同一个数,
+      // 但作用域是整个进程: 嵌套 run 叠加时题内 cap 各看各的, 这一把看总数)。不第二次解析 OMD_MAX_FANOUT。
+      maxInflightLeaves: intEnv(env.OMD_MAX_INFLIGHT_LEAVES) ?? defaultMaxFanout,
       // **暖发**: 全局先串行跑 1 个节点(写 prompt-cache)→ 再放开其余(命中共享冻结前缀)。
       //
       // 2026-07-31 打开它的直接原因是并发闸刚被拆掉: cap 64 时同时在飞的最多 64 个,

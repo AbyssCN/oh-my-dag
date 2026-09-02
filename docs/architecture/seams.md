@@ -7,7 +7,7 @@
 **有哪些接缝 · 每个字段谁在消费 · 换实现该去哪换**。消费方是 token 级扫描的上界
 (只扫代码 —— 注释与字符串字面量里提到字段名不算消费), 列出命中最多的前 3 个文件。
 
-> 8 个 seam · 55 个字段 · 扫描范围 src/**/*.ts (排除测试)
+> 8 个 seam · 56 个字段 · 扫描范围 src/**/*.ts (排除测试)
 
 ## DagSeatsSeam
 
@@ -68,6 +68,7 @@
 | 字段 | 必填 | 类型 | 一句话 | 消费方 (前3) |
 |---|---|---|---|---|
 | `maxFanout` |  | `number` | 内层 fan-out 并发上限 (传给 primitives.parallel)。 | `src/mcp/tools/dag-tools.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/goal/run-goal.ts` (16 文件) |
+| `maxInflightLeaves` |  | `number` | **进程级** leaf 在飞上限 (P3 S8 / D-25 / INV-14, 2026-09-02): 一个进程里同时在飞的模型型 leaf (agent + inproc) 总数。 | `src/harness/dag/engine.ts`<br>`src/mcp/assemble.ts` (2 文件) |
 | `warmThenFanout` |  | `boolean` | 暖发调度 (契约 §10.2): 全局先串行暖 1 发(写 cache)→ 再并行轰其余(命中共享冻结前缀)。 | `src/mcp/assemble.ts`<br>`src/eval/oracles/conductor-modelmix.ts`<br>`src/eval/oracles/fullstack-dag.ts` (4 文件) |
 | `warmGraceMs` |  | `number` | 暖发**宽限窗口上界** (ms, t-initial-pump 2026-09-02): 暖发那一发起跑后, 最多按住 pool 这么久不派新节点; 暖发提前 settle 则立刻放开 (上界, 不是定长延迟)。 | `src/harness/dag/engine.ts` (1 文件) |
 | `kindFanout` |  | `{ agent?: number; command?: number; inproc?: number }` | per-kind 并发闸 (fanout 最大化设计, 2026-07-21): inproc 叶纯 API 等待、无本地足迹 → 默认不限 (只受 maxFanout/图宽/provider 池); agent 叶 (本地工具调用)… | `src/harness/dag/dag-scheduler.ts`<br>`src/mcp/assemble.ts`<br>`src/harness/dag/engine.ts` (3 文件) |
