@@ -61,7 +61,6 @@ import { loadSddContract } from './sdd-direct';
 import type { ExecutorDagConfig } from '../dag/types';
 import { TEST_STEP_PREFIX, acceptSideOf, buildAcceptDelta, extractFailSet, stableFailSet, unstableFailSet, type AcceptSide } from './accept-delta';
 import { baselineCommandOf } from './accept-baseline';
-import { readExperimentFlags } from './experiment-flags';
 import { classifySpecWrite, type SpecWrite, type SpecWriteSource } from './spec-write';
 import { summarizeDelta, type DeltaReport, type VerifyStepStatus } from './delta-compare';
 import { parseBreakdown, type SddContract, type SddSlice } from './sdd-direct';
@@ -78,8 +77,6 @@ import { specAnchor } from './spec-anchor';
 import { dryRunSddIgnition } from './sdd-ignition-check';
 import { coverSlices, describeSliceCoverage, type SliceCoverageReport } from './slice-coverage';
 import { compileChain } from './stage-chain';
-import { configureRouteCaller, routeChain } from './chain-router';
-import { buildRouteCaller } from './route-caller';
 import { attributeWriteSet, classifyWriteScope, describeWriteSet, SDD_DECLARED_WRITE_SET, type DeclaredWriteSet, type WriteScopeKind, type WriteSetDeclaration, type WriteSetReport } from '../writeset/write-set';
 import { collectRunTickets, type RunTicketSink } from '../pathfinder/run-tickets';
 import { logger } from '../logger';
@@ -167,18 +164,19 @@ export interface RunGoalConfig {
    * 上限 4 (schema 钳)。轮的语义是**逐轮重展开**, 不是重跑同一张子图。
    */
   maxRounds?: number;
-  /** research 节点内环轮数 (有界, INV-GOAL-4)。默认 1。 */
+  /** research 节点内环轮数 (有界, INV-GOAL-4)。默认 1。⚠ S6a 起暂无消费点 (见 goal.ts:638)。 */
   researchRounds?: number;
   /**
    * 契约段 (survey/research/spec 那个 conductor 节点) 的内环轮数。默认 1 = 只画一次。
    * >1 才启用**补调研**: 契约写完若判未达成, 下一轮重画时可以长出一个上一轮没有的调研步 (D-G′/D-A)。
+   * ⚠ S6a 起暂无消费点 (唯一读点随契约段自动展开撤销一起删除)。
    */
   specRounds?: number;
   /** 强制档位 (成本轴); 省略 = 自动分类 (D-5)。**不覆盖判据轴** —— 验收分型仍照跑 (D-I)。 */
   tier?: GoalTier;
   /** 强制验收分型 (判据轴, D-I); 省略 = 自动分类。 */
   acceptance?: AcceptanceSpec;
-  /** spec 写入磁盘目录 (默认 <cwd>/docs/plan)。 */
+  /** spec 写入磁盘目录 (默认 <cwd>/docs/plan)。⚠ S6a 起暂无消费点 (同上)。 */
   specDir?: string;
   /**
    * 直通入口 (SDD 2026-08-10-solve-sdd-direct-entry): 已结晶 SDD 的路径。给了 → 契约段子图
@@ -348,14 +346,14 @@ export interface RunGoalConfig {
    * 给定布尔值则压过环境变量, **测试 / 装配层用这条**。
    *
    * 缺省语义 = 关: 不设环境变量时, 任何 goal 的执行路径与今天逐字节相同 (INV-4 零回归)。
-   * 开了之后, 规划期挂 `routeChain(goal, deps)` —— 命中 `kind:'chain'` ⇒ `compileChain`
-   * 编译出 ConductorPlan (拓扑 = 编译器输出, conductor 无改拓扑权 D-6);
-   * 命中 `kind:'shape'` / `kind:'none'` / caller 抛 / 越界 ⇒ 降级, 走 L1 (flatFirst) 或
+   * 开了之后, 消费的是 `classified.route` (D-19 / INV-12, 2026-09-02: 与 tier/acceptance
+   * 同一发 classify 调用出的路由决策, 不再另起 `routeChain(goal, deps)` 第二次结构化调用) ——
+   * 命中 `kind:'chain'` ⇒ `compileChain` 编译出 ConductorPlan (拓扑 = 编译器输出, conductor
+   * 无改拓扑权 D-6); 命中 `kind:'shape'` / `kind:'none'` / 越界 ⇒ 降级, 走 L1 (flatFirst) 或
    * v1 conductor 通路 (零回退)。
-   *
-   * ⚠ **生产 caller 装配位置 = 服务端 boot** (切片 2 `chain-router.ts:configureRouteCaller`):
-   * 不装配 = 模块默认 caller 永远返 `'none'`, 开关开了也走零回退。本片只负责"开关 + 调用 +
-   * 编译", 不造 caller (那是装配层的事; 切片 2 的注释里写明了)。
+   * ⚠ `classifyGoalCore` 目前没有实装 route 槽, `classified.route` 恒 `{kind:'none'}`
+   * (classify-acceptance.ts 函数头有 P1 回流修正说明) —— 这个开关打开也暂时降级到底,
+   * 不产生行为差异, 待 v2/S7 接回。
    */
   chain?: boolean;
  }
@@ -1003,49 +1001,6 @@ export function chainEnabled(config: { chain?: boolean }, env: NodeJS.ProcessEnv
   return v === '1' || v === 'true';
 }
 
-/**
- * D4.1 切片 2: 路由 caller **幂等装配** (D-2 / INV-2 / INV-3)。
- *
- * 收进 run-goal 而不是 CLI / MCP server / detached goal-worker 各自 boot, 是因为那几个
- * 入口分散装配必漏一个; 这里装配一次, 服务端长驻进程后续 `routeChain` 全部命中同一份 caller。
- *
- * 惰性 = 只在 chain 块入口 (`else if (chainOn && runnable)`) 调一次; chain 关着根本不进。
- * 幂等 = 模块级哨: 已装配就立即返回, 不重新 `configureRouteCaller`, 不重新建 caller。
- *
- * 失败短路:
- *   · 没有 agentRunner → 装配缺席, 默认 caller 仍走 'none' (链块无脑降级, 行为逐字节与今天同)。
- *   · 没有 leafModel / agentLeafModel → 同上。
- * 装配缺席时**留 warn 一行** (INV-2 fail-open 不吞证据: caller 想装却没原料, 不该静默走零回退)。
- */
-let _productionRouteCallerConfigured = false;
-function ensureProductionRouteCaller(config: RunGoalConfig, protectedPaths: readonly string[]): boolean {
-  if (_productionRouteCallerConfigured) return true;
-  const agentRunner = config.dag.agentRunner;
-  const leafCoord = config.dag.agentLeafModel ?? config.dag.leafModel;
-  if (!agentRunner || !leafCoord) {
-    logger.warn(
-      { hasAgentRunner: !!agentRunner, leafCoord: !!leafCoord },
-      '[run-goal] D4 chain: 装配 caller 缺原料 (agentRunner / leafCoord 缺席) → 默认 caller 走 none, 这是配置面问题',
-    );
-    // 不置 _productionRouteCallerConfigured = true —— 下次 chain 块再进再尝试一次 (e.g., 后续 run 修了 config)
-    return false;
-  }
-  const caller = buildRouteCaller({
-    leafCoord,
-    call: async ({ prompt, model }) => {
-      const r = await withProtectedPaths(protectedPaths, () => agentRunner({ prompt, model }));
-      return { text: r.text };
-    },
-  });
-  configureRouteCaller(caller);
-  _productionRouteCallerConfigured = true;
-  logger.info(
-    { leafCoord },
-    '[run-goal] D4 chain: 装配 RouteCaller (slice 2 — INV-2 idempotent, 装配一次后续 run 复用)',
-  );
-  return true;
-}
-
 /** INV-1 棘轮的四个动作 —— 「不必动」「动不了」「真动了」不许压平。 */
 export type BestGreenAction = 'none' | 'already-green' | 'restore' | 'unrestorable';
 
@@ -1281,9 +1236,10 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   let specPath: string | undefined = sdd?.path;
   let evidence = sdd?.text ?? '';
   let repoContext = '';
-  // #209: 契约段这一位走的是**哪条路**。默认 simple 档 (下面 tier 分支各自改写它),
+  // #209: 契约段这一位走的是**哪条路**。默认值恒被下面 `if (sdd)` 分支改写 (D-26/D-27: 门控
+  // 换成 sddPath 之后无 sdd 就落 'loop'), 初值只是给类型一个起点, 不代表真发生过的路径。
   // 契约段收尾时一次性发给 `onContract` —— 只有一个发射点, 于是新增分支漏发时 tsc/测试看得见。
-  let specSource: SpecWriteSource = 'tier-simple';
+  let specSource: SpecWriteSource = 'loop';
 
   // ── S4: run 生命周期接线 (board = 协调介质, 不是真源; D-3/INV-1) ────────────────
   // 点火 → claimed (带声明写集, 相对路径, 与 sdd-direct 写集列同物); 终态 → terminal。
@@ -1463,157 +1419,52 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   // 而"判据漂了"正是作弊达标最舒服的入口)。
   const acceptanceBlock = renderAcceptance(acceptance);
 
-  if (tier === 'complex') {
-    // ── S0.5–S3 契约段 (D-G′, 2026-07-29): 勘察 → 调研 → 起草 **合成一个 `executor:'conductor'` 节点**。
+  if (sdd) {
+    // ── S0.5–S3 契约段 (D-G′, 2026-07-29 → D-26/D-27 2026-09-02 改门控) ──────────────
     //
-    // 推翻的是「预构造这三个节点」: 静态图表达不了"要不要先查外面"这个分支 —— 而 conductor 节点的
-    // **展开调用本身**就是那次判断 (它看着 goal 与仓内情况决定吐哪几步), 分支不需要显式表达。
-    // 更值钱的是**补调研**: `max_rounds > 1` 时环是**逐轮重展开**, 于是"契约写完发现证据不够"可以在
-    // 第 2 轮长出一个第 1 轮压根没有的调研步 —— 不需要回边 (每轮都是一张全新的无环子图)。
+    // ⚠ 契约段(survey/research/spec)的唯一触发换成了 `sddPath` (INV-11) —— `tier` 不再门控
+    // 这一段。旧的「complex 档且无 sddPath → 自动展开 conductor 子图勘察/调研/起草一份 SDD」
+    // 整体撤销 (D-26/S6a): 循环 (S6b) 接手无 sddPath 的默认执行路径, 不再需要提前转录一份契约。
+    // `tier` 仍是分类输出与读数字段 (座位/预算仍读它), 但从今往后只压成本轴, 压不到这条判据轴。
     //
-    // ⚠ **判卷标准刻意留在这个节点之外** (owner 定, 方案 A): 它由 classify 在环外算好, 冻进节点的
-    // goal 当输入。放进子图就等于让**执行体自己的环**去产出判据 —— 而环每轮都重画, 判据也就跟着能变。
-    // D-I 整套防作弊的地基就是那一句「判卷标准是执行体动不了的东西」, 判据进环这句话就没了。
-    // (两条轴本来就是分开的: 成本轴"要不要接地"交给 conductor 判, 判据轴"成没成怎么判"绝不下放。)
-    // 闸 C: 契约段产物在且 goal 未变 → 直接复用, 不重展开 conductor 子图。
-    // specPath 记了但盘上文件没了 → 条件不成立, 掉进下面照常重跑 (状态不是真源, 盘上文件才是)。
+    // 闸 C: 契约段产物在且 goal 未变 → 直接复用, 不重新走直通逻辑。
+    // specPath 记了但盘上文件没了 → 条件不成立, 掉进下面照常走 sdd-direct (状态不是真源, 盘上文件才是)。
     const priorContract = prior?.contract;
-    if (sdd) {
-      specSource = 'sdd-direct';
-      // 直通 (G-1): 契约已结晶 —— 不勘察不调研不转录, SDD 全文 (含并行波形) 原样进 execute。
-      stages.push({ stage: 'survey', status: 'skipped', outcome: 'not-needed', summary: 'SDD 直通: 契约已结晶, 不勘察' });
-      stages.push({ stage: 'research', status: 'skipped', outcome: 'not-needed', summary: 'SDD 直通: 不调研' });
-      stages.push({ stage: 'spec', status: 'done', outcome: 'success', summary: `SDD 直通 (零转录): ${sdd.path}` });
-    } else if (priorContract && (!priorContract.specPath || existsSync(priorContract.specPath))) {
+    // D-27 闭包: 复用分支判据是 `sdd 在场 且 priorContract 命中`, 必须**排在 sdd-direct 之前**——
+    // 外层已经判过 `sdd` 为真, 若把 sdd-direct 分支放在前面 (旧写法的分支顺序), sdd-direct 恒先
+    // 命中, 复用分支就变成永远够不着的死代码 (旧默认下产过 spec 的续跑既不复用也不重跑)。
+    if (priorContract && (!priorContract.specPath || existsSync(priorContract.specPath))) {
       specSource = 'reused';
-      specPath = priorContract.specPath;
-      evidence = priorContract.evidence;
+      // P1 回流修正 (review 264df08b, 2026-09-02): sdd 在场时 specPath/evidence 禁止被旧契约
+      // 顶掉 —— sdd-direct 本身已是零转录 (survey 跳过), 用上一轮的旧正文覆盖本轮新 sddPath 会让
+      // execute 任务文本挂着"按下面这份 SDD 契约实施"的措辞却塞进旧内容, 新 sdd 被静默吞掉。
+      // 只并入不与 sdd 冲突的旧勘察增量 (repoContext/sources); specPath/evidence 仍取本轮 sdd
+      // (已在 :1194/:1195 初始化为 sdd.path / sdd.text, 这里不再赋值)。
       repoContext = priorContract.repoContext;
       sources.push(...priorContract.sources);
       stages.push({
         stage: 'survey',
         status: 'done',
         outcome: 'success',
-        summary: `复用续跑前契约段 (闸 C): ${repoContext ? `${repoContext.split('\n').length} 行仓内事实` : '首跑无勘察输出'}`,
+        summary: `复用续跑前契约段勘察增量 (闸 C): ${repoContext ? `${repoContext.split('\n').length} 行仓内事实` : '首跑无勘察输出'}`,
       });
       stages.push({ stage: 'research', status: 'skipped', outcome: 'not-needed', summary: '复用续跑前契约段 (闸 C): 不重新调研' });
-      stages.push({ stage: 'spec', status: 'done', outcome: 'success', summary: specPath ?? '复用首跑契约正文 (spec 未写入磁盘那次, 正文当契约)' });
-    } else if (config.dag.agentRunner) {
-      specSource = 'contract';
-      const dir = config.specDir ?? join(config.cwd, 'docs', 'plan');
-      const path = join(dir, `${(config._today ?? todayStr)()}-${goalSlug(goal)}.md`);
-      const prepPlan: ConductorPlan = {
-        name: 'goal-contract',
-        nodes: {
-          contract: {
-            executor: 'conductor',
-            ...(config.specRounds && config.specRounds > 1 ? { max_rounds: config.specRounds } : {}),
-            goal: [
-              `为下面这个目标产出一份**可执行的 SDD 契约**, 存盘到 ${path}。`,
-              '',
-              `## 目标\n${goal}`,
-              '',
-              '## 你要分解出的步骤 (按需, 不是必须全有)',
-              '- **仓内勘察** (`executor:"agent"`, 只读): 找出目标在本仓的落点与既有实现, 输出逐行',
-              '  `file:line — 事实`。没有这一步, 后面的调研与起草就是在不知道"我们已经有什么"的前提下进行。',
-              '- **外部调研** (`executor:"research"`): **只在需要外部事实时才加** (选型 / 新机制 / 别人怎么做)。',
-              '  仓内答得出来的问题别用它 —— 它抓不到一个真页面就会失败。',
-              // researchRounds 是公开旋钮 (dag_goal 的入参)。合并成子图之后, 它只能经这句话传下去 ——
-              // 不传就成了一个"配了但不生效"的空旋钮, 正是这仓一直在杀的形态。
-              `  调研深度已定: 该节点必须写 \`"research": { "rounds": ${config.researchRounds ?? 1} }\`。`,
-              '- **契约起草** (`executor:"agent"`, `template:"spec-author"`, `output_type:"file"`,',
-              `  \`output_path:"${path}"\`): 必须用那张卡, 它带着契约骨架与防作弊条款。`,
-              '  它要 depends_on 上面那些步骤 —— 拿不到事实就只能凭空写。',
-              '',
-              // D-I 方案 A: 判据在这里是**输入**, 不是待办。
-              acceptanceBlock,
-              '',
-              '起草者的活是把上面这份判卷标准**原样写进契约的验收段**并据它拆实施步骤 ——',
-              '**不是**重新发明一套自己够得着的判据。它在你开始之前就已经定死了。',
-            ].join('\n'),
-          },
-        },
-      } as ConductorPlan;
-      try {
-        // 独立 runId 后缀: 与 execute 段共用 runId 会让两张不同的图互相覆盖 `_dag.json`。
-        // 后缀是确定性的 → `dag_goal resume=<runId>` 照样接得回这一段。
-        const baseDagCfg = config.dag.continuity
-          ? { ...config.dag, continuity: { ...config.dag.continuity, runId: `${config.dag.continuity.runId}-contract` } }
-          : config.dag;
-        // 实验臂 contract-distill (`.omd/experiments.json` 的 `contractFaninDistill`):
-        // 只把契约段的 fan-in 摘要扇出闸收紧到 1 (原有字段透传, 不丢)。旗标 off/缺失/坏 JSON →
-        // `readExperimentFlags()` 恒回 off, `dagCfg` 与 `baseDagCfg` 同一引用, 零字段增删 (INV-1)。
-        const experimentFlags = readExperimentFlags();
-        const dagCfg = experimentFlags.contractFaninDistill
-          ? { ...baseDagCfg, faninSummary: { ...baseDagCfg.faninSummary, minFanout: 1 } }
-          : baseDagCfg;
-        const res = await (config._runDag ?? runExecutorDagWithPlan)(prepPlan, dagCfg);
-        const leaf = res.results.contract;
-        const touched = leaf?.filesTouched ?? [];
-        const wrote = touched.some((f) => f.endsWith(`${goalSlug(goal)}.md`));
-        specPath = wrote ? path : undefined;
-        // 子节点里认出各段, 只为把结论如实抬进 stages (给人看的那一面不该因为合并成一个节点而变糊)。
-        // **「压根没这一步」与「跑了但空手而归」要分开记** —— 合成一个 skipped 就把后者藏起来了,
-        // 而后者才是需要人看一眼的那种 (勘察跑了却什么都没找到 ≠ 这次不需要勘察)。
-        const kids = Object.entries(res.results).filter(([k]) => k.startsWith('contract::'));
-        const researched = kids.filter(([, r]) => r.kind === 'research');
-        sources.push(...researched.flatMap(([, r]) => r.sources ?? []));
-        // 勘察步 = 有工具但没写文件的 agent 子节点 (起草步会写文件, 据此区分)。
-        const surveyKid = kids.find(([, r]) => r.kind === 'agent' && !(r.filesTouched ?? []).length)?.[1];
-        repoContext = surveyKid?.output?.trim() ?? '';
-        evidence = leaf?.output ?? '';
-        stages.push({
-          stage: 'survey',
-          status: !surveyKid ? 'skipped' : repoContext ? 'done' : 'failed',
-          // N5 的原型对: 这两格 **status 都是"没成"那一侧, outcome 相反** ——
-          // 「conductor 没分解出勘察步」= 它判定不需要 (什么都不用做);
-          // 「勘察步跑了但空输出」= 需要人看一眼。旧的 skipped|failed 二选一恰好把这一对压扁过。
-          outcome: !surveyKid ? 'not-needed' : repoContext ? 'success' : 'empty-result',
-          summary: !surveyKid
-            ? 'conductor 未分解出勘察步'
-            : repoContext
-              ? `${repoContext.split('\n').length} 行仓内事实`
-              : '勘察步空输出 (跑了但什么都没找到 — 与"不需要勘察"不是一回事)',
-        });
-        stages.push({
-          stage: 'research',
-          status: researched.length === 0 ? 'skipped' : sources.length > 0 ? 'done' : 'failed',
-          // 同上那一对: 「判无需外部调研」≠「调研跑了零来源」。后者在节点级是 no-sources,
-          // 在 stage 级与勘察空输出同一个下一步 (重跑/换检索式) → 并进 empty-result。
-          outcome: researched.length === 0 ? 'not-needed' : sources.length > 0 ? 'success' : 'empty-result',
-          summary:
-            researched.length === 0
-              ? 'conductor 判定无需外部调研 (D-G′: 这个分支现在由它自己判)'
-              : sources.length > 0
-                ? `${sources.length} 个来源真抓到正文`
-                : '零来源 — 无真抓取痕迹, 该结果不当证据用',
-        });
-        stages.push({
-          stage: 'spec',
-          // 没真写盘 = 只吐了文本 —— 记 failed 但不断流程 (下游拿正文当契约仍能跑)。
-          status: wrote ? 'done' : 'failed',
-          outcome: wrote ? 'success' : 'empty-result',
-          summary: (wrote ? path : 'spec 未写入磁盘 (契约段没产出文件), 下游改用其正文当契约') + (experimentFlags.contractFaninDistill ? ' · 实验臂: contract-distill' : ''),
-        });
-        // 闸 C: 有东西可复用才落状态 —— 全空的契约段 (evidence 空且没写入磁盘) 下次续跑照常重跑。
-        if (evidence || specPath) {
-          saveState({ goalHash, classified, contract: { ...(specPath ? { specPath } : {}), evidence, repoContext, sources: [...sources] } });
-        }
-      } catch (err) {
-        // 抛错 = 引擎自己出事, 与"契约写了但没达标"是两回事 (ERROR vs STALLED)。
-        specSource = 'contract-error';
-        stages.push({ stage: 'spec', status: 'failed', outcome: 'infra-error', summary: `契约段抛错: ${String(err).slice(0, 200)}` });
-      }
+      stages.push({ stage: 'spec', status: 'done', outcome: 'success', summary: `SDD 直通 + 闸 C 勘察复用: ${sdd.path}` });
     } else {
-      specSource = 'no-agent-runner';
-      // 缺件跳过与"不需要"跳过共用 status: 'skipped', 而下一步相反 (补配置 vs 什么都不用做)。
-      stages.push({ stage: 'survey', status: 'skipped', outcome: 'missing-capability', summary: '无 agentRunner → 无仓内事实' });
-      stages.push({ stage: 'research', status: 'skipped', outcome: 'missing-capability', summary: '无 agentRunner → 契约段整体跳过' });
-      stages.push({ stage: 'spec', status: 'skipped', outcome: 'missing-capability', summary: '无 agentRunner → 不产 spec, 直接执行目标' });
+      specSource = 'sdd-direct';
+      // 直通 (G-1): 契约已结晶 —— 不勘察不调研不转录, SDD 全文 (含并行波形) 原样进 execute。
+      stages.push({ stage: 'survey', status: 'skipped', outcome: 'not-needed', summary: 'SDD 直通: 契约已结晶, 不勘察' });
+      stages.push({ stage: 'research', status: 'skipped', outcome: 'not-needed', summary: 'SDD 直通: 不调研' });
+      stages.push({ stage: 'spec', status: 'done', outcome: 'success', summary: `SDD 直通 (零转录): ${sdd.path}` });
     }
   } else {
-    stages.push({ stage: 'research', status: 'skipped', outcome: 'not-needed', summary: 'simple 档: 直接 Execute→Verify (D-5)' });
-    stages.push({ stage: 'spec', status: 'skipped', outcome: 'not-needed', summary: 'simple 档: 无需先定契约 (D-5)' });
+    // INV-11: 无 sddPath → 三个 stage 全部 skipped, specSource 如实记 'loop' (D-27) ——
+    // 不区分 tier, 不区分 agentRunner 有没有配 (那道区分是旧「自动转录」分支才需要的, 契约段
+    // 本身在这条路上已经不跑, 缺不缺 agentRunner 不再改变这三格的落点)。
+    specSource = 'loop';
+    stages.push({ stage: 'survey', status: 'skipped', outcome: 'not-needed', summary: '契约段唯一触发是 sddPath (D-26/D-27): 无 sddPath → 不勘察' });
+    stages.push({ stage: 'research', status: 'skipped', outcome: 'not-needed', summary: '契约段唯一触发是 sddPath (D-26/D-27): 无 sddPath → 不调研' });
+    stages.push({ stage: 'spec', status: 'skipped', outcome: 'not-needed', summary: '契约段唯一触发是 sddPath (D-26/D-27): 无 sddPath → 不产 spec (specSource=loop)' });
   }
 
   // ── #209: 「契约段有没有产出 spec 文件」在**这一刻**记账 ──────────────────────────
@@ -1880,49 +1731,48 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
     //   阶段链路由 + 编译 —— 加在 SDD-direct 与 L1 flat-first 之间的一层。
     //
     //   触发 = config.chain ?? env.OMD_CHAIN (chainEnabled 读, 同 flatFirstEnabled 形状);
-    //   命中 = routeChain 返 kind:'chain' ⇒ compileChain 出的 ConductorPlan 进 execPlan 级联,
-    //     conductor 无改拓扑权 (D-6); 未命中 / caller 抛 / 越界 ⇒ **降级**, 走下面的 L1
+    //   命中 = route 返 kind:'chain' ⇒ compileChain 出的 ConductorPlan 进 execPlan 级联,
+    //     conductor 无改拓扑权 (D-6); 未命中 / 越界 ⇒ **降级**, 走下面的 L1
     //     (flatFirst 开时) 或 v1 conductor (兜底)。
     //
     //   优先级: SDD 已结晶 ⇒ 让 SDD 走 (本块嵌在 `else if` 里, SDD 路径在本块之前);
     //   chain 命中 ⇒ compileChain 产物; 未命中 ⇒ 降级。**不在 SDD 与 chain 之间二选一** —
     //   SDD 是 owner 显式交付物, chain 是 goal 文本的图式匹配, 两者语义不同档。
     //
-    //   失败语义 (与 SDD-direct INV-D3-4 fail-fast **刻意相反**): 路由是 opt-in 实验 (R9),
-    //   fail-loud bail 会让一次「开了开关但没命中」的 run 当场炸 —— 那比路由失败更坏。
-    //   降级是它本来的兜底, 但**不许吞证据** (INV-6): log 一行带 caller 返回 + 编译异常原文。
-    //
-    //   **切片 2 装配位**: `ensureProductionRouteCaller(config)` 在本块入口调一次,
-    //   幂等, 同一 run 不重复装; 装配缺席 (无 agentRunner / 无 leaf 座) ⇒ warn + 默认
-    //   caller 永远 'none', 行为不变 (INV-2 装配面记录在, zero-cost 闸靠 `chainOn` 这一道闸)。
-    ensureProductionRouteCaller(config, goalProtectedPaths); // 幂等: 已装就 no-op; 缺原料就 warn + 不装
-    try {
-      const decision = await routeChain(goal, {
-        conductorModel: config.dag.conductorModel,
-        cwd: config.cwd,
-        tier,
-        acceptanceKind: acceptance.kind,
-      });
-      if (decision.kind === 'chain') {
-        // compileChain 抛 (词表外 word / listFrom 形态错 / parsePlan 拒) → catch 里降级;
-        // 不在 if 内 try/catch (语义同层不嵌套, fail-open 集中处理)。
+    //   D-19 / INV-12 (2026-09-02): 这一格**不再**独立调 `chain-router.routeChain` 发第二次
+    //   结构化调用 —— `classified.route` 恒 `{kind:'none'}`(classify-acceptance.ts 的 route
+    //   槽本片未实装, 见其函数头 P1 回流修正), 默认路径动手前的 LLM 调用因此收敛到 classify
+    //   那一次 (INV-12), 但代价是这一格实质上永不可达。
+    //   ⚠ `routeChain` / `configureRouteCaller` 仍导出, 但**全仓非测试代码实扫 0 处调用**
+    //   (旧默认路径唯一的调用点、旧 `route-caller.ts` 的唯一装配点都随本片删掉了) —— 之前
+    //   在 `chainEnabled`/`OMD_CHAIN` 打开时真的会路由的能力被本片静默停摆, 不是"另有消费点
+    //   在别处接着用"; 谁要接回它 (v2/S7) 需要重新装配 caller, 不能假设它还活着。
+    const decision = classified.route ?? { kind: 'none' as const };
+    if (decision.kind === 'chain') {
+      try {
+        // compileChain 抛 (词表外 word / listFrom 形态错 / parsePlan 拒) → catch 里降级
+        // (INV-6: fail-open 不吞证据, 失败语义与 SDD-direct 的 fail-fast 刻意相反 —— 路由是
+        // opt-in 实验, 降级比当场炸更合适)。
         flatPlan = compileChain(decision.chain);
         logger.info(
           { stages: decision.chain.stages.length, name: flatPlan.name },
           '[run-goal] D4 chain 路由命中 → compileChain 产物进 execPlan (conductor 无改拓扑权, D-6)',
         );
-      } else {
-        // 'shape' 在 v1 不消费 (D-4 留 v2 接 GRAPH_SHAPES 卡填充), 'none' 兜底, 都走降级。
-        logger.info(
-          { decisionKind: decision.kind },
-          '[run-goal] D4 chain 路由未命中 → 降级 (走 flatFirst / v1 conductor, 行为逐字节照旧)',
+      } catch (err) {
+        const msg = String(err instanceof Error ? err.message : err).slice(0, 240);
+        logger.warn(
+          { err: msg },
+          '[run-goal] D4 chain 路由/编译失败 → 降级 (走 flatFirst / v1 conductor, 不静默)',
         );
       }
-    } catch (err) {
-      const msg = String(err instanceof Error ? err.message : err).slice(0, 240);
-      logger.warn(
-        { err: msg },
-        '[run-goal] D4 chain 路由/编译失败 → 降级 (走 flatFirst / v1 conductor, 不静默)',
+    } else {
+      // 'shape' 在 v1 不消费 (D-4 留 v2 接 GRAPH_SHAPES 卡填充), 'none' 兜底, 都走降级。
+      // P2 回流修正: `routePresent` 分辨「classified.route 缺席 (老续跑状态/未分类)」与
+      // 「真判过 none (生产恒填, 见 classify-acceptance.ts route 字段注释)」—— 别靠这行日志
+      // 之外的猜, 靠这一列 (仓规静默坑 1: NULL ≠ 0)。
+      logger.info(
+        { decisionKind: decision.kind, routePresent: classified.route !== undefined },
+        '[run-goal] D4 chain 路由未命中 → 降级 (走 flatFirst / v1 conductor, 行为逐字节照旧)',
       );
     }
   }

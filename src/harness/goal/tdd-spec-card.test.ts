@@ -112,38 +112,25 @@ describe('D-I — 判卷标准流到每一处该到的地方', () => {
    * 由 classify 在环外算好、冻进它的 goal 当输入 —— 放进子图就等于让执行体自己的环去产出判据,
    * 而环每轮重画, 判据也就跟着能变。这条测试钉的就是"两处拿到同一份, 且都在动手之前"。
    */
-  test('complex 档: 契约段 goal 与 execute 任务文本拿到**同一份**判卷标准', async () => {
-    let contractGoal = '';
+  // D-26/D-27 (2026-09-02): 契约段的唯一触发换成了 sddPath, 不再由 tier='complex' 自动展开
+  // conductor 子图。这条测试原来钉的是"契约段 goal 与 execute 任务文本两处拿到同一份判卷标准" ——
+  // 那两处里的第一处 (自动契约段) 已撤销, 现在只剩 execute 任务文本这一处落点。零契约段调用这条
+  // 不变量另钉在 contract-stage-gate.test.ts (INV-11), 这里只留"判卷标准仍流到 execute 任务文本"。
+  test('complex 档 (无 sddPath): execute 任务文本仍带判卷标准 (契约段不再自动展开)', async () => {
     let task = '';
     await runGoal('加一个字段', {
-      ...cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) }),
+      ...cfg(),
       _classify: cls('complex', EXEC),
       _runDag: router({
-        contract: async (plan) => {
-          contractGoal = String(plan.nodes.contract!.goal);
-          return {
-            plan: { name: 'goal-contract', nodes: {} },
-            results: {
-              contract: {
-                id: 'contract', status: 'done', kind: 'conductor', output: '# SDD', deps: [],
-                usage: { in: 1, out: 1 }, filesTouched: ['docs/plan/2026-07-29-加一个字段.md'],
-              },
-            },
-          } as unknown as ExecutorDagResult;
-        },
         execute: async (plan) => {
           task = String(plan.nodes.execute!.goal);
           return okExecute();
         },
       }),
     });
-    for (const text of [contractGoal, task]) {
-      expect(text).toContain('## 判卷标准 (冻结 — 执行型)');
-      expect(text).toContain('bun run tsc --noEmit && bun test');
-      expect(text).toContain('期望退出码: 0');
-    }
-    // 判据是**输入**不是待办: 契约段被明确告知不许重新发明一套。
-    expect(contractGoal).toContain('不是**重新发明');
+    expect(task).toContain('## 判卷标准 (冻结 — 执行型)');
+    expect(task).toContain('bun run tsc --noEmit && bun test');
+    expect(task).toContain('期望退出码: 0');
   });
 
   test('simple 档也附判卷标准 —— 它不产 spec, 判据没有别的落点', async () => {
@@ -195,54 +182,10 @@ describe('D-I — 判卷标准流到每一处该到的地方', () => {
   });
 });
 
-// ── item 12 (D-G′) 方案 A ─────────────────────────────────────────────────────
-
-describe('D-G′ 方案 A — 契约段合成 conductor 节点, 判据留在环外', () => {
-  const EXEC2: AcceptanceSpec = { kind: 'executable', command: 'bun test', expectExit: 0 };
-
-  const runWith = async (over: Partial<RunGoalConfig> = {}, acc: AcceptanceSpec = EXEC2) => {
-    let contractNode: Record<string, unknown> = {};
-    await runGoal('做一件复杂的事', {
-      ...cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) }),
-      _classify: cls('complex', acc),
-      _runDag: router({
-        contract: async (plan) => {
-          contractNode = plan.nodes.contract as unknown as Record<string, unknown>;
-          return { plan: { name: 'goal-contract', nodes: {} }, results: { contract: { id: 'contract', status: 'done', kind: 'conductor', output: '#SDD', deps: [], usage: { in: 0, out: 0 }, filesTouched: ['docs/plan/2026-07-29-做一件复杂的事.md'] } } } as unknown as ExecutorDagResult;
-        },
-      }),
-      ...over,
-    });
-    return contractNode;
-  };
-
-  test('契约段就是一个 executor:"conductor" 节点 (不再是三次手接的编排调用)', async () => {
-    expect((await runWith()).executor).toBe('conductor');
-  });
-
-  test('goal 里点名三步与起草卡, 但**不写死**要不要调研 (那个分支交给它自己判)', async () => {
-    const g = String((await runWith()).goal);
-    expect(g).toContain('仓内勘察');
-    expect(g).toContain('外部调研');
-    expect(g).toContain('spec-author');
-    expect(g).toContain('只在需要外部事实时才加'); // 分支下放, 不是写死
-  });
-
-  test('缺省不带内环; specRounds>1 才开**补调研** (D-A 逐轮重展开)', async () => {
-    expect((await runWith()).max_rounds).toBeUndefined();
-    expect((await runWith({ specRounds: 3 })).max_rounds).toBe(3);
-  });
-
-  test('探索型的判卷标准同样冻进 goal (没有机器判据也要说清楚)', async () => {
-    const g = String((await runWith({}, { kind: 'exploratory', learningGoal: '摸清 X', affordableLoss: '两轮' })).goal);
-    expect(g).toContain('没有机器判据');
-    expect(g).toContain('摸清 X');
-    expect(g).toContain('两轮');
-  });
-
-  test('存盘路径在 goal 里钉死 (起草步照它写, runGoal 据它认产物)', async () => {
-    const g = String((await runWith()).goal);
-    expect(g).toContain('2026-07-29-做一件复杂的事.md');
-    expect(g).toContain('output_path');
-  });
-});
+// ── item 12 (D-G′) 方案 A —— 撤销 (D-26/D-27, 2026-09-02) ──────────────────────
+//
+// 这一整块原来钉的是「tier='complex' 且无 sddPath → 自动展开一个 executor:'conductor' 节点
+// 勘察/调研/起草一份 SDD」。契约段门控换成 sddPath 之后 (INV-11), 这条自动转录路径整体撤销:
+// 无 sddPath 时契约段三 stage 一律 skipped、conductor 契约段调用计数为 0 —— 这块测的正是
+// 撤销掉的那个节点长什么样, 该节点已不存在, 留着只会让这个文件对现状撒谎。
+// 新覆盖面: contract-stage-gate.test.ts (INV-11 两格) + classify-route-once.test.ts (INV-12)。

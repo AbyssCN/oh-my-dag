@@ -29,6 +29,7 @@ import {
 import { logger } from '../logger';
 import { type EnvFacts, probeEnvFacts, renderEnvFacts } from '../env-facts';
 import type { GenerateFn } from '../dag/types';
+import type { RouteDecision } from './chain-router';
 import {
   type AcceptanceCommandBlockOpts,
   type AcceptanceProbe,
@@ -88,6 +89,13 @@ export interface GoalClassification {
   negativeSample?: NegativeSample;
   /** 见 {@link AcceptanceProbe}。缺席 = 没探 / 没记录。 */
   acceptanceProbe?: AcceptanceProbe;
+  /**
+   * D-19 / INV-12: 与 tier/acceptance 同一发出的路由决策 —— 取代 `chain-router.routeChain`
+   * 在默认路径上的独立第二次调用。可选是因为**历史续跑状态** (goal-state.json 里存的
+   * `classified`) 可能来自本字段加入之前的老 run, 老行没有这一格; 生产 `classifyGoal`
+   * 恒填 (见其函数头), 缺席只发生在读老状态或测试没给的场景, 消费侧一律 `?? {kind:'none'}`。
+   */
+  route?: RouteDecision;
 }
 
 /**
@@ -424,7 +432,28 @@ export function classifyPrompt(goal: string, probe?: ClassifyPromptProbe): strin
  * 确定性失败是纯烧钱 (模型刚才就是照着规则写的, 它不知道自己踩的是哪一条)。只重试一次: 两次还
  * 写不出可跑命令, 那多半是这个目标真的机器判不了, 那时降级探索型是**对的答案**而不是失败。
  */
+/**
+ * D-19 / INV-12 (2026-09-02): 对外这一个入口出**恰一次**结构化调用, 同时带出 tier / acceptance /
+ * route 三条轴。**⚠ 2026-09-02 P1 回流修正**: 这里恒定 `{kind:'none'}` 是因为 `classifyGoalCore`
+ * 的结构化调用**没有实装 route 槽**(prompt/schema 都没问它) —— 不是因为 `CHAIN_TEMPLATE_IDS`
+ * 是空集。上一版这句話推错了: `chain-router.parseRouteRaw` 的 `'chain'` 分支走的是调用方直接给的
+ * inline `StageChain`, 全文零处读 `CHAIN_TEMPLATE_IDS`(该常量只影响 v2 尚未接入的模板匹配),
+ * 所以 main 上一个真 caller(旧 `route-caller.ts` + `configureRouteCaller`)完全可以命中
+ * `kind:'chain'`。本片把默认路径上唯一调用 `routeChain`/`configureRouteCaller` 的接线摘掉之后,
+ * 全仓非测试代码对它俩的引用降到 0 (`chain-router.ts` 自身定义除外) —— `chain` / `OMD_CHAIN`
+ * 这条此前**真的会路由**的能力在这一片被静默停摆, 不是"模板本来就是空的所以没差"。
+ * ponytail: route 槽真实合并进 classify 的结构化调用(把 `chain-router.ts` 的路由 prompt 片段
+ * 折进 `classifyPrompt`)留给 v2/S7 —— 这里先诚实记成恒 none 的占位, 不假装是模板集为空的必然结果。
+ */
 export async function classifyGoal(
+  goal: string,
+  deps: Parameters<typeof classifyGoalCore>[1],
+): Promise<GoalClassification> {
+  const result = await classifyGoalCore(goal, deps);
+  return { ...result, route: result.route ?? { kind: 'none' } };
+}
+
+async function classifyGoalCore(
   goal: string,
   deps: {
     generate?: GenerateFn;

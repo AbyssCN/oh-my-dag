@@ -635,7 +635,17 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
       // 上界 4 = PlanNode.max_rounds 的 schema 上界 (环封在 conductor 节点内, D-F) —— 两处必须同数,
       // 不然这里放进来的 5 会在下游被静默钳掉, 又是一个"配了但不生效"的旋钮。
       maxRounds: z.number().int().min(1).max(4).optional().describe('Execute-phase inner-loop round cap (default 2 = 1 repair)'),
-      researchRounds: z.number().int().min(1).max(4).optional().describe('Research inner-loop cap (default 1)'),
+      researchRounds: z
+        .number()
+        .int()
+        .min(1)
+        .max(4)
+        .optional()
+        .describe(
+          'Research inner-loop cap (default 1). ⚠ S6a (2026-09-02) 起该参数暂无消费点 —— ' +
+            '契约段自动展开撤销后, 唯一的读点 (旧 auto-generate 分支) 随之删除; 留待 S6b/S7 的' +
+            '循环内环接回。',
+        ),
       // D4.1 切片 1: 阶段链路由 + 编译 opt-in 开关 (R9 solve 曝面)。owner 拍板 R9,
       // **本片曝 MCP 入参面** —— capability-matrix 矩阵行同步 18→19 (scripts/
       // omd-capability-matrix.ts §5 + capability-matrix.test.ts 结构绊线, 双层同改)。
@@ -700,9 +710,10 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         .boolean()
         .optional()
         .describe(
-          "D4.1 切片 1 (R9): 阶段链路由 opt-in 开关。true ⇒ 规划期挂 routeChain(goal, deps) ⇒ " +
-            "命中 kind:'chain' ⇒ compileChain 产物进 execPlan (扁平平铺图, 零契约段零重画); " +
-            "未命中 / 编译失败 ⇒ 降级。false / 省略 = 走 env OMD_CHAIN, env 关 = 行为逐字节照旧。",
+          'D4.1 切片 1 (R9): 阶段链路由 opt-in 开关。⚠ S6a (2026-09-02) 起该参数暂无消费点 —— ' +
+            'classify 合一之后 route 决策恒 `{kind:none}` (route 槽本片未实装, 只是占位), ' +
+            'routeChain 的默认路径调用点已摘掉, 打开这个开关目前不产生任何行为差异。' +
+            '留待 v2/S7 把 route 真正接回 classify 的结构化调用后再恢复其路由效果。',
         ),
     },
     handler: async (args) => {

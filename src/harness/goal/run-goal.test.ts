@@ -137,47 +137,40 @@ function cfg(dag: Partial<ExecutorDagConfig> = {}, extra: Partial<RunGoalConfig>
 }
 
 describe('runGoal — INV-GOAL-1 全自主 (阶段间零人工介入)', () => {
-  test('complex 档: 契约段 (conductor 节点) → execute 一次跑完, 每阶段留结论', async () => {
+  // D-26/D-27 (2026-09-02): 契约段的唯一触发换成了 sddPath, tier='complex' 不再自动展开一个
+  // `goal-contract` conductor 节点。这条测试原来钉的正是那次自动展开 (INV-11 撤销的那条路);
+  // 现在改钉它的替身 —— **零契约段调用**、三 stage 全 skipped、判卷标准仍流到 execute 任务文本。
+  // 「sdd 在场」那一侧的行为 (真正的 sdd-direct / 闸 C 复用) 另钉在 contract-stage-gate.test.ts。
+  test('complex 档 (无 sddPath): 契约段调用 0 次, 三 stage skipped, execute 一次跑完 (INV-11)', async () => {
     const seen: string[] = [];
-    let contractGoal = '';
     const r = await runGoal('给 omd 加一个自主 goal 引擎', {
       ...cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) }),
       _classify: cls('complex'),
-      // D-G′: survey/research/spec 是**一个 conductor 节点**的子图; D-F: execute 段也是。
       _runDag: dagRouter({
         contract: async (plan) => {
-          seen.push('contract');
-          contractGoal = String(plan.nodes.contract!.goal);
-          return contractDag({
-            survey: 'src/harness/executor-dag.ts:497 — map 节点已有运行时展开',
-            sources: ['https://a.example'],
-            specFile: 'docs/plan/2026-07-28-给-omd-加一个自主-goal-引擎.md',
-          });
+          seen.push('contract'); // 不该被调 —— 契约段不再由 tier 自动展开
+          return contractDag({});
         },
         execute: async (plan) => {
           seen.push('execute');
           const n = plan.nodes.execute!;
           expect(n.executor).toBe('conductor');
-          expect(String(n.goal)).toContain('按下面这份 SDD 契约实施'); // 执行读的是契约不是对话
+          expect(String(n.goal)).toContain('## 判卷标准'); // 判据仍流到 execute 任务文本 (D-I)
           return executeDag({ converged: true });
         },
       }),
     });
-    expect(seen).toEqual(['contract', 'execute']); // 阶段序固定, 中间没有人
-    // 契约段的 goal 里该有的三样: 目标 / 起草卡点名 / **冻结的判卷标准** (D-I 方案 A)。
-    expect(contractGoal).toContain('给 omd 加一个自主 goal 引擎');
-    expect(contractGoal).toContain('spec-author');
-    expect(contractGoal).toContain('## 判卷标准');
-    expect(r.repoContext).toContain('executor-dag.ts:497');
+    expect(seen).toEqual(['execute']); // 契约段调用 0 次 (INV-11)
     expect(r.stages.map((s) => `${s.stage}:${s.status}`)).toEqual([
       'classify:done',
-      'survey:done',
-      'research:done',
-      'spec:done',
+      'survey:skipped',
+      'research:skipped',
+      'spec:skipped',
       'execute:done',
     ]);
-    expect(r.sources).toEqual(['https://a.example']);
-    expect(r.specPath).toContain('2026-07-28-');
+    expect(r.repoContext).toBe('');
+    expect(r.sources).toEqual([]);
+    expect(r.specPath).toBeUndefined();
     expect(r.converged).toBe(true);
   });
 
@@ -411,55 +404,10 @@ describe('runGoal — D-1 mode 感知基线 delta (SDD cairness-distill D-1, 挂
 });
 
 describe('runGoal — 降级路径都留痕, 不假装', () => {
-  // D-G′ 之后「要不要调研」由 conductor 自己判 —— 没分解出调研步就是它判了不需要, 如实记 skipped。
-  test('子图里没有调研步 → research skipped (不是失败: 这个分支现在归它判)', async () => {
-    const r = await runGoal('设计一个新机制', {
-      ...cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) }),
-      _classify: cls('complex'),
-      _runDag: dagRouter({ contract: async () => contractDag({ survey: 'src/x.ts:1 — 事实', specFile: 'docs/plan/2026-07-28-设计一个新机制.md' }) }),
-    });
-    const s = r.stages.find((x) => x.stage === 'research')!;
-    expect(s.status).toBe('skipped');
-    expect(s.summary).toContain('无需外部调研');
-    expect(r.sources).toEqual([]);
-  });
-
-  // 零来源 = 假 grounded (与 research 节点闸同一判据): 记 failed, 且那段文字**不当证据用**。
-  test('调研步零来源 → research failed 且不进证据面', async () => {
-    const r = await runGoal('查点什么', {
-      ...cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) }),
-      _classify: cls('complex'),
-      _runDag: dagRouter({ contract: async () => contractDag({ sources: [], specFile: 'docs/plan/2026-07-28-查点什么.md' }) }),
-    });
-    expect(r.stages.find((s) => s.stage === 'research')!.status).toBe('failed');
-    expect(r.sources).toEqual([]); // 零来源的那段不算证据
-  });
-
-  test('契约段没产出文件 → spec failed 但不断流程 (下游改用正文当契约)', async () => {
-    const r = await runGoal('做点事', {
-      ...cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) }),
-      _classify: cls('complex'),
-      _runDag: dagRouter({ contract: async () => contractDag({ specText: '# SDD 正文' }) }), // 无 specFile
-    });
-    expect(r.stages.find((s) => s.stage === 'spec')!.status).toBe('failed');
-    expect(r.specPath).toBeUndefined();
-    expect(r.stages.find((s) => s.stage === 'execute')!.status).toBe('done'); // 仍往下跑
-  });
-
-  test('契约段整个抛错 → 记 failed, execute 照跑 (不把异常抛给调用方)', async () => {
-    const r = await runGoal('做点事', {
-      ...cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) }),
-      _classify: cls('complex'),
-      _runDag: dagRouter({
-        contract: async () => {
-          throw new Error('契约段崩了');
-        },
-      }),
-    });
-    expect(r.stages.find((s) => s.stage === 'spec')!.summary).toContain('契约段崩了');
-    expect(r.stages.find((s) => s.stage === 'execute')!.status).toBe('done');
-  });
-
+  // D-26/D-27 (2026-09-02): 上面四条原来钉的是「契约段自动展开 (conductor 子图) 里 survey/
+  // research/spec 各自的降级分支」—— 那个自动展开的子图已撤销 (INV-11: 唯一触发换成 sddPath),
+  // 无 sddPath 时这三个 stage 一律 skipped, 不再有"跑了但没产出" / "跑了但零来源"这些细分降级
+  // 状态可留痕。撤销后仅存的一条 (execute 抛错) 与契约段无关, 照旧保留。
   test('execute 抛错 → 记 failed 并返回 (不把异常抛给调用方)', async () => {
     const r = await runGoal('做点事', {
       ...cfg(),
@@ -544,26 +492,9 @@ describe('runGoal — INV-GOAL-4 有界 / INV-GOAL-3 可证', () => {
     expect(r.stages.at(-1)!.summary).toContain('无结果');
   });
 
-  // 合并成子图之后 researchRounds 只能经契约段的 goal 传下去 —— 不传就成了"配了但不生效"的空旋钮。
-  test('research 内环轮数透传进契约段指令 (默认 1, 可覆盖)', async () => {
-    const seen: string[] = [];
-    const mk = (rounds?: number) =>
-      runGoal('g', {
-        ...cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) }),
-        ...(rounds ? { researchRounds: rounds } : {}),
-        _classify: cls('complex'),
-        _runDag: dagRouter({
-          contract: async (plan) => {
-            seen.push(String(plan.nodes.contract!.goal));
-            return contractDag({ specFile: 'docs/plan/2026-07-28-g.md' });
-          },
-        }),
-      });
-    await mk();
-    await mk(3);
-    expect(seen[0]).toContain('"rounds": 1');
-    expect(seen[1]).toContain('"rounds": 3');
-  });
+  // D-26/D-27 (2026-09-02): researchRounds 原来只能经契约段自动展开的 goal 文本传下去
+  // (契约段是唯一读它的地方) —— 该子图已撤销, `researchRounds` 因此成了本次改动之外的一个
+  // 空旋钮 (公开 dag_goal 参数仍在, 但内部已无消费点), 留给 owner 另立票处理, 不在本片动手。
 
   // D-F 之后复用发生在**内环**里 (子节点内容寻址), 由引擎并进结果面的 reusedNodes。
   test('复用集进结果 (INV-GOAL-3 可证面)', async () => {
@@ -626,16 +557,9 @@ describe('runGoal — survey 仓内勘察 (inproc 研究与仓库的接点)', ()
     expect(r.repoContext).toBe('');
   });
 
-  test('勘察步跑了但空手而归 → failed 留痕 (与"这次不需要勘察"不是一回事)', async () => {
-    const r = await runGoal('g', {
-      ...cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) }),
-      _classify: cls('complex'),
-      _runDag: dagRouter({ contract: async () => contractDag({ survey: '   ', specFile: 'docs/plan/2026-07-28-g.md' }) }),
-    });
-    const s = r.stages.find((x) => x.stage === 'survey')!;
-    expect(s.status).toBe('failed');
-    expect(s.summary).toContain('空输出');
-  });
+  // D-26/D-27 (2026-09-02): 「勘察步跑了但空手而归」这个细分降级状态只存在于契约段自动展开
+  // 的子图里 (survey 是子图里的一个 agent 子节点) —— 该子图已撤销, 无 sddPath 时 survey 恒
+  // skipped, 不再有"跑了但空手"这个中间态可留痕。
 
   test('子图里压根没有勘察步 → skipped (与"跑了但空手"分开记)', async () => {
     const r = await runGoal('g', {
@@ -658,62 +582,63 @@ describe('runGoal — survey 仓内勘察 (inproc 研究与仓库的接点)', ()
       _classify: cls('simple'),
     });
     expect(called).toBe(false);
-    expect(r.stages.find((s) => s.stage === 'survey')).toBeUndefined();
+    // D-26/D-27: 三 stage 统一 skipped (不再是 simple 档独有的"压根没有这个 stage") —— INV-11
+    // 要求无 sddPath 时 survey/research/spec 一律出现且状态为 skipped, 不因 tier 而异。
+    expect(r.stages.find((s) => s.stage === 'survey')!.status).toBe('skipped');
   });
 });
 
-// ── 闸 C (2026-08-10 事故): 续跑复用 classify + 契约段 ───────────────────────
+// ── 闸 C (2026-08-10 事故): 续跑复用 classify ──────────────────────────────────
 //
 // 事故: 同一段 goal 被心跳续派重分类 117 遍 (平均 2.1M tokens/遍) —— 节点级 checkpoint
-// 拦不住 (conductor 子图逐轮重展开, D-O 输入面恒判"依赖输出已变")。闸 C 把 classify 与
-// 契约段产物按 goal 全文哈希锚在 `.omd/continuity/<runId>/goal-state.json`, 未变即复用。
+// 拦不住 (conductor 子图逐轮重展开, D-O 输入面恒判"依赖输出已变")。闸 C 把 classify
+// 按 goal 全文哈希锚在 `.omd/continuity/<runId>/goal-state.json`, 未变即复用。
+//
+// ⚠ D-26/D-27 (2026-09-02) 之后, 闸 C 原来"契约段产物同锚复用"那一半改了归属: 契约段
+// 唯一触发是 sddPath, 无 sddPath 时压根不产 contract 状态可供复用 (specSource='loop'),
+// 这里的 counters 因此只留 classify/exec 两支。「sdd 在场 + prior.contract 命中 → 复用」
+// 那条分支单独钉在 contract-stage-gate.test.ts (INV-11 第二格), 不在本文件重复。
 
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, rmSync, writeFileSync } from 'node:fs';
 
-describe('闸 C — 续跑复用 classify + 契约段 (goal-state 锚)', () => {
-  const mkCounted = (cwd: string, counters: { classify: number; contract: number; exec: number }): RunGoalConfig => ({
+describe('闸 C — 续跑复用 classify (goal-state 锚)', () => {
+  const mkCounted = (cwd: string, counters: { classify: number; exec: number }): RunGoalConfig => ({
     cwd,
     dag: {
       conductorModel: 'c:m',
       leafModel: 'l:m',
-      agentRunner: (async () => ({ text: 'x', usage: { in: 1, out: 1 } })) as never,
       continuity: { manager: {} as never, runId: 'run-c' },
     } as ExecutorDagConfig,
     _today: () => '2026-08-10',
     _classify: async () => (counters.classify++, { tier: 'complex' as GoalTier, acceptance: ACC_EXEC }),
-    _runDag: async (plan) => {
-      if (plan.name === 'goal-contract') {
-        counters.contract++;
-        return contractDag({ survey: 'src/a.ts:1 — 事实', specText: '# SDD 正文契约' });
-      }
+    _runDag: async () => {
       counters.exec++;
       return executeDag({ converged: true, rounds: 1 });
     },
   });
 
-  test('反向自检: 同 goal 同 runId 二跑 → classify/契约段各只跑一遍, 执行段照常跑两遍', async () => {
+  test('反向自检: 同 goal 同 runId 二跑 → classify 只跑一遍, 执行段照常跑两遍', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omd-goal-c-'));
-    const counters = { classify: 0, contract: 0, exec: 0 };
+    const counters = { classify: 0, exec: 0 };
     const r1 = await runGoal('目标甲', mkCounted(cwd, counters));
-    expect([counters.classify, counters.contract, counters.exec]).toEqual([1, 1, 1]);
+    expect([counters.classify, counters.exec]).toEqual([1, 1]);
     const r2 = await runGoal('目标甲', mkCounted(cwd, counters));
-    expect([counters.classify, counters.contract, counters.exec]).toEqual([1, 1, 2]);
-    expect(r2.repoContext).toBe(r1.repoContext); // 勘察产物原样带回
+    expect([counters.classify, counters.exec]).toEqual([1, 2]);
     expect(r2.stages.find((s) => s.stage === 'classify')!.summary).toContain('闸 C');
     expect(r2.converged).toBe(true); // 复用不改变执行段结论
   });
 
-  test('对照臂: goal 文本变了 → 状态作废, classify/契约段照常重跑', async () => {
+  test('对照臂: goal 文本变了 → 状态作废, classify 照常重跑', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omd-goal-c-'));
-    const counters = { classify: 0, contract: 0, exec: 0 };
+    const counters = { classify: 0, exec: 0 };
     await runGoal('目标甲', mkCounted(cwd, counters));
     await runGoal('目标乙 (一字之差也算变)', mkCounted(cwd, counters));
-    expect([counters.classify, counters.contract]).toEqual([2, 2]);
+    expect(counters.classify).toBe(2);
   });
 
   test('对照臂: 无 continuity (无 runId 可锚) → 闸不启用, 两跑两遍', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omd-goal-c-'));
-    const counters = { classify: 0, contract: 0, exec: 0 };
+    const counters = { classify: 0, exec: 0 };
     const mk = (): RunGoalConfig => {
       const c = mkCounted(cwd, counters);
       delete (c.dag as { continuity?: unknown }).continuity;
@@ -721,32 +646,7 @@ describe('闸 C — 续跑复用 classify + 契约段 (goal-state 锚)', () => {
     };
     await runGoal('目标甲', mk());
     await runGoal('目标甲', mk());
-    expect([counters.classify, counters.contract]).toEqual([2, 2]);
-  });
-
-  test('specPath 记了但盘上文件没了 → 不复用, 契约段重跑 (状态不是真源, 盘上文件才是)', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'omd-goal-c-'));
-    const specFile = join(cwd, 'docs', 'plan', `2026-08-10-${goalSlug('目标甲')}.md`);
-    mkdirSync(join(cwd, 'docs', 'plan'), { recursive: true });
-    writeFileSync(specFile, '# SDD');
-    const counters = { classify: 0, contract: 0, exec: 0 };
-    const mk = (): RunGoalConfig => {
-      const c = mkCounted(cwd, counters);
-      c._runDag = async (plan) => {
-        if (plan.name === 'goal-contract') {
-          counters.contract++;
-          return contractDag({ survey: 's', specFile });
-        }
-        counters.exec++;
-        return executeDag({ converged: true, rounds: 1 });
-      };
-      return c;
-    };
-    await runGoal('目标甲', mk());
-    expect(counters.contract).toBe(1);
-    rmSync(specFile);
-    await runGoal('目标甲', mk());
-    expect(counters.contract).toBe(2); // 文件没了 → 复用条件不成立
+    expect(counters.classify).toBe(2);
   });
 });
 describe('runGoal — D-2 写集声明 + 跑后 diff 对账 (SDD cairness-distill D-2, 挂 goal 引擎验收路径)', () => {
@@ -997,14 +897,21 @@ describe('D-2 散雾出口 — 任一 run 挂票 (G-1 / G-2)', () => {
    * `map.tickets` 恒为空, 本条前两个 expect 当场红 (实测 `expected 2, got 0`)。
    * 换句话说这条测试证的是**接线**, 不是判据 —— 判据红不红在 run-tickets.test.ts 那边。
    */
+  // D-26/D-27 (2026-09-02): 原来靠契约段自动展开产出 `r.specPath` 来喂 ①。该子图已撤销
+  // (契约段唯一触发是 sddPath), 这里改用 sdd-direct 拿到一份真实的 `r.specPath` ——
+  // 判据用探索型 (非 executable) 是为了绕开 `if (sdd && runnable)` 那条平铺图编译分支
+  // (D3, 与本测试的关注点无关, 走了反而要喂一份能真编译的分解表)。
   test('G-1: 契约段未决 → map 出现 suggested 票 (携 runId), 且不进前沿', async () => {
-    const base = cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) });
+    const base = cfg();
     const { tickets } = mapCfg(base, 'run-g1');
+    const sddPath = join(base.cwd, 'sdd.md');
+    writeFileSync(sddPath, '# 契约\n\n## 契约\n给 omd 加个散雾出口。\n\n## 分解\n1. 做 → verify: `bun test`\n');
     let readSpecArg = '';
     const r = await runGoal('给 omd 加个散雾出口', {
       ...base,
-      _classify: cls('complex'),
-      _runDag: dagRouter({ contract: async () => contractDag({ specFile: 'docs/plan/2026-07-28-给-omd-加个散雾出口.md' }) }),
+      sddPath,
+      _classify: cls('complex', { kind: 'exploratory', learningGoal: 'x', affordableLoss: 'y' }),
+      _runDag: dagRouter({ execute: async () => executeDag({ converged: true }) }),
       tickets: {
         ...tickets,
         _readSpec: (p) => {
@@ -1511,96 +1418,12 @@ describe('runGoal — P4 设计审核集成 (INV-3 / INV-6 / G-4 / D-7)', () => 
   });
 });
 
-// ── 实验臂 contract-distill (`.omd/experiments.json` 的 `contractFaninDistill`) ──────────────
+// ── 实验臂 contract-distill —— 撤销 (D-26/D-27, 2026-09-02) ────────────────────
 //
-// 只碰契约段 (`goal-contract`) 的 dagCfg.faninSummary.minFanout, 且只把它收紧到 1 —— 调用方原有
-// faninSummary 字段透传不丢, execute 段一律不受影响。旗标 off/缺失/坏 JSON → readExperimentFlags
-// 恒回 off, `dagCfg` 与 `baseDagCfg` 同一引用 → 两段 config 零字段增删 (INV-1)。
-
-import { afterEach, beforeEach, spyOn } from 'bun:test';
-import * as repoRoot from '../repo-root';
-
-describe('实验臂 contract-distill — 契约段 fan-in 摘要扇出闸', () => {
-  let flagRoot: string;
-
-  beforeEach(() => {
-    flagRoot = mkdtempSync(join(tmpdir(), 'omd-goal-distill-flag-'));
-    mkdirSync(join(flagRoot, '.omd'), { recursive: true });
-    spyOn(repoRoot, 'omdRepoRoot').mockReturnValue(flagRoot);
-  });
-
-  afterEach(() => {
-    rmSync(flagRoot, { recursive: true, force: true });
-  });
-
-  const mkCaptured = (captured: { contract?: ExecutorDagConfig; execute?: ExecutorDagConfig }): RunGoalConfig => ({
-    cwd: mkdtempSync(join(tmpdir(), 'omd-goal-distill-')),
-    dag: {
-      conductorModel: 'c:m',
-      leafModel: 'l:m',
-      agentRunner: (async () => ({ text: 'x', usage: { in: 1, out: 1 } })) as never,
-      // 调用方原有 faninSummary — 用来证「其它字段透传不丢」, 不是引擎默认值。
-      faninSummary: { minChars: 999, model: 'x:y' },
-      continuity: { manager: {} as never, runId: 'run-distill' },
-    } as ExecutorDagConfig,
-    _today: () => '2026-08-14',
-    _classify: cls('complex'),
-    _runDag: (async (plan: ConductorPlan, dagCfg: ExecutorDagConfig) => {
-      if (plan.name === 'goal-contract') {
-        captured.contract = dagCfg;
-        return contractDag({ specFile: 'docs/plan/2026-07-28-x.md', specText: '契约正文' });
-      }
-      captured.execute = dagCfg;
-      return executeDag({ converged: true });
-    }) as never,
-  });
-
-  // 证伪 (a): 若接线漏做了默认值改写 (如把缺席误写成显式 `{minFanout:2}`) → 下面两处
-  // `toEqual({ minChars: 999, model: 'x:y' })` 会因多出 `minFanout` 键当场红 (INV-1)。
-  // INV-2 实测已跑 (2026-08-14): 把 `readExperimentFlags()` 临时硬编码为恒回
-  // `{ contractFaninDistill: true }`, 跑 `bun test src/harness/goal/run-goal.test.ts` ——
-  // 本条当场变红 (`toEqual` 多出 `"minFanout": 1`), 其余 82 条不受影响; 还原后 `git diff` 为空,
-  // 复跑全绿 (88 pass)。证明本条测试确实在验旗标接线, 不是虚闸。
-  test('旗标 off (无 .omd/experiments.json) → 两段 config 与调用方原样逐字节等价', async () => {
-    const captured: { contract?: ExecutorDagConfig; execute?: ExecutorDagConfig } = {};
-    const config = mkCaptured(captured);
-    await runGoal('目标 off', config);
-    expect(captured.contract).toBeDefined();
-    expect(captured.execute).toBeDefined();
-    expect(captured.contract!.faninSummary).toEqual({ minChars: 999, model: 'x:y' });
-    expect(captured.execute!.faninSummary).toEqual({ minChars: 999, model: 'x:y' });
-    // execute 段整体也逐字节等价于「本改动之前」的既有推导 (D-I 冻结判据附加, 与本实验臂无关)
-    expect(captured.execute).toEqual({
-      ...config.dag,
-      freezeCriterion: { command: 'bun test', expectExit: 0 },
-    });
-    // 契约段除 runId 后缀外逐字节等价
-    expect(captured.contract).toEqual({
-      ...config.dag,
-      continuity: { ...config.dag.continuity!, runId: 'run-distill-contract' },
-    });
-  });
-
-  // 证伪 (b): 若把 minFanout 接到了 execute 段而非契约段 → `captured.execute!.faninSummary` 的
-  // `minFanout` 也会变 1, 最后一条断言当场红; 若接线丢了原有 `model` 字段 → 透传断言当场红。
-  test('旗标 on → 契约段 minFanout 收紧到 1, 原字段透传, execute 段不受影响', async () => {
-    writeFileSync(join(flagRoot, '.omd', 'experiments.json'), JSON.stringify({ contractFaninDistill: true }));
-    const captured: { contract?: ExecutorDagConfig; execute?: ExecutorDagConfig } = {};
-    const config = mkCaptured(captured);
-    await runGoal('目标 on', config);
-    expect(captured.contract!.faninSummary).toEqual({ minChars: 999, model: 'x:y', minFanout: 1 });
-    expect(captured.execute!.faninSummary).toEqual({ minChars: 999, model: 'x:y' });
-  });
-
-  // 证伪 (c): 若旗标读了但没接到 spec stage 的 summary 拼接 → 这里的 `toContain` 当场红。
-  test('旗标 on → spec stage summary 末尾带实验臂标记', async () => {
-    writeFileSync(join(flagRoot, '.omd', 'experiments.json'), JSON.stringify({ contractFaninDistill: true }));
-    const captured: { contract?: ExecutorDagConfig; execute?: ExecutorDagConfig } = {};
-    const r = await runGoal('目标 on 标记', mkCaptured(captured));
-    const specStage = r.stages.find((s) => s.stage === 'spec');
-    expect(specStage!.summary).toContain(' · 实验臂: contract-distill');
-  });
-});
+// 原来测的是「契约段 (`goal-contract` conductor 节点) 的 dagCfg.faninSummary.minFanout 按
+// `.omd/experiments.json` 的 `contractFaninDistill` 收紧」。契约段自动展开 (无 sddPath 时的
+// 那条路) 整体撤销之后, 这个只挂在该节点上的实验臂**没有宿主可挂**了 (`readExperimentFlags` /
+// `contractFaninDistill` 因此成了本次改动之外的一个空旋钮, 留给 owner 另立票清理, 不在本片动手)。
 
 // ── #165① accept 被红级联压死 → 冻结判据收尾复验 (delivered-with-red) ──────────────
 describe('#165① delivered-with-red: accept 没跑而判据复验绿', () => {
