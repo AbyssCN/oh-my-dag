@@ -38,6 +38,7 @@ import {
   defaultLiveProvider,
   dispatch,
   evaluateSplit,
+  type RawTextProvider,
   loadCorpusFromPath,
   parseReplayArgs,
   runBaseline,
@@ -686,5 +687,57 @@ describe('FAILS_CLOSED — 入参与异常', () => {
 
   test('F-7 未知 flag → throw', () => {
     expect(() => parseReplayArgs(['/a.json', '--no-such-flag'])).toThrow(/unknown flag/);
+  });
+});
+
+// =====================================================================
+// REPLAY_CONCURRENCY —— evaluateSplit 有界并发池 (2026-09-02 烟测: M3 一题中位 95s, 串行不可用)。
+// 反向自检: 把 evaluateSplit 的 width 钉死为 1 → CONC-1 的墙钟断言红 (并发没生效);
+//           把 perItem 改成 push 而非按 index 回填 → CONC-2 顺序断言红 (慢题后到会乱序)。
+// =====================================================================
+describe('REPLAY_CONCURRENCY — evaluateSplit 并发池: 更快且顺序不变', () => {
+  let root: string;
+  afterEach(() => {
+    if (root) rmSync(root, { recursive: true, force: true });
+  });
+
+  const slowProvider = (delayMs: (id: string) => number) => {
+    let inFlight = 0;
+    let peak = 0;
+    const provider: RawTextProvider = async (id) => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, delayMs(id)));
+      inFlight--;
+      return stubVariantToRawText('baseline');
+    };
+    return { provider, peak: () => peak };
+  };
+
+  test('CONC-1 concurrency=3 同时在飞峰值 3, 墙钟明显低于串行', async () => {
+    const fx = makeLoadedCorpus(false);
+    root = fx.root;
+    const ids = fx.loaded.splits.main ?? [];
+    expect(ids.length).toBeGreaterThanOrEqual(3);
+    const { provider, peak } = slowProvider(() => 40);
+    const t0 = Date.now();
+    await evaluateSplit({ loaded: fx.loaded, split: 'main', rawTextProvider: provider, concurrency: 3 });
+    const wall = Date.now() - t0;
+    expect(peak()).toBe(3);
+    expect(wall).toBeLessThan(ids.length * 40);
+  });
+
+  test('CONC-2 慢题先领后到, perItem 仍按 split id 序; 缺省 concurrency 峰值 1', async () => {
+    const fx = makeLoadedCorpus(false);
+    root = fx.root;
+    const ids = fx.loaded.splits.main ?? [];
+    // 首题最慢: 并发下它最后返回, 若按返回序 push 就会掉到末尾。
+    const { provider, peak } = slowProvider((id) => (id === ids[0] ? 60 : 5));
+    const out = await evaluateSplit({ loaded: fx.loaded, split: 'main', rawTextProvider: provider, concurrency: 4 });
+    expect(out.perItem.map((r) => r.id)).toEqual([...ids]);
+    const serial = slowProvider(() => 2);
+    await evaluateSplit({ loaded: fx.loaded, split: 'main', rawTextProvider: serial.provider });
+    expect(serial.peak()).toBe(1);
+    expect(peak()).toBeGreaterThan(1);
   });
 });

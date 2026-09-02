@@ -94,7 +94,15 @@ export interface SessionsOpts {
   nightDir: string;
   /** 夜墙钟总闸 (分钟)。超了的卡不起跑。 */
   nightBudgetMinutes: number;
+  /** 回放并发 (透传 runSession.replayConcurrency)。缺省 = DEFAULT_REPLAY_CONCURRENCY。 */
+  replayConcurrency?: number;
 }
+
+/**
+ * 回放默认并发。2026-09-02 烟测: M3 conductor 一题中位 95s (out 中位 14K token), 串行一个
+ * variant 27 题 ≈ 43 min, K=4 一代 ≈ 3h; 4 路并发把一代压到 ~45 min。env OMD_REPLAY_CONCURRENCY 可覆盖。
+ */
+export const DEFAULT_REPLAY_CONCURRENCY = 4;
 
 /** 两条执行路 + 两个 LLM 注入点 + 时钟, 全部可注入 (测试跑真编排, 零 LLM 零子进程)。 */
 export interface SessionsDeps {
@@ -189,6 +197,7 @@ async function defaultRunEvolve(
     journalPath: join(opts.nightDir, 'journal.md'),
     sessionsDir: join(opts.nightDir, 'sessions'),
     seats,
+    replayConcurrency: opts.replayConcurrency ?? DEFAULT_REPLAY_CONCURRENCY,
     rawTextProvider: (variant, id, prompt) =>
       liveProvider(id, prompt, { seats, variant, id, variantDir }),
     ...(deps.mutationProvider ? { mutationProvider: deps.mutationProvider } : {}),
@@ -308,11 +317,12 @@ export interface SessionsArgs {
   cwd: string;
   manifestPath: string;
   nightBudgetMinutes: number;
+  replayConcurrency: number;
 }
 
 const USAGE =
   'usage: bun scripts/autoresearch-night-sessions.ts <cards.json> --out <results.json> ' +
-  '[--cwd <dir>] [--manifest <path>] [--night-budget-minutes 480]';
+  '[--cwd <dir>] [--manifest <path>] [--night-budget-minutes 480] [--replay-concurrency 4]';
 
 export const DEFAULT_MANIFEST = 'runs/autoresearch/corpus/manifest.json';
 
@@ -322,6 +332,7 @@ export function parseSessionsArgs(argv: readonly string[]): SessionsArgs {
   let cwd = process.cwd();
   let manifestPath = DEFAULT_MANIFEST;
   let nightBudgetMinutes = 480;
+  let replayConcurrency = Number(process.env.OMD_REPLAY_CONCURRENCY ?? DEFAULT_REPLAY_CONCURRENCY);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     const next = (): string => {
@@ -333,12 +344,16 @@ export function parseSessionsArgs(argv: readonly string[]): SessionsArgs {
     else if (a === '--cwd') cwd = next();
     else if (a === '--manifest') manifestPath = next();
     else if (a === '--night-budget-minutes') nightBudgetMinutes = Number(next());
+    else if (a === '--replay-concurrency') replayConcurrency = Number(next());
     else if (a.startsWith('--')) throw new Error(`认不出的参数: ${a}`);
     else cardsPath = a;
   }
   if (cardsPath === '') throw new Error('cards.json 路径必填');
   if (out === '') throw new Error('--out 必填');
-  return { cardsPath, out, cwd, manifestPath, nightBudgetMinutes };
+  if (!Number.isInteger(replayConcurrency) || replayConcurrency < 1) {
+    throw new Error(`--replay-concurrency 须为 ≥1 的整数, 收到 ${replayConcurrency}`);
+  }
+  return { cardsPath, out, cwd, manifestPath, nightBudgetMinutes, replayConcurrency };
 }
 
 /** 从 cards.json (校卡闸产物) 取 accepted。文件缺席 / 形状不对 → 空数组 (下游记 no-cards)。 */
@@ -362,6 +377,7 @@ if (import.meta.main) {
     manifestPath: args.manifestPath,
     nightDir: dirname(args.out),
     nightBudgetMinutes: args.nightBudgetMinutes,
+    replayConcurrency: args.replayConcurrency,
   });
   mkdirSync(dirname(args.out), { recursive: true });
   writeFileSync(args.out, `${JSON.stringify(results, null, 2)}\n`);

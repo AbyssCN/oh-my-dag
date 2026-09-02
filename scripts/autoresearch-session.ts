@@ -181,6 +181,11 @@ export interface SessionOptions {
    * 于是「注入了 fake 变异算子」的测试不必传, 而生产路径**必须**传。
    */
   seats?: Record<string, string>;
+  /**
+   * 回放并发 (同时在飞的 rawTextProvider 调用数), 透传 evaluateSplit。缺省 1 = 串行 (旧行为)。
+   * 2026-09-02 烟测: M3 一题中位 95s, 串行一个 variant 27 题 ≈ 43 min —— 夜链必须并发。
+   */
+  replayConcurrency?: number;
   /** 替代默认 writeVariant: (dir, spec) → 写出的完整路径。 */
   writeVariantSpec?: (dir: string, spec: VariantSpec) => string;
   /** 替代默认 Date.now。 */
@@ -269,6 +274,7 @@ async function evaluateVariantFitness(
   loaded: LoadedCorpus,
   variant: string,
   rawTextProvider: (variant: string, id: string, prompt: string) => Promise<string>,
+  concurrency = 1,
 ): Promise<VariantFitness> {
   const zeros: AggregatedFitness = {
     planValidityRate: 0,
@@ -285,9 +291,10 @@ async function evaluateVariantFitness(
   // screen: split 不存在 (missing manifest split) → 返 n=0; 命中 (但 ids=[]) → 也返 n=0。
   const screenIds = loaded.splits.screen;
   const screenOut = screenIds !== undefined
-    ? (await evaluateSplit({ loaded, split: 'screen', rawTextProvider: rtp })).aggregate
+    ? (await evaluateSplit({ loaded, split: 'screen', rawTextProvider: rtp, concurrency })).aggregate
     : zeros;
-  const mainOut = (await evaluateSplit({ loaded, split: 'main', rawTextProvider: rtp })).aggregate;
+  const mainOut = (await evaluateSplit({ loaded, split: 'main', rawTextProvider: rtp, concurrency }))
+    .aggregate;
   return { screen: screenOut, main: mainOut };
 }
 
@@ -747,7 +754,7 @@ export async function runSession(opts: SessionOptions): Promise<SessionResult> {
     baselineRecord = makeBaselineRecord();
     // 评估 baseline 给一份 fitness 记录 (供 journal + 后续代对比)。
     baselineFit = await evaluateVariantFitness(
-      opts.corpus, SESSION_BASELINE_VARIANT, rawTextProvider,
+      opts.corpus, SESSION_BASELINE_VARIANT, rawTextProvider, opts.replayConcurrency,
     );
     baselineRecord.fitnessByChild[SESSION_BASELINE_VARIANT] = baselineFit;
     baselineRecord.frontFitnessSignature = frontFitnessSignature([
@@ -833,7 +840,7 @@ export async function runSession(opts: SessionOptions): Promise<SessionResult> {
     const fitnessByChild: Record<string, VariantFitness> = {};
     const mainFitnessByVariant = new Map<string, AggregatedFitness>();
     for (const name of childVariantNames) {
-      const fit = await evaluateVariantFitness(opts.corpus, name, rawTextProvider);
+      const fit = await evaluateVariantFitness(opts.corpus, name, rawTextProvider, opts.replayConcurrency);
       fitnessByChild[name] = fit;
       mainFitnessByVariant.set(name, fit.main);
     }

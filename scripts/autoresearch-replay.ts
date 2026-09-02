@@ -419,6 +419,12 @@ export interface EvaluateSplitInput {
   loaded: LoadedCorpus;
   split: SplitName;
   rawTextProvider: RawTextProvider;
+  /**
+   * 同时在飞的 rawTextProvider 调用数 (缺省 1 = 逐题串行, 与此前行为逐字节一致)。
+   * 2026-09-02 烟测读数: M3 conductor 一题中位 95s (out 中位 14K token), 串行一个 variant
+   * 27 题 ≈ 43 min, 一代 K=4 ≈ 3h —— 「分钟/代」只有并发才成立。perItem 顺序仍按 split 内 id 序。
+   */
+  concurrency?: number;
 }
 
 export interface EvaluateSplitOutput {
@@ -432,9 +438,7 @@ export async function evaluateSplit(input: EvaluateSplitInput): Promise<Evaluate
   if (ids.length === 0) {
     return { perItem: [], aggregate: aggregateFitness([]) };
   }
-  const perItem: ReplayItemResult[] = [];
-  const fitnesses: PlanFitness[] = [];
-  for (const id of ids) {
+  const scoreOne = async (id: string): Promise<ReplayItemResult> => {
     const prompt = loaded.prompts.get(id) ?? '';
     const raw = await rawTextProvider(id, prompt);
     const parsed = parsePlan(raw, {
@@ -442,29 +446,18 @@ export async function evaluateSplit(input: EvaluateSplitInput): Promise<Evaluate
       knownServers: new Set<string>(),
     });
     if (!parsed.ok) {
-      const tokens = Math.ceil(raw.length / 4);
-      const failFit: PlanFitness = {
-        planValidity: false,
-        fakeSerialPairs: 0,
-        speedupTheoretical: null,
-        speedupCostBasis: null,
-        shapeDeclared: false,
-        planningTokens: tokens,
-      };
-      perItem.push({
+      return {
         id,
         planValidity: false,
         fakeSerialPairs: 0,
         speedupTheoretical: null,
         speedupCostBasis: null,
         shapeDeclared: false,
-        planningTokens: tokens,
-      });
-      fitnesses.push(failFit);
-      continue;
+        planningTokens: Math.ceil(raw.length / 4),
+      };
     }
     const fit = computeFitness({ plan: parsed.plan, rawText: raw });
-    perItem.push({
+    return {
       id,
       planValidity: fit.planValidity,
       fakeSerialPairs: fit.fakeSerialPairs,
@@ -472,9 +465,27 @@ export async function evaluateSplit(input: EvaluateSplitInput): Promise<Evaluate
       speedupCostBasis: fit.speedupCostBasis,
       shapeDeclared: fit.shapeDeclared,
       planningTokens: fit.planningTokens,
-    });
-    fitnesses.push(fit);
-  }
+    };
+  };
+  // 有界并发池: 槽位按 id 序领题, 结果按 id 序回填 (perItem 顺序与串行版逐字节一致)。
+  const width = Math.max(1, Math.floor(input.concurrency ?? 1));
+  const perItem: ReplayItemResult[] = new Array(ids.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < ids.length) {
+      const i = next++;
+      perItem[i] = await scoreOne(ids[i]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(width, ids.length) }, worker));
+  const fitnesses: PlanFitness[] = perItem.map((r) => ({
+    planValidity: r.planValidity,
+    fakeSerialPairs: r.fakeSerialPairs,
+    speedupTheoretical: r.speedupTheoretical,
+    speedupCostBasis: r.speedupCostBasis,
+    shapeDeclared: r.shapeDeclared,
+    planningTokens: r.planningTokens,
+  }));
   return { perItem, aggregate: aggregateFitness(fitnesses) };
 }
 
