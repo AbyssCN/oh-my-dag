@@ -41,6 +41,7 @@ import { checkWriteAllowed, describeWriteDenied } from './writeset/write-allow';
 import { checkWriteVersion, describeVersionDenied, observePath, type FileObservation } from './writeset/write-version';
 import { type CommandPolicy, DEFAULT_SANDBOX_CONFIG, judgeCommand } from './hooks/command-policy';
 import { sandboxCommand } from './hooks/shell-sandbox';
+import type { AcceptanceOutcome } from './acceptance-run';
 import { gitWriteBlockReason, secretPathInCommand, SECRET_BASENAMES, SECRET_BASENAME_EXEMPT } from './command-leaf';
 import { logger } from '../logger';
 import { openTouchLedger, type TouchLedger, type TouchOp, type TouchSource } from './writeset/touch-ledger';
@@ -470,6 +471,10 @@ const BASH_SCHEMA = Type.Object({
   command: Type.String({ description: 'Shell command to run in the working root.' }),
   timeout: Type.Optional(Type.Number({ description: 'Timeout in seconds. Default 120.' })),
 });
+/** `run_acceptance` 的参数面: **没有 command**(D-6)。`round` 只是给模型自己计数用的可选注记。 */
+const RUN_ACCEPTANCE_SCHEMA = Type.Object({
+  round: Type.Optional(Type.Number({ description: 'Optional: your own attempt counter, for your notes only.' })),
+});
 const VIEW_IMAGE_SCHEMA = Type.Object({
   path: Type.String({ description: 'Image file path (relative to the working root, or absolute).' }),
 });
@@ -546,6 +551,13 @@ export interface OmdAgentToolsOpts {
    * 缺省 = 不设边界 (chat.ts / chat-seat.ts 那条"读半区零摩擦"路, 逐字节零行为变化)。
    */
   confineReadsTo?: string;
+  /**
+   * **`run_acceptance` 的执行体 getter**(P3 S2, 2026-09-02)。给了则工具面上挂 `run_acceptance`;
+   * getter 返 `undefined` = 本次调用没有冻结判据(工具在面上但调用即拒, 不静默 no-op)。
+   * 与 `writeAllow` 同一条「thunk 不是值」纪律: 判据按调用来, 烤进装配期会拿上一个节点的判据跑这一个。
+   * 省略整个字段 = 这条路不挂该工具(对话位 / 老调用方零变化)。
+   */
+  acceptance?: () => (() => Promise<{ text: string; outcome: AcceptanceOutcome }>) | undefined;
   /** bash 不可逆命令 fail-closed 闸。默认 true (安全侧); false = 逃生关闸。 */
   dangerousCommandGuard?: boolean;
   /**
@@ -1229,7 +1241,35 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
     return render ? { ...t, render } : t;
   };
 
-  return [read, viewImage, write, edit, ls, grep, bash].map(withRender);
+  /**
+   * `run_acceptance`(P3 S2 / D-6): 跑**引擎冻结的**验收命令。schema 里没有 command —— 模型改不了一个字。
+   * 闸链、沙箱包裹、判读全在 `acceptance-run.ts`;这里只是把 ALS 里那条判据的执行体接到工具面上。
+   * `BASH_SCHEMA` 与交互 bash 的 execute 分支一个字节不动(INV-13):验收是另一条工具, 不是 bash 的一个模式。
+   */
+  const runAcceptance: OmdTool<{ verdict: string; exitCode: number | null }> = {
+    name: 'run_acceptance',
+    label: 'run_acceptance',
+    description:
+      'Run the acceptance command the engine froze for this node, exactly as frozen. Returns the verdict ' +
+      '(GREEN / RED / INCONCLUSIVE), the exit code, the failure delta against your previous run, and the output tail. ' +
+      'This is the only call that counts as "ran the acceptance command".',
+    promptSnippet:
+      'run_acceptance() — 跑引擎冻结的验收命令 (你不传命令, 引擎跑原文)。只有这个调用算「跑过验收」; ' +
+      '自己用 bash 敲一遍不算。返回判词 / 退出码 / 与上次比新增·修掉的失败 / 输出尾部。',
+    parameters: RUN_ACCEPTANCE_SCHEMA,
+    executionMode: 'sequential',
+    async execute() {
+      const run = opts.acceptance?.();
+      if (!run) throw new Error('run_acceptance 在本节点不可用: 引擎没有为它冻结验收命令 (没有 self_check)。');
+      const { text, outcome } = await run();
+      return textResult(text, {
+        verdict: outcome.kind === 'blocked' ? 'blocked' : outcome.verdict,
+        exitCode: outcome.kind === 'blocked' ? null : outcome.exitCode,
+      });
+    },
+  };
+  const base = [read, viewImage, write, edit, ls, grep, bash];
+  return (opts.acceptance ? [...base, runAcceptance] : base).map(withRender);
 }
 
 /**

@@ -1,4 +1,5 @@
 import type { ContentPart, ModelUsage } from '../../model/gateway';
+import type { AcceptanceOutcome } from '../acceptance-run';
 import type * as Gateway from '../../model/gateway';
 import type { AgentTemplate } from '../agent-templates';
 import type { ConductorPlan } from '../conductor-plan';
@@ -1104,6 +1105,12 @@ export interface LeafResult {
    *   让读数板误诊。「`null` ⟺ 跑过但首轮没过」这种**直觉翻译**正是这一位要挡的错。
    */
   selfRepair?: { rounds: number; oracleExit: number[]; convergedAt: number | null } | null;
+  /**
+   * **`run_acceptance` 台账**(P3 S2, 2026-09-02)。真源 = `AgentLeafResult.acceptance`, 引擎在 settle 透传。
+   * 三态与 `selfRepair` 同款守法: 整个字段缺席 = 没派冻结判据;`null` = 派了但 leaf 侧没有作用域;
+   * 对象 = 派了 —— `ran` 只认 `run_acceptance` 调用, 报告闸 (S3) 拿它与尾块 `acceptance_ran` 对账。
+   */
+  acceptance?: { ran: boolean; rounds: number; last: AcceptanceOutcome | null } | null;
   /**
    * **引擎自己出事导致环提前退出**的原因(2026-07-31)。今天唯一的来源: judge 调不通
    * (`ModelError` —— 传输/配置层的确定性故障, 如 codex 拒 temperature)。

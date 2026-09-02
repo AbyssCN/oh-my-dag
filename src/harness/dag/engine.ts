@@ -4483,6 +4483,8 @@ async function executePlan(
       // 「派了却没报」(旧 runner / 测试替身) 走缺席 + 一条 WARN, **不编 null** —— null 那一格
       // 是留给「截断」的, 拿它顶「没记」正是仓规 §静默坑 1 要挡的抹平。
       let selfRepair: LeafResult['selfRepair'];
+      // P3 S2: run_acceptance 台账, 与 selfRepair 同一条三态纪律 (派了才读回, 没报保持缺席不编 null)。
+      let acceptance: LeafResult['acceptance'];
       // prompt 观测面 (同 conductor 那处: 默认 logger 的 debug 是空函数, 生产零成本)。
       // leaf 这一份尤其值钱 —— 上游材料、围栏、失败前驱的告示全落在它里面。
       logger.debug({ node: id, phase: useAgent ? 'agent-leaf' : 'inproc-leaf', model, prompt }, '[omd/prompt] leaf');
@@ -4733,6 +4735,9 @@ async function executePlan(
               { node: id, model },
               '[omd/executor-dag] 派了 self_check 但 leaf 没报 selfRepair → 落账保持缺席 (不编 null: 那一格是「SDK 截断」)',
             );
+          // P3 S2 读回: `acceptance` 只在真派了判据时写键;leaf 没报 → 缺席 + 一行 (旧 runner / 测试替身)。
+          if (r.acceptance !== undefined) acceptance = r.acceptance;
+          else logger.warn({ node: id, model }, '[omd/executor-dag] 派了 self_check 但 leaf 没报 acceptance 台账 → 落账保持缺席');
         }
         // 工具序列 (2026-08-16): 既有三本账都答不了「它按什么顺序做了什么」, 而 hashline stale
         // 那条闸与 §8.5 攒了一年的分布, 判据都写在顺序上。见 ToolStep 的注。
@@ -5166,6 +5171,7 @@ async function executePlan(
         // S-1 (2026-08-30): 自修环三态落账。`!== undefined` 是三态的守门条件 —— 与
         // dag-record.ts:859 的读侧逐字同款; 任何 `?? null` 都会把「不适用」抹成「截断」。
         ...(selfRepair !== undefined ? { selfRepair } : {}),
+        ...(acceptance !== undefined ? { acceptance } : {}),
         // C-1 (2026-08-19): 注入文本 token。inproc 路径可观察 → 写真值或 0 (无上游);
         // agent 路径 SDK 自管 prompt → **不传 0** 一律 null (INV-1: 「拿不到」≠「零」)。
         // 通过条件 spread 落, 接住 A 片 `typeof === 'number'` 的读侧断言。

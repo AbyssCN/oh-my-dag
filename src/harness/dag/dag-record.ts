@@ -12,6 +12,7 @@
  * 读的人只会以为自己漏了什么, 故删。见 `dag/engine.ts` 头注。
  */
 import { Database } from 'bun:sqlite';
+import type { AcceptanceOutcome } from '../acceptance-run';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { omdRepoRoot } from '../repo-root';
@@ -211,6 +212,11 @@ export interface DagRunNode {
    * null → 写 null (JSON 化后是字面量 null), 对象 → 原样写 — 任何 `?? 0` / `?? null` 都把这格抹掉。
    */
   selfRepair?: { rounds: number; oracleExit: number[]; convergedAt: number | null } | null;
+  /**
+   * **`run_acceptance` 台账**(P3 S2, 2026-09-02)。真源 = `LeafResult.acceptance`;三态守法与 `selfRepair`
+   * 逐字同款 (缺席 / null / 对象), record() 靠 `!== undefined` 守。不加列: 节点级字段写在 `nodes` JSON 里。
+   */
+  acceptance?: { ran: boolean; rounds: number; last: AcceptanceOutcome | null } | null;
   /**
    * 失败输出的指纹 (sha1 前 12 位; 只对**失败的 command 节点**记)。
    *
@@ -919,6 +925,8 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
           // 对象 → 原样写。**严禁** `?? null` / `?? {rounds:0,...}` — 任一种都会把"缺席"读成
           // 截断或判据一次就绿, 抹掉下一条不变量。
           ...(r.selfRepair !== undefined ? { selfRepair: r.selfRepair } : {}),
+          // P3 S2: 同一条三态纪律。
+          ...(r.acceptance !== undefined ? { acceptance: r.acceptance } : {}),
         };
       });
       const usage = {

@@ -109,6 +109,7 @@ import {
 import { createSandboxedLeafRunner } from './hooks/sandboxed-leaf';
 import { loadSandboxConfig } from './hooks/command-policy';
 import { allowlistForRoot, createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from './command-leaf';
+import { renderAcceptanceOutcome, runAcceptance, type AcceptanceOutcome } from './acceptance-run';
 import { runtimeAllowlistForRoot } from './env-facts';
 import { formatRepoChecksFailure, runRepoChecks } from './repo-checks';
 import type { RepoCheck } from './repo-checks';
@@ -1670,6 +1671,11 @@ export interface LeafCallScope {
    * **必须按调用新建** —— 跨调用复用等于拿上一个节点看过的版本放行这一个。
    */
   fileObservations?: Map<string, FileObservation>;
+  /**
+   * 本次调用的冻结判据 + `run_acceptance` 台账(P3 S2, 2026-09-02)。按调用新建: 判据是节点的, 台账是这一发的。
+   * 缺席 = 本次没派判据 → `run_acceptance` 不在工具面上。
+   */
+  acceptance?: { spec: SelfCheckSpec; rounds: number; last: AcceptanceOutcome | null };
 }
 
 /**
@@ -1878,8 +1884,26 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // 拿不到「后面还会不会起兄弟」这个事实**, 把判据建在拿不到的事实上等于没有判据。
     // 缺席那一路 (getter 返 undefined) 留给对话位 —— 它们压根不传这个 opt。
     fileObservations: () => touchSessionStore.getStore()?.fileObservations,
+    // P3 S2: `run_acceptance` 的执行体按调用从 ALS 取判据 —— 同一条「thunk 不是值」纪律。
+    // 白名单与 self_check 探针同源 (runtimeAllowlistForRoot, P2c);DAG-leaf 这条路 agentToolsOpts 不设
+    // `sandbox`(真隔离在进程级 bwrap), 所以这里也不包 —— 与同一叶子的交互 bash 逐字同一条边界 (INV-17)。
+    acceptance: () => {
+      const sc = touchSessionStore.getStore()?.acceptance;
+      if (!sc) return undefined;
+      return async () => {
+        const baseline = sc.last && sc.last.kind === 'exited' ? sc.last.failSet : null;
+        const outcome = await runAcceptance(sc.spec, { cwd, allowlist: selfCheckAllowlist(), baseline });
+        sc.rounds += 1;
+        sc.last = outcome;
+        return { text: renderAcceptanceOutcome(outcome), outcome };
+      };
+    },
   };
-  const baseTools = createOmdAgentTools(agentToolsOpts);
+  const baseToolsAll = createOmdAgentTools(agentToolsOpts);
+  // P3 S2: `run_acceptance` **不进装配期工具面** —— 零配置叶子 (无 self_check) 的 tools 数组与 system prompt
+  // 必须与接线前逐字节相同 (agent-tools.test.ts I-1 基线);它只在本次派了冻结判据时按调用追加 (INV-4)。
+  const acceptanceTool = baseToolsAll.find((t) => t.name === 'run_acceptance');
+  const baseTools = baseToolsAll.filter((t) => t.name !== 'run_acceptance');
   const hashlineTools = opts.hashlineEdit ? createHashlineCustomTools({ cwd }) : [];
   // 外部 MCP 双 meta-tool (SDD D-8): 零注册 → [] (meta-tools.ts:72-73) → 工具面与 prompt 前缀
   // 与接线前字节零变化 (I-1)。策略按调用求值 (getter 读 ALS): per-run 授权清单非空 → {allow},
@@ -1959,8 +1983,11 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     if (seatWantsMinimal && minimalTools.length === 0) {
       logger.warn({ model, want: MINIMAL_TOOLFACE_TOOLS }, '[agent-leaf] 极简工具面一个都没匹配上 → 退回全工具面');
     }
-    const perCallTools = wantMinimalFace ? minimalTools : fullTools;
-    const perCallSystemPrompt = input.profile || wantMinimalFace
+    // P3 S2 (INV-4): `run_acceptance` 只在本次派了冻结判据时追加到面上 —— 没判据的节点连这个名字都看不到,
+    // 不给模型一个「调了就拒」的假手;有判据时极简面与全面都带它 (它就是验收那只手)。
+    const withAcceptance = Boolean(input.self_check) && acceptanceTool !== undefined;
+    const perCallTools = withAcceptance ? [...(wantMinimalFace ? minimalTools : fullTools), acceptanceTool!] : wantMinimalFace ? minimalTools : fullTools;
+    const perCallSystemPrompt = input.profile || wantMinimalFace || withAcceptance
       ? buildLeafSystemPrompt({ cwd, tools: perCallTools, contextFiles })
       : defaultSystemPrompt;
     // Claude 订阅通道 (NOTES 2026-08-10): claude-code:* 不在两栈, 循环走 SDK (下方调用点分派)。
@@ -2037,9 +2064,11 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
      * ⚠ 换工具面同时要换 systemPrompt(工具清单在里面),两者不同步 = 模型照着 prompt 调不存在的工具。
      *   代价是这一发的前缀在第二轮变一次(多一次 cache 写),之后稳定。
      */
+    // P3 S2: 极简面首轮后放开时, 验收那只手不许掉 —— 与 perCallTools 同一条件追加。
+    const escalatedBase = withAcceptance ? [...fullTools, acceptanceTool!] : fullTools;
     const escalatedTools = advisorRecorder
-      ? [...fullTools, createAdvisorTool({ advisor: opts.advisor!, seatCoord: model, transcript: () => advisorRecorder.serialize() })]
-      : fullTools;
+      ? [...escalatedBase, createAdvisorTool({ advisor: opts.advisor!, seatCoord: model, transcript: () => advisorRecorder.serialize() })]
+      : escalatedBase;
     const escalatedSystemPrompt = buildLeafSystemPrompt({ cwd, tools: escalatedTools, contextFiles });
 
     // filesTouched 采集 (2026-07-20 修产物闸冤杀): start 记 toolCallId→path 候选,
@@ -3036,6 +3065,11 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
           ? null
           : (selfCheckFollowUp ? selfRepairLedger : { rounds: 0, oracleExit: [], convergedAt: null })
         : null,
+      // P3 S2 台账 (三态): 没派判据 → 键缺席; 派了 → {ran, rounds, last}; 派了但 ALS 里没有作用域 (不该发生,
+      // 只在 wrapper 被绕过时) → null 留证据。`ran` 只认 run_acceptance 的调用, 模型自己 bash 敲的不算。
+      ...(inputSelfCheck
+        ? { acceptance: (() => { const sc = touchSessionStore.getStore()?.acceptance; return sc ? { ran: sc.rounds > 0, rounds: sc.rounds, last: sc.last } : null; })() }
+        : {}),
       // S1 spin-route 档 1 落账 (D-5 additive, INV-6): 路径启用但未触发 = []; 路径未启用 = 字段缺席
       // (opts.spinRoute === false 或 env OMD_SPIN_ROUTE=0 关)。既有消费者读 selfRepair 不受影响。
       ...(spinRouteEnabled && spinRouteEntries.length > 0
@@ -3065,6 +3099,8 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
         // 版本守卫的观察台按调用新建 (与 writeDenials 同一格): 上一个节点看过什么,
         // 与这一个节点能不能覆写, 是两件事。
         fileObservations: new Map(),
+        // P3 S2: 冻结判据随调用入 ALS, run_acceptance 的执行体只认这一份。
+        ...(input.self_check ? { acceptance: { spec: input.self_check, rounds: 0, last: null } } : {}),
       },
       async () => ({ ...(await runOnce(input)), gates }),
     );

@@ -6,6 +6,7 @@
  * omd-pi provider runner(随 provider slice)。测试注入 fake。
  */
 import type { ContentPart, ModelUsage } from '../model/gateway';
+import type { AcceptanceOutcome } from './acceptance-run';
 import type { SelfCheckSpec } from './conductor-plan';
 import type { AgentEvent } from '@earendil-works/pi-agent-core';
 import type { LeafProfile } from './profiles/profile';
@@ -201,6 +202,12 @@ export interface LeafGateStates {
 export interface AgentLeafResult {
   text: string;
   usage: ModelUsage;
+  /**
+   * **`run_acceptance` 台账**(P3 S2, 2026-09-02)。三态: 整个字段缺席 = 本次没派冻结判据(旁路);
+   * `null` = 派了但没有 acceptance 作用域(wrapper 被绕过, 留证据);对象 = 派了 —— `ran` 只认
+   * `run_acceptance` 的调用次数 > 0, 模型自己 bash 敲的一律不算;`last` 是最后一次的结构化结果。
+   */
+  acceptance?: { ran: boolean; rounds: number; last: AcceptanceOutcome | null } | null;
   /**
    * 本次调用**脚手架**的版本哈希(2026-07-31)—— 进 Langfuse 的 `promptVersion`。
    *
