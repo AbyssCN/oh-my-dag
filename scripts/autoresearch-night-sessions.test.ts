@@ -13,6 +13,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AggregatedFitness } from '../src/eval/replay/fitness';
 import type { CodeCard, EvolveCard, SessionCard } from '../src/eval/replay/session-card';
+import { freezeCorpus, writeManifest, type CorpusItem } from '../src/eval/replay/corpus';
+import { VARIANT_VERSION } from '../src/eval/replay/variant';
+import type { LiveProviderContext } from './autoresearch-replay';
 import type { GenerationRecord } from './autoresearch-session';
 import {
   NIGHT_BUDGET_STOP,
@@ -279,6 +282,82 @@ describe('CLI (GWT-4 端到端: accepted 为空仍写出 results.json 并退 0)'
   });
 });
 
+// ── 缺口 1: S1/S2 真 live 接线 ────────────────────────────────────────────
+
+/** 冻结语料的座位签名 —— live provider 与变异算子都必须拿到这一套, 不许各自另找。 */
+const LIVE_SEATS: Record<string, string> = {
+  conductor: 'minimax-cn:MiniMax-M3',
+  worker: 'minimax-cn:MiniMax-M3',
+  verifier: 'openai-codex:gpt-5.6-sol',
+};
+
+/** 写一份最小冻结语料 (screen 1 / main 1 / heldout 1), 返回可直接喂 runCards 的 opts。 */
+function makeLiveFixture(): { root: string; opts: SessionsOpts } {
+  const root = mkdtempSync(join(tmpdir(), 'omd-night-live-'));
+  const items: CorpusItem[] = [0, 1, 2].map((i) => ({
+    id: `item-${i}`,
+    prompt: `synthetic prompt ${i}`,
+    srcRunId: `run-${i}`,
+  }));
+  const manifest = freezeCorpus(items, { seats: LIVE_SEATS, targetCounts: [1, 1, 1] });
+  writeManifest(join(root, 'manifest.json'), manifest);
+  return {
+    root,
+    opts: {
+      cwd: root,
+      manifestPath: 'manifest.json',
+      nightDir: join(root, 'night'),
+      nightBudgetMinutes: 480,
+    },
+  };
+}
+
+describe('S1/S2 默认执行路真接 live (缺口 1)', () => {
+  test('LIVE_SESSION_WIRED: 评估吃的是 liveProvider 的文本, 不是 stub 的 canned plan', async () => {
+    const { opts } = makeLiveFixture();
+    const seen: LiveProviderContext[] = [];
+    const deps: SessionsDeps = {
+      // 返一段不可解析为 plan 的文本 —— stub 的四个桶全都 parsePlan 通过 (validity=1),
+      // 所以「validity 读作 0」= 评估真吃了 live 文本。反向自检见文末。
+      liveProvider: async (_id, _prompt, ctx) => {
+        seen.push(ctx);
+        return 'NOT-A-PLAN';
+      },
+    };
+    const r = await runCards([evolveCard('live-1', { K: 1, maxGenerations: 1 })], opts, deps);
+
+    expect(seen.length).toBeGreaterThanOrEqual(1);
+    expect(r.cards[0]!.error).toBeUndefined();
+    expect(r.cards[0]!.curve[0]!.validity).toBe(0);
+    // 座位取冻结 manifest, 不取 config 现值 (C-4 同源)。
+    expect(seen[0]!.seats).toEqual(LIVE_SEATS);
+    // variant 目录必须指向本夜目录 —— 指错了, 子代 spec 读不回来, 进化静默退化成基线复读。
+    expect(seen[0]!.variantDir).toBe(join(opts.nightDir, 'variants'));
+    expect(seen[0]!.variant).toBe('baseline');
+  });
+
+  test('MUTATION_SEATS_WIRED: manifest.seats 送进 MutationContext (缺 seats 时默认算子 fail-closed)', async () => {
+    const { opts } = makeLiveFixture();
+    const seatsSeen: (Record<string, string> | undefined)[] = [];
+    const deps: SessionsDeps = {
+      liveProvider: async () => 'NOT-A-PLAN',
+      mutationProvider: async (_prompt, ctx) => {
+        seatsSeen.push(ctx.seats);
+        return JSON.stringify({
+          version: VARIANT_VERSION,
+          name: 'child',
+          extraAppend: ['fake mutation'],
+        });
+      },
+    };
+    const r = await runCards([evolveCard('live-2', { K: 1, maxGenerations: 2 })], opts, deps);
+
+    expect(r.cards[0]!.error).toBeUndefined();
+    expect(seatsSeen.length).toBeGreaterThanOrEqual(1);
+    expect(seatsSeen[0]).toEqual(LIVE_SEATS);
+  });
+});
+
 /**
  * 反向自检 —— **真跑读数** (改一处, 跑本文件 + autoresearch-promote.test.ts 共 32 条):
  *  · `runCards` 开头的零卡短路删掉              → 2 fail (GWT-4 两条: reason 缺席)
@@ -286,6 +365,10 @@ describe('CLI (GWT-4 端到端: accepted 为空仍写出 results.json 并退 0)'
  *  · `curveOf` 的 `known` 累积表改成只查本代    → 1 fail (赢家是 baseline 那条)
  *  · `curveOf` 的 `?? null` 改成 `?? 0`         → 1 fail (NULL ≠ 0 那条)
  *  · 分派改成全走 `runEvolve`                   → 1 fail (按基质分派那条)
+ *  · `defaultRunEvolve` 不传 `rawTextProvider` (退回 stub) → 1 fail
+ *    (LIVE_SESSION_WIRED: liveProvider 计数 0 且 validity 读回 1)
+ *  · `defaultRunEvolve` 不传 `seats`             → 1 fail (MUTATION_SEATS_WIRED: ctx.seats undefined)
+ *  · `LiveProviderContext.variantDir` 不传       → 1 fail (variantDir 指回仓库默认目录)
  *
  * ⚠ 证伪脚本自己也要 fail-closed: 把分派条件**反过来** (而不是全路由到 runEvolve) 会让 S1 卡
  *   落进 `defaultRunCode`, 于是真起一个 solve 子进程 —— 实测把整个证伪跑挂住。改法要挑

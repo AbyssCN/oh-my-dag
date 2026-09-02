@@ -33,7 +33,8 @@ import type {
   SessionCard,
   Substrate,
 } from '../src/eval/replay/session-card';
-import { loadCorpusFromPath } from './autoresearch-replay';
+import type { MutationProvider } from '../src/eval/replay/mutate';
+import { defaultLiveProvider, loadCorpusFromPath, type LiveProvider } from './autoresearch-replay';
 import {
   SESSION_BASELINE_VARIANT,
   runSession,
@@ -95,10 +96,20 @@ export interface SessionsOpts {
   nightBudgetMinutes: number;
 }
 
-/** 两条执行路 + 时钟, 全部可注入 (测试跑真编排, 零 LLM 零子进程)。 */
+/** 两条执行路 + 两个 LLM 注入点 + 时钟, 全部可注入 (测试跑真编排, 零 LLM 零子进程)。 */
 export interface SessionsDeps {
   runEvolve?: (card: EvolveCard, opts: SessionsOpts) => Promise<Omit<CardResult, 'wallMs'>>;
   runCode?: (card: CodeCard, opts: SessionsOpts) => Promise<Omit<CardResult, 'wallMs'>>;
+  /**
+   * S1/S2 的联机提供器。缺省 = `defaultLiveProvider` (真烧 token)。
+   * 测试装 fake → 整条 session 编排真跑, 零 HTTP。
+   */
+  liveProvider?: LiveProvider;
+  /**
+   * S1/S2 的变异算子。缺省 = `defaultMutationProvider` (由 `runSession` 兜底, 也真烧 token)。
+   * 测试装 fake → 变异这一跳也零 HTTP。
+   */
+  mutationProvider?: MutationProvider;
   now?: () => number;
 }
 
@@ -144,12 +155,29 @@ function evolveResultToCard(card: EvolveCard, r: SessionResult): Omit<CardResult
   };
 }
 
-/** S1/S2: 进程内 runSession, 语料/journal/session 全挂在本夜目录下 (不污染主账本)。 */
+/**
+ * S1/S2: 进程内 runSession, 语料/journal/session 全挂在本夜目录下 (不污染主账本)。
+ *
+ * ## 两个 LLM 座都在这里接上 (缺口 1)
+ *
+ * `runSession` 的两个 provider 都是**可注入且有默认**的, 而两个默认值指向相反的方向:
+ * rawText 默认回落 `stubVariantToRawText` (canned plan, 零 LLM —— 曲线照样有数, 但那是
+ * 假 fitness, 没有一处会红), 变异默认 `defaultMutationProvider` (缺 seats 直接抛)。
+ * 于是这条路必须**两个都显式装**: live provider 送 (variant, id, prompt) 进联机装配,
+ * `manifest.seats` 送进变异上下文。少装哪一个, 都由本文件配套测试的两条守着。
+ *
+ * variant 读盘根目录跟着本夜目录走 —— 指回仓库默认目录, 子代 spec 读不回来, 每个子代的
+ * 系统提示与基线逐字节相同, 进化静默退化成基线复读。
+ */
 async function defaultRunEvolve(
   card: EvolveCard,
   opts: SessionsOpts,
+  deps: SessionsDeps = {},
 ): Promise<Omit<CardResult, 'wallMs'>> {
   const corpus = loadCorpusFromPath(join(opts.cwd, opts.manifestPath), false);
+  const seats = corpus.manifest.seats;
+  const variantDir = join(opts.nightDir, 'variants');
+  const liveProvider = deps.liveProvider ?? defaultLiveProvider;
   const r = await runSession({
     corpus,
     K: card.K,
@@ -157,9 +185,13 @@ async function defaultRunEvolve(
     topM: card.topM,
     budgetMs: card.budgetMinutes * 60_000,
     sessionId: `night-${card.id}`,
-    variantDir: join(opts.nightDir, 'variants'),
+    variantDir,
     journalPath: join(opts.nightDir, 'journal.md'),
     sessionsDir: join(opts.nightDir, 'sessions'),
+    seats,
+    rawTextProvider: (variant, id, prompt) =>
+      liveProvider(id, prompt, { seats, variant, id, variantDir }),
+    ...(deps.mutationProvider ? { mutationProvider: deps.mutationProvider } : {}),
   });
   return evolveResultToCard(card, r);
 }
@@ -227,7 +259,8 @@ export async function runCards(
   if (cards.length === 0) return { cards: [], reason: NO_CARDS_REASON };
 
   const now = deps.now ?? Date.now;
-  const runEvolve = deps.runEvolve ?? defaultRunEvolve;
+  const runEvolve =
+    deps.runEvolve ?? ((card: EvolveCard, o: SessionsOpts) => defaultRunEvolve(card, o, deps));
   const runCode = deps.runCode ?? defaultRunCode;
   const deadline = now() + opts.nightBudgetMinutes * 60_000;
 

@@ -168,8 +168,19 @@ export interface SessionOptions {
   // ─── 注入 (test 替默认) ────────────────────────────────────────────────
   /** 替代默认变异 provider (mutate.ts 的 defaultMutationProvider 会主动 throw, 故意 fail-closed)。 */
   mutationProvider?: MutationProvider;
-  /** 替代默认 stub 的 rawText 提供器。给 (variant) → plan JSON 字符串。 */
-  rawTextProvider?: (variant: string) => Promise<string> | string;
+  /**
+   * 替代默认 stub 的 rawText 提供器。给 (variant, id, prompt) → plan JSON 字符串。
+   *
+   * ✎ 后两个形参是 live 路径要的: 真联机必须知道**这一题**的 prompt, 而 stub 只按 variant
+   * 分桶。只收 variant 的一元 fake 仍可直接传 (TS 允许少形参), 老调用点不动。
+   */
+  rawTextProvider?: (variant: string, id: string, prompt: string) => Promise<string> | string;
+  /**
+   * 冻结语料的座位签名, 原样送进每次 `MutationContext.seats`。
+   * 缺省 → `defaultMutationProvider` 抛 (没座位就走联机 = 没指定车型, fail-closed);
+   * 于是「注入了 fake 变异算子」的测试不必传, 而生产路径**必须**传。
+   */
+  seats?: Record<string, string>;
   /** 替代默认 writeVariant: (dir, spec) → 写出的完整路径。 */
   writeVariantSpec?: (dir: string, spec: VariantSpec) => string;
   /** 替代默认 Date.now。 */
@@ -231,7 +242,7 @@ function defaultSessionsDir(): string {
  * 切片 4 不重复测 (那是 slice 1 + 切片 1 自配的 33 个测试的领地)。 */
 function defaultRawTextProvider(
   variantDir: string,
-): (variant: string) => Promise<string> {
+): (variant: string, id: string, prompt: string) => Promise<string> {
   return async (variant: string) => {
     // 命中磁盘 → 仍走 stub 的 plan 文本 (生产路径在切片 5 接联机调 LLM, 这里不烧 token)。
     // readVariant 失败 (版本不匹配等) 透传, 让上层看见。
@@ -257,7 +268,7 @@ function childName(parentName: string, genIdx: number, childIdx: number): string
 async function evaluateVariantFitness(
   loaded: LoadedCorpus,
   variant: string,
-  rawTextProvider: (variant: string) => Promise<string>,
+  rawTextProvider: (variant: string, id: string, prompt: string) => Promise<string>,
 ): Promise<VariantFitness> {
   const zeros: AggregatedFitness = {
     planValidityRate: 0,
@@ -268,7 +279,8 @@ async function evaluateVariantFitness(
     planningTokensTotal: 0,
     n: 0,
   };
-  const rtp = (_id: string, _prompt: string) => rawTextProvider(variant);
+  // id / prompt 透传到 provider —— stub 不看它俩 (按 variant 分桶), live 靠它俩才成立。
+  const rtp = (id: string, prompt: string) => rawTextProvider(variant, id, prompt);
 
   // screen: split 不存在 (missing manifest split) → 返 n=0; 命中 (但 ids=[]) → 也返 n=0。
   const screenIds = loaded.splits.screen;
@@ -618,7 +630,7 @@ export async function runSession(opts: SessionOptions): Promise<SessionResult> {
   const now = opts.now ?? Date.now;
   const writeVariantSpec = opts.writeVariantSpec ?? writeVariant;
   const rawTextProvider = opts.rawTextProvider
-    ? (v: string) => Promise.resolve(opts.rawTextProvider!(v))
+    ? (v: string, id: string, prompt: string) => Promise.resolve(opts.rawTextProvider!(v, id, prompt))
     : defaultRawTextProvider(variantDir);
   const mutationProvider: MutationProvider = opts.mutationProvider ?? defaultMutationProvider;
 
@@ -800,6 +812,7 @@ export async function runSession(opts: SessionOptions): Promise<SessionResult> {
           genIdx,
           childIdx: cIdx,
           parentName,
+          ...(opts.seats ? { seats: opts.seats } : {}),
         };
         const childSpec = await mutateVariant(parentSpec, failure, ctx, { mutationProvider });
         const childNameStr = childName(parentName, genIdx, cIdx);

@@ -288,6 +288,14 @@ export interface LiveProviderContext {
   variant: string;
   /** 语料条目 id; 用于 trace 关联。 */
   id: string;
+  /**
+   * variant spec 的读盘根目录。缺省 = `<cwd>/runs/autoresearch/variants` (回放 CLI 的落点)。
+   *
+   * ✎ 夜链把 variant 写在本夜目录下 (不污染主账本), 于是读盘根目录必须跟着走 —— 指错了,
+   * `readVariant` 返 null, 每个子代都拿到与基线**逐字节相同**的系统提示, 整代进化静默退化成
+   * 基线复读, 而 fitness 曲线照样有数、没有任何一处会红。可空但不可猜。
+   */
+  variantDir?: string;
 }
 
 /**
@@ -361,7 +369,7 @@ export async function defaultLiveProvider(
   // P2 切片 1 (2026-09-01, C-1 / INV-1): 读 `runs/autoresearch/variants/<name>.json`,
   // 转 opts 后注入 conductorSystemPrompt。文件不存在 → readVariant 返 null → 转换返
   // undefined → conductorSystemPrompt 输出与无 variant 字段调用**逐字节相同** (snapshot 守恒闸)。
-  const variantDir = join(process.cwd(), DEFAULT_VARIANT_DIR);
+  const variantDir = ctx.variantDir ?? join(process.cwd(), DEFAULT_VARIANT_DIR);
   const variantOpts = variantSpecToPromptOpts(readVariant(variantDir, ctx.variant));
   const sys = conductorSystemPrompt({ profile: 'full', variant: variantOpts });
   const res = await llmCaller({
