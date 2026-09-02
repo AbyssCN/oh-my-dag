@@ -741,3 +741,57 @@ describe('REPLAY_CONCURRENCY — evaluateSplit 并发池: 更快且顺序不变'
     expect(peak()).toBeGreaterThan(1);
   });
 });
+
+// =====================================================================
+// REPLAY_RETRY —— 单题 provider 抛错: 有界重试, 耗尽记 invalid 带 error, 永不中断整段。
+// 2026-09-02 烟测: 一次 MiniMax 传输超时把整卡 gen 0 打死 (4 路并发 26 题白跑)。
+// 反向自检: 把 scoreOne 的 try/catch 拆掉 → RETRY-2 直接抛 → 红;
+//           把 `attempt <= retries` 改成 `< retries` → RETRY-1 首发失败后不再试 → 红。
+// =====================================================================
+describe('REPLAY_RETRY — 单题抛错有界重试, 耗尽记 invalid 不中断', () => {
+  let root: string;
+  afterEach(() => {
+    if (root) rmSync(root, { recursive: true, force: true });
+  });
+
+  test('RETRY-1 首发超时、第二发成功: 题有效, 该题调了 2 次', async () => {
+    const fx = makeLoadedCorpus(false);
+    root = fx.root;
+    const ids = fx.loaded.splits.main ?? [];
+    const calls = new Map<string, number>();
+    const provider: RawTextProvider = async (id) => {
+      const n = (calls.get(id) ?? 0) + 1;
+      calls.set(id, n);
+      if (id === ids[0] && n === 1) throw new Error('minimax: The operation timed out.');
+      return stubVariantToRawText('baseline');
+    };
+    const out = await evaluateSplit({
+      loaded: fx.loaded, split: 'main', rawTextProvider: provider, retries: 2, retryBackoffMs: 1,
+    });
+    expect(calls.get(ids[0]!)).toBe(2);
+    const first = out.perItem.find((r) => r.id === ids[0]);
+    expect(first?.planValidity).toBe(true);
+    expect(first?.error).toBeUndefined();
+  });
+
+  test('RETRY-2 一题恒抛: 不中断, 该题 invalid 带 error 原文, 其余题照常, 共 1+retries 发', async () => {
+    const fx = makeLoadedCorpus(false);
+    root = fx.root;
+    const ids = fx.loaded.splits.main ?? [];
+    let bad = 0;
+    const provider: RawTextProvider = async (id) => {
+      if (id === ids[1]) { bad++; throw new Error('minimax: The operation timed out.'); }
+      return stubVariantToRawText('baseline');
+    };
+    const out = await evaluateSplit({
+      loaded: fx.loaded, split: 'main', rawTextProvider: provider, retries: 2, retryBackoffMs: 1, concurrency: 3,
+    });
+    expect(bad).toBe(3);
+    expect(out.perItem.length).toBe(ids.length);
+    const item = out.perItem.find((r) => r.id === ids[1]);
+    expect(item?.planValidity).toBe(false);
+    expect(item?.error).toContain('timed out');
+    expect(out.aggregate.n).toBe(ids.length);
+    expect(out.perItem.filter((r) => r.planValidity).length).toBe(ids.length - 1);
+  });
+});

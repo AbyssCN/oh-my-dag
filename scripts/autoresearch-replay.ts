@@ -407,6 +407,8 @@ export interface ReplayItemResult {
   speedupCostBasis: SpeedupCostBasis | null;
   shapeDeclared: boolean;
   planningTokens: number;
+  /** provider 重试耗尽后的错误原文 (该题记 invalid, 不中断整段)。成功题无此字段。 */
+  error?: string;
 }
 
 /**
@@ -425,7 +427,19 @@ export interface EvaluateSplitInput {
    * 27 题 ≈ 43 min, 一代 K=4 ≈ 3h —— 「分钟/代」只有并发才成立。perItem 顺序仍按 split 内 id 序。
    */
   concurrency?: number;
+  /**
+   * 单题 provider 抛错的重试次数 (缺省 2) 与退避基数 ms (缺省 30_000, 第 k 次等 k×基数)。
+   * 重试耗尽 → 该题记 planValidity=false + error 原文, **不抛** —— 2026-09-02 烟测: 一次 MiniMax
+   * 传输超时 (+30s 熔断冷却) 把整张卡打死, gen 0 全丢。退避 ≥ 冷却窗才能跨过瞬时档。
+   */
+  retries?: number;
+  retryBackoffMs?: number;
 }
+
+const RETRIES_DEFAULT = 2;
+const RETRY_BACKOFF_MS_DEFAULT = 30_000;
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 export interface EvaluateSplitOutput {
   perItem: ReplayItemResult[];
@@ -438,9 +452,37 @@ export async function evaluateSplit(input: EvaluateSplitInput): Promise<Evaluate
   if (ids.length === 0) {
     return { perItem: [], aggregate: aggregateFitness([]) };
   }
+  const retries = Math.max(0, Math.floor(input.retries ?? RETRIES_DEFAULT));
+  const backoffMs = Math.max(0, input.retryBackoffMs ?? RETRY_BACKOFF_MS_DEFAULT);
   const scoreOne = async (id: string): Promise<ReplayItemResult> => {
     const prompt = loaded.prompts.get(id) ?? '';
-    const raw = await rawTextProvider(id, prompt);
+    let raw: string | undefined;
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        raw = await rawTextProvider(id, prompt);
+        break;
+      } catch (e) {
+        lastErr = e;
+        // fail-open 留证据 (仓规: catch 不许吞证据): 题 id + 第几发 + 错误原文。
+        process.stderr.write(
+          `[autoresearch-replay] 题 ${id} 第 ${attempt + 1}/${retries + 1} 发抛错: ${(e as Error).message}\n`,
+        );
+        if (attempt < retries) await sleep(backoffMs * (attempt + 1));
+      }
+    }
+    if (raw === undefined) {
+      return {
+        id,
+        planValidity: false,
+        fakeSerialPairs: 0,
+        speedupTheoretical: null,
+        speedupCostBasis: null,
+        shapeDeclared: false,
+        planningTokens: 0,
+        error: (lastErr as Error)?.message ?? String(lastErr),
+      };
+    }
     const parsed = parsePlan(raw, {
       knownTemplates: new Set<string>(),
       knownServers: new Set<string>(),
