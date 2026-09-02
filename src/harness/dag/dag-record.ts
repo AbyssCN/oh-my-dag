@@ -510,6 +510,8 @@ export interface DagRunRecord {
    *   坏 JSON / 词表外形状 = 按 NULL 读 (`isSpecWrite` 把关), 不编一个 kind。
    */
   specWrite?: SpecWrite;
+  /** SH-1 图式卡 id (`shape_id` 列)。读侧 `rowToRecord` 早就在写这个键, 类型此前缺席; 缺席 = 老行 / 没声明。 */
+  shapeId?: string;
 }
 
 export interface DagRecorder {

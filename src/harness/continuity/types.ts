@@ -260,7 +260,7 @@ export interface DagMetadata {
    * optional = 向后兼容旧 _dag.json (缺此字段 → 不可重放, 仅 resume)。
    * 类型用结构面而非 import ConductorPlan — continuity 层不依赖 conductor-plan 模块 (层次单向)。
    */
-  plan?: { name: string; description?: string; nodes: Record<string, unknown> };
+  plan?: { name: string; description?: string; shape?: string; nodes: Record<string, unknown> };
   /** plan-memory: 用户任务原文 (family 聚类的匹配键; resume/预构造路径可缺)。 */
   taskText?: string;
   /**

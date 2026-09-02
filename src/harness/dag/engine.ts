@@ -1439,7 +1439,9 @@ async function executePlan(
       createdAt: new Date().toISOString(),
       generation: dagGeneration,
       // plan-memory 缺口①: 全量 plan + 任务原文写入磁盘 (此前只存骨架, 图的"肉"随进程丢弃)。
-      plan: { name: plan.name, ...(plan.description ? { description: plan.description } : {}), nodes: plan.nodes },
+      // shape 也进盘 (2026-09-03): dag_resume 从这里重建 plan, 少了它, 续跑那一行的 shape_id 就是 null ——
+      // 与首跑同一张图式卡却在账本里读成「没声明」(§静默坑 1: 没记 ≠ 没声明)。
+      plan: { name: plan.name, ...(plan.description ? { description: plan.description } : {}), ...(plan.shape ? { shape: plan.shape } : {}), nodes: plan.nodes },
       taskText: task,
     });
     if (continuity.resume) {
