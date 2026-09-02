@@ -72,6 +72,14 @@ const DYNAMIC_ENTRIES: Record<string, string> = {
     '**benchmark 靶子**: `eval/tasks/medium.ts` 与 `large.ts` 都把这个路径列进目标集 —— ' +
     'eval 会清空它让 fleet 照 SPEC 重建。⚠ `planToMermaid` 生产零消费者, ' +
     '存在的唯一理由就是当靶子; 删它会同时打断两个 fixture。',
+  'src/harness/lead/coverage.ts':
+    'P3 契约 D-23 / INV-18 覆盖三分法**字面量的落盘处** (CARD_COVERED / COMPILER_COVERED / PRIMITIVE_EXCLUDED): ' +
+    '消费方 = colocated 的 `lead-tools-coverage.test.ts` (三张表两两不相交、并 = PRIMITIVE_IDS、与契约逐元素相等)。' +
+    '生产零消费者是设计 —— 它是契约绊线的真源, 与 eval fixture 同类; 契约改字面量时改它, 不改测试。',
+  'src/harness/goal/pin-legacy-path.ts':
+    'P3 S6b 测试夹具: 16 个钉 P3 之前执行路径的测试文件 import 它 (goal/*.test.ts 14 · test/core 2), ' +
+    'beforeAll/afterAll 设 OMD_ORCHESTRATING_LOOP=0。测试刻意不算根, 所以它是可预期的孤儿。' +
+    '退出条件: v1 / flat-first / chain 路径退役时, 连同那 16 个文件里的旧路径用例一起删。',
   'src/mcp/client/fixtures/stdio-ping-server.ts':
     'MCP client 真传输测试的 fixture server, 按**路径字符串**拉起: `mcp/client/pool.test.ts` 的 ' +
     'FIXTURE = 这个路径 → `StdioClientTransport({ command: "bun", args: [<它>] })` 起真子进程。' +
@@ -130,33 +138,9 @@ describe('可达性 — 每个非测试 .ts 都从生产入口 import 得到', (
         '而"冻结"只有确定性发生器做得到。消费方 = S2 的实验脚本, 尚未落地。' +
         'S2 若被裁掉, 本条与该文件一起删。',
     },
-    // P3 契约 S1(lead 工具注册表): 消费方是 S6b(`goal/orchestrating-loop.ts` 与
-    // `src/mcp/tools/chat.ts` 接线 `createLeadTools`),契约明写「S1 只造这个模块本身,
-    // 不接线进 run-goal / chat(接线是 S6b 的事)」—— 今天只有本模块自带的
-    // `lead-tools-*.test.ts` 在用它们,测试刻意不算根,所以是可预期的孤儿而不是死码。
-    // S6b 接上之后这 12 条与本注释一起删。
-    ...Object.fromEntries(
-      [
-        'src/harness/lead/types.ts',
-        'src/harness/lead/render-manual.ts',
-        'src/harness/lead/coverage.ts',
-        'src/harness/lead/tools/index.ts',
-        'src/harness/lead/tools/work.ts',
-        'src/harness/lead/tools/spawn.ts',
-        'src/harness/lead/tools/map.ts',
-        'src/harness/lead/tools/explore.ts',
-        'src/harness/lead/tools/best-of.ts',
-        'src/harness/lead/tools/research.ts',
-        'src/harness/lead/tools/decompose.ts',
-        'src/harness/lead/lead-prompt.ts', // P3 S5: lead 常驻 prompt, 消费方同上 (S6b)
-      ].map((f) => [
-        f,
-        {
-          ticket: 'docs/plan/2026-09-02-p3-orchestrating-loop-contract.md',
-          why: 'P3 S1: lead 工具注册表,消费方 = S6b 的两入口接线(D-22),尚未落地。',
-        },
-      ]),
-    ),
+    // P3 S1 的 12 条 lead 件豁免 2026-09-02 (S6b) 删除 —— 照它自己写的退出条件: S6b 接上了
+    // (`goal/orchestrating-loop.ts` 与 `mcp/tools/chat.ts` 静态 import `createLeadTools` / `buildLeadSystemPrompt`),
+    // 本闸当场判它们可达。只剩 `lead/coverage.ts` 一件是设计上的生产零消费者, 进 DYNAMIC_ENTRIES (见该条)。
   };
 
   const tracked = (): Set<string> | null => {
