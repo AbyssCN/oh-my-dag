@@ -1149,13 +1149,43 @@ function buildVariantInjection(
  * 规划 prompt 时写下的那条判据 (「conductor 只能猜, 猜错就是假红」) —— 当时只补了一条路,
  * 修复轮那条一直空着, 而修复轮偏偏是最需要它的时候 (它专门在改被判失败的节点)。
  */
+/**
+ * prompt 里「仍必拒」那半句点名的 git 子命令 —— **由放行表推出的补集片段, 不是第二张手写表**。
+ *
+ * 2026-09-02 根因 (真 bug, 且它连红都不会): `bd1820aa` 按 owner 明令把 `add` / `commit` 放进
+ * `GIT_READONLY_SUBCOMMANDS`, 本段**前半句**是真源导出的常量, 自动跟着变了; **后半句**当年是
+ * 手写字面量 `never checkout/commit/add/push`, 没人动 —— 于是同一句话先放行 `add/commit`、
+ * 后又说 `never …commit/add`。conductor 读到后半句就不再产 `git add` / `git commit` 节点,
+ * **owner 开的那道闸在计划期等于没开**(机制在、生产零生效, 见 `docs/silent-failures.md`)。
+ *
+ * 修法 = 让两半由同一个真源推出: 候选写子命令过一遍放行表的补集。放行表再变一次(放行/收回),
+ * 这半句自动跟着缩/扩, 结构上无法再自相矛盾。
+ *
+ * ⚠ 为什么是"候选表的补集"而不是"完整禁表": 闸是**白名单**(默认拒), 禁集是开集, 列不全。
+ * 这里只挑 conductor 最可能顺手写出来的那几个写子命令点名 —— 点名是为了省一次假红,
+ * 不是为了穷举。真判据永远是 `commandBlockReason`, 不是这张表。
+ * (`reset` / `clean` 刻意不点名: 它们由 dangerous 闸给判词, 且 prompt 字节有硬预算 —— 见下。)
+ *
+ * ⚠ **字节预算**: `strong-coord.test.ts` 的「lean 省 >20%」闸在合并态只剩 **27 字节**余量
+ * (ratio 0.79982, 阈值 0.8), 而往两档共用段每加 1 字节 ratio 就往上走。本段修完占掉 25 字节,
+ * 余 2 —— 下一次动这段之前先量 ratio, 别以为"加一句话"是免费的。
+ *
+ * 一致性(两半 × 闸)由 `git-write-gate.test.ts` 的「prompt 两半与闸同一份判据」钉住。
+ */
+const GIT_WRITE_SUBCOMMAND_CANDIDATES = [
+  'checkout', 'restore', 'push', 'stash', 'rebase',
+] as const;
+export const GIT_BLOCKED_SUBCOMMANDS_FOR_PROMPT: readonly string[] =
+  GIT_WRITE_SUBCOMMAND_CANDIDATES.filter((sub) => !GIT_READONLY_SUBCOMMANDS.includes(sub));
+
 export function commandGateRules(): string[] {
   return [
     `executor:"command" — allowed binaries (first token MUST be one of these, else the node is REJECTED`,
     `unrun): ${DEFAULT_COMMAND_ALLOWLIST.join(' ')}.`,
     `Also blocked: shell metacharacters ; | & \` $ ( ) < > \\ and newlines (chain steps with && instead —`,
-    `each link is gated separately); git is READ-ONLY (${GIT_READONLY_SUBCOMMANDS.join('/')} only — never`,
-    'checkout/commit/add/push); no writes (rm/mv/cp/mkdir), no network (curl/wget), no env dumping.',
+    `each link is gated separately); git is ALLOW-LISTED (${GIT_READONLY_SUBCOMMANDS.join('/')} only —`,
+    `never ${GIT_BLOCKED_SUBCOMMANDS_FOR_PROMPT.join('/')} nor --amend); no writes (rm/mv/cp/mkdir),`,
+    'no network (curl/wget), no env dumping.',
     'A step that must SUCCEED on a non-zero exit (prove a test is red) sets field "expect_exit" (0..255) —',
     'do NOT express it in the shell (! / ; / $? / $() are all rejected, so such a node can never run).',
     'Need anything outside this set? Use executor:"agent" (it has real tools) — do NOT invent a command.',

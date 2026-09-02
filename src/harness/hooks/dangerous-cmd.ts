@@ -133,6 +133,18 @@ export const DANGEROUS_PATTERNS: readonly DangerousPattern[] = [
     re: /git\s+push\b.*(-f\b|--force(-with-lease)?\b)/i,
   },
   {
+    label: 'git-commit-amend',
+    // 2026-09-02 owner 裁决 (承 bd1820aa 那次放闸的边界): `add`/`commit` 被放行的语义是
+    // **「让 DAG 提交自己的产物」** —— 而 `--amend` 不产生新提交, 它**改写已有提交**, 不在那个
+    // 语义内。更要紧: amend 一个**已 push** 的提交, 再推就等价 force-push, 而 `push --force`
+    // 在全局 CLAUDE.md 里是「物理破坏」清单上的东西, 要 owner 逐次同意。
+    // 收紧它不削弱 owner 明令开的能力: DAG 要的是提交自己的产物, 从来不需要改写历史。
+    // ⚠ 边界如实写: 判据是**字面 flag**, 一条 `git commit -m "写 --amend 的文档"` 会被误伤 ——
+    // 取这个假阳性, 因为反向 (漏放一次改写历史) 的代价不可逆。
+    reason: 'git commit --amend 改写已有提交; 该提交若已 push, 再推等价 force-push (owner 逐次同意项)',
+    re: /git\s+commit\b[^\n]*\s--amend\b/i,
+  },
+  {
     label: 'git-reset-hard',
     reason: 'git reset --hard 丢弃工作区/已提交改动不可逆',
     re: /git\s+reset\s+--hard\b/i,
