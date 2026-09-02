@@ -349,6 +349,10 @@ import type { RunOutcomeKind } from '../run-outcome';
  * 内环**一轮**里两道闸各自的裁决(2026-08-06)。三态与两态刻意都不压平:
  *
  * · `criterion: 'none'` = 这一跑**没配**冻结判据 —— 不是"判据没过";
+ * · `criterion: 'invalid'` (P2b-runtime, 2026-09-02) = 判据命令**跑了但没给出判词**
+ *   (bare 整仓 pytest 命中 2/4/5) —— 与 `'none'`(压根没配)不同, 也与 `'red'`(命令给出了
+ *   "不对"的判词)不同, 是第三种独立状态: harness 自己没跑起来。分类时机的姊妹判据见
+ *   `acceptance-gate.ts` 的 `ProbeVacuityVerdict.status:'invalid'`, 这里是**运行时**同款判据;
  * · `judge: 'unreachable'` = judge 调不通 —— 不是"judge 说没成"。
  *
  * 两处若各自并进"没过"那一侧,`判据红 ∧ judge 说收敛` 这个要观测的组合就会被噪声灌满。
@@ -356,8 +360,8 @@ import type { RunOutcomeKind } from '../run-outcome';
 export interface RoundVerdict {
   /** 第几轮(与 `NodeCheckpoint.round` 同一套编号)。 */
   round: number;
-  /** 冻结判据这一道:绿 / 红 / 没配。 */
-  criterion: 'green' | 'red' | 'none';
+  /** 冻结判据这一道:绿 / 红 / 没配 / 命令自己没跑起来(没有判词)。 */
+  criterion: 'green' | 'red' | 'none' | 'invalid';
   /**
    * judge 这一道:说收敛 / 说没成 / 确定性闸替它说了 / 调不通。
    * `gate-rejected` (#148, 2026-08-17) = 判词由确定性闸合成 (整轮失败 / D-4 谎报完成),

@@ -39,7 +39,17 @@ import { ignitionPreflight, type FreezeCheckOpts, type ExclusiveLocksOpts } from
 import { releaseDreamLock } from '../dream/trigger';
 import { IgnitionBlockedError } from './ignition-blocked-error';
 import { loadPreFlightConfig } from './preflight-config';
-import { acceptanceCommandBlockReason, acceptanceVacuityReason, checklistDiscriminationReason, type ProbeItemOutcome } from './acceptance-gate';
+import {
+  acceptanceCommandBlockReason,
+  acceptanceVacuityReason,
+  checklistDiscriminationReason,
+  isBareWholeSuitePytest,
+  PYTEST_HARNESS_INCONCLUSIVE_EXITS,
+  type ProbeItemOutcome,
+} from './acceptance-gate';
+// P2b-runtime (2026-09-02): 冻结判据 harness-inconclusive 的运行尾巴要落进人读的 receipt,
+// 但必须有界 —— 复用既有的头+尾裁剪, 不新写第二份。
+import { failureExcerpt } from '../failure-trace';
 import {
   settleRubric as settleRubricDefault,
   verifyFrozen,
@@ -393,7 +403,7 @@ export interface RunGoalResult {
    *
    * 契约段就结束(没跑 execute)→ 缺席, 不编 —— 那时两条判据一条都没判过。
    */
-  criteria?: { judge: boolean; oracle: boolean };
+  criteria?: { judge: boolean; oracle: boolean; oracleInconclusive?: boolean };
   /**
    * **BLOCKED 异步出口** (D-Q): 环判定"没有外部输入推不动"而提前退出的原因。
    * 与 `converged: false` 的区别是**该怎么办**: 未收敛 = 轮数用尽/judge 说没达标, 再给几轮可能就成;
@@ -847,6 +857,13 @@ export function makeBaselineWaiver(baselineFailSet: readonly string[]): (text: s
 export const TERMINAL_RUBRIC_UNWIRED = 'rubric-unwired';
 
 /**
+ * P2b-runtime (2026-09-02): 判据命令自己没给出判词时的终态字面, 与 `TERMINAL_RUBRIC_UNWIRED`
+ * 同一种"归因不是判红"的例外, 走同一套接线机制 (`terminalLabel` / `oracleNote` / 摘要分支) ——
+ * 不新开一个 `RunOutcomeKind` (理由见 `RunGoalResult.terminalLabel` 的文档注释)。
+ */
+export const TERMINAL_CRITERION_INCONCLUSIVE = 'criterion-inconclusive';
+
+/**
  * INV-5 的判据: **这一格是"没接线", 不是"判红"**。
  *
  * `rubricVerdictInputs` 今天无人注入 (生产常态), 于是 rubric 分型恒非 success, 而终态被
@@ -861,8 +878,12 @@ export function rubricAcceptanceUnwired(input: {
   return input.kind === 'rubric' && !input.verdictPresent && !input.rejectionPresent;
 }
 
-/** INV-2 的两个红因字面 —— 下一步不同, 所以不许压成一个词。 */
-export type CriterionRedCause = 'rolled-back' | 'never-green';
+/**
+ * INV-2 的红因字面。`harness-inconclusive` (P2b-runtime, 2026-09-02) 与前两个不是同一根轴:
+ * 那两个假定判据命令**给出了**真判词 (要么曾绿过要么没有), 这一格是判据命令**没给出判词**
+ * (bare 整仓 pytest 命中 2/4/5) —— 不是"活没干成", 是"这条判据命令自己没跑起来"。
+ */
+export type CriterionRedCause = 'rolled-back' | 'never-green' | 'harness-inconclusive';
 
 /**
  * INV-2: 冻结判据判红时**红因分道**。
@@ -872,12 +893,27 @@ export type CriterionRedCause = 'rolled-back' | 'never-green';
  * 判据是 `everGreen` 一位: **口径是「低于绿快照」, 不是「谁回滚的」** —— 回滚只是今天已知
  * 唯一的成因, 把判据写成"重规划过"就会漏掉别的掉绿路径, 而漏掉的那格会被念成"从未达标"。
  * `replanned` / `recheckRan` 只进 detail (证据, 不是判据)。
+ *
+ * `harnessInconclusive` (可选, 缺省 false) 优先于 `everGreen` 判定 —— 命令自己没给出判词时,
+ * "曾经绿过吗"这个问题问不出答案, 不该被 `everGreen` 的既有取值 (通常是 false) 悄悄接住而
+ * 读成"从未达标"。`tail` 是有界的运行输出尾 (调用方已用 `failureExcerpt` 裁过), 缺席时
+ * 显式落 `(无)`, 不是空串静默吞掉 (仓规坑①)。
  */
 export function classifyCriterionRed(input: {
   everGreen: boolean;
   replanned: boolean;
   recheckRan: boolean;
+  harnessInconclusive?: boolean;
+  tail?: string;
 }): { cause: CriterionRedCause; detail: string } {
+  if (input.harnessInconclusive) {
+    return {
+      cause: 'harness-inconclusive',
+      detail:
+        '判据红因 harness-inconclusive: 冻结判据命令是不带路径的整仓 pytest 调用, harness 自己没跑起来 ' +
+        `(退出码 2/4/5), 不是代码被判红 —— 给一条指到具体测试文件的 pytest 命令。跑输出尾: ${input.tail ?? '(无)'}`,
+    };
+  }
   const evidence = `重规划=${input.replanned ? '是' : '否'} · 收尾复验=${input.recheckRan ? '跑了' : '没跑成'}`;
   return input.everGreen
     ? {
@@ -2106,6 +2142,10 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   // ② 新: 绿是陈旧的, 复验结果**直接顶替** oracleOk (它才是最终这棵树上的答案)。
   let oracleRecheckGreen = false;
   let oracleRecheckRan = false;
+  // P2b-runtime (2026-09-02): 这次复验命令自己是不是 bare 整仓 pytest 且命中 2/4/5 ——
+  // harness 没给出判词, 不能被下面 `oracleRecheckGreen` 的 false 悄悄接成"复验也没过"。
+  let oracleRecheckInvalid = false;
+  let recheckTail: string | undefined;
   if (
     runnable &&
     (!acceptCheckpointGreen || acceptStale) &&
@@ -2114,10 +2154,13 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   ) {
     try {
       const rc = await config.dag.commandRunner({ command: runnable.command });
-      oracleRecheckGreen = rc.exitCode === (runnable.expectExit ?? 0);
+      oracleRecheckInvalid = isBareWholeSuitePytest(runnable.command) && rc.exitCode !== null && PYTEST_HARNESS_INCONCLUSIVE_EXITS.has(rc.exitCode);
+      if (oracleRecheckInvalid) recheckTail = rc.text;
+      // 带&&防呆: harness-inconclusive 的退出码不该被读成"复验也命中了 expectExit"这种巧合绿。
+      oracleRecheckGreen = !oracleRecheckInvalid && rc.exitCode === (runnable.expectExit ?? 0);
       oracleRecheckRan = true;
       logger.info(
-        { command: runnable.command, exitCode: rc.exitCode, green: oracleRecheckGreen, why: acceptStale ? 'stale-green' : 'accept-没跑' },
+        { command: runnable.command, exitCode: rc.exitCode, green: oracleRecheckGreen, invalid: oracleRecheckInvalid, why: acceptStale ? 'stale-green' : 'accept-没跑' },
         acceptStale
           ? '[run-goal] 判据陈旧闸: accept 的绿是 resume 复用来的, 而本 run 重规划过 → 在最终这棵树上重量一次'
           : '[run-goal] #165① accept 没跑 (级联压死) → 冻结判据收尾复验',
@@ -2217,9 +2260,23 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   // 「曾转绿」的证据源有二, 取并: ① accept 的 checkpoint 是绿的 (那份绿是更早某轮量的);
   // ② 轮观察里有一轮 accept 绿 (verifier tap 看见的中间轮)。少任一个都会漏掉半张现场。
   const everGreenObserved = acceptCheckpointGreen || roundObs.some((o) => o.green) || greenSnapshot !== undefined;
+  // P2b-runtime (2026-09-02): 判据/accept 节点自己没给出判词的三种形状统一在这里判——不依赖
+  // `acceptLeaf?.failureKind === 'oracle-inconclusive'` 是否已经被引擎侧标上 (那一位在
+  // L1→L2 escalation 那条路上 `freezeCriterion` 被剥掉之后仍可能没标上, 见 D-K/engine.ts
+  // 的注), 而是直接读 run-goal 自己就有的 `acceptLeaf.exitCode` (D-K 执行器恒填这一位,
+  // 与 `escalatedCfg` 有没有带 `freezeCriterion` 无关) 与上面已经算好的 `oracleRecheckInvalid`。
+  const criterionHarnessInconclusive =
+    (isBareWholeSuitePytest(runnable?.command ?? '') && acceptLeaf?.exitCode != null && PYTEST_HARNESS_INCONCLUSIVE_EXITS.has(acceptLeaf.exitCode)) ||
+    oracleRecheckInvalid;
   const criterionRed =
     runnable !== null && !oracleOk
-      ? classifyCriterionRed({ everGreen: everGreenObserved, replanned, recheckRan: oracleRecheckRan })
+      ? classifyCriterionRed({
+          everGreen: everGreenObserved,
+          replanned,
+          recheckRan: oracleRecheckRan,
+          harnessInconclusive: criterionHarnessInconclusive,
+          tail: criterionHarnessInconclusive ? failureExcerpt(acceptLeaf?.output ?? recheckTail ?? '') : undefined,
+        })
       : undefined;
   // ── INV-1 终态棘轮 (D-1 / GWT-1) ────────────────────────────────────────────────
   //
@@ -2540,7 +2597,11 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
     acceptance.kind === 'executable'
       ? oracleOk
         ? ' · 冻结判据 ✅'
-        : ` · **冻结判据没过** (\`${acceptance.command}\` → ${acceptLeaf?.status ?? '没跑'})`
+        // P2b-runtime: harness-inconclusive 与"没过"必须分开念 —— 这一条不是"代码被判红",
+        // 是"这条命令自己没给出判词"。判在通用文案之前, 因为它是更精确的成因。
+        : criterionRed?.cause === 'harness-inconclusive'
+          ? ` · **冻结判据没给出判词** (harness-inconclusive: \`${acceptance.command}\` 命中退出码 2/4/5, 不是代码被判红)`
+          : ` · **冻结判据没过** (\`${acceptance.command}\` → ${acceptLeaf?.status ?? '没跑'})`
       : acceptance.kind === 'rubric'
         ? rubricRejection
           ? ` · **rubric 拒** (${rubricRejection.source}: ${rubricRejection.reason.slice(0, 80)})`
@@ -2597,8 +2658,14 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
             // rubricVerdictInputs), 所以复用那个 outcome; 「它其实是哪一格」由 terminalLabel 说。
             ? (rubricUnwiredTerminal ? 'not-converged' : 'oracle-failed')
             : 'not-converged';
-  /** INV-5 终态字面: 默认逐字等于 outcome, 只有"rubric 没接线"那一格独立成词。 */
-  const terminalLabel = rubricUnwiredTerminal ? TERMINAL_RUBRIC_UNWIRED : outcome;
+  // P2b-runtime: 判据命令自己没给出判词 (与 "rubric 没接线" 同类"归因不是判红"的例外) ——
+  // 不动 outcome/RunOutcomeKind 本身 (它可以照旧是 'oracle-failed', 与本契约"不新开 RunOutcomeKind"
+  // 的立场一致), 只有 terminalLabel 需要第三态。
+  const criterionInconclusiveTerminal = !oracleOk && criterionRed?.cause === 'harness-inconclusive';
+  /** INV-5 终态字面: 默认逐字等于 outcome, "rubric 没接线" / "判据没给出判词" 各自独立成词。 */
+  const terminalLabel = criterionInconclusiveTerminal
+    ? TERMINAL_CRITERION_INCONCLUSIVE
+    : rubricUnwiredTerminal ? TERMINAL_RUBRIC_UNWIRED : outcome;
   stages.push({
     stage: 'execute',
     // ⚠ `status` 保持原样 (三态一字未动, 全仓 `=== 'done'` 的消费者行为不变) ——
@@ -2612,6 +2679,9 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
         : outcome === 'budget-exhausted' ? `预算停: ${budgetStopped!.slice(0, 300)}`
         : outcome === 'infra-error' ? `引擎侧停: ${infraStopped!.slice(0, 300)} —— **别加轮数**, 这是引擎该修的`
         : outcome === 'blocked' ? `阻塞: ${blocked!.slice(0, 300)}`
+        // P2b-runtime: 判在 oracle-failed 通用文案之前 —— 同一个 outcome, 但成因是"判据命令
+        // 自己没给出判词", 不是"代码被判红" (与 rubricUnwiredTerminal 同一种"归因不是判红"处置)。
+        : criterionInconclusiveTerminal ? `${TERMINAL_CRITERION_INCONCLUSIVE}: ${criterionRed!.detail}`
         : outcome === 'oracle-failed' ? '环说成了但冻结判据(环外)没过 (D-I: 以判据为准)'
         // 两条路都落 delivered-with-red, 摘要必须说清是哪一条 —— 混着念就是在编现场:
         // converged=true 那条 accept **真跑真绿**, 照抄「accept 被级联压死没跑」会让读的人
@@ -2661,7 +2731,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
     sources,
     repoContext,
     converged,
-    criteria: { judge: judgeSaidOk, oracle: oracleOk },
+    criteria: { judge: judgeSaidOk, oracle: oracleOk, ...(criterionHarnessInconclusive ? { oracleInconclusive: true as const } : {}) },
     rounds: roundCount,
     reusedNodes,
     ...(blocked ? { blocked } : {}),

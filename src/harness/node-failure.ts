@@ -50,6 +50,23 @@ export type NodeFailureKind =
   /** command leaf 退出码 ≥0 但 ≠ `expect_exit`:断言没成立。 */
   | 'assert-failed'
   /**
+   * **冻结判据 / accept 节点自己的命令没给出判词**(P2b-runtime, 2026-09-02)。直接证据:
+   * 命令文本是不带路径的整仓 pytest 调用(`isBareWholeSuitePytest`)且退出码命中
+   * `PYTEST_HARNESS_INCONCLUSIVE_EXITS`(2/4/5,中断/collection 错误/用法错误/没收集到测试)。
+   *
+   * ## 为什么必须与 `assert-failed` 分开
+   *
+   * `assert-failed` 说「代码被判红」→ 该去读 `findRedOracles` 当真回归处理、可能触发升级重规划。
+   * 这一格说「命令自己没跑起来,没有判词」→ 不是代码的错,是这条命令写得不对(该指到具体测试文件)。
+   * 把后者读成前者 = `docs/silent-failures.md` S-32 的具体机制:一次 harness 自伤的红灯
+   * 冒充质量信号,拖着 `findRedOracles` 短路真验证器、进而让升级逻辑失焦重写正确代码。
+   *
+   * ⚠ 只由**知道命令文本、且知道这是冻结判据/accept 节点**的调用点判定
+   * (`node.command === fc.command`,或 accept 节点按构造本身就是它,见 engine.ts 调用点)——
+   * `classifyCommandExit` 本身拿不到命令文本,结构上判不了这一格(本文件规则 ①)。
+   */
+  | 'oracle-inconclusive'
+  /**
    * **命令超时,没跑出判词**(2026-08-07,X-4)。直接证据:退出码 `124` 且 ≠ `expect_exit`
    * —— 那是 omd 自己在 `command-leaf.ts` 的 `Promise.race` 里设的超时哨
    * (也是 GNU `timeout(1)` 的标准码,所以命令自带 `timeout` 时同样落这里,处置相同)。
@@ -162,6 +179,17 @@ export const FAILURE_KIND_INFO: Record<NodeFailureKind, FailureKindInfo> = {
     evidence: 'command leaf 退出码 ≥0 且 ≠ expect_exit',
     nextAction: '再试一轮可能就好 —— 断言本身可能对,只是这次没成立',
     retryable: true,
+  },
+  'oracle-inconclusive': {
+    // 与 dep-skip 同款: 没有对应的五态槽位 (书上没有"判据命令自己没跑起来"这一格)。
+    loopState: null,
+    evidence:
+      '冻结判据命令是不带路径的整仓 pytest 调用 (isBareWholeSuitePytest), 命中退出码 2/4/5 —— ' +
+      'harness 自己没跑起来',
+    nextAction:
+      '别读成回归, 也别原样重试 —— 给一条指到具体测试文件的 pytest 命令 (如 `pytest -q tests/x.py::y`), ' +
+      '或先让整仓能被 collect',
+    retryable: false,
   },
   'timed-out': {
     // STALLED 而非 ERROR: 引擎本身没出事, 是这一步没走完 (同 assert-failed 的环级归属)。

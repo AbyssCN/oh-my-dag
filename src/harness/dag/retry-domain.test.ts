@@ -209,3 +209,20 @@ describe('retry-domain · 模块边界 (INV-1 第二条 GWT)', () => {
     expect(planImportHits).toBe(0);
   });
 });
+
+// ── P2b-runtime (2026-09-02): 'oracle-inconclusive' 的域归属 —— 新增, 不改冻结区块 ──
+//
+// 加这一格是因为 P2b-runtime 把 'assert-failed' 之外的成因从 classifyCommandExit 分出来一格
+// (harness 自己没跑起来 ≠ 断言没成立), 而域分类只对 'assert-failed' 特判 → 这一格照 GWT2 的
+// "其余一律 generation" 落 generation, 是意料之中的域翻转, 这里把它钉成一条显式断言。
+describe('P2b-runtime: oracle-inconclusive 的域归属 (域翻转是意料之中的, 不是巧合)', () => {
+  test("classifyRetryDomain('command', 'oracle-inconclusive') === 'generation', 不是 'oracle'", () => {
+    expect(classifyRetryDomain('command', 'oracle-inconclusive')).toBe('generation');
+  });
+
+  test('域翻转之后, 声明了显式 max_retry 的节点会被照单全收 (今天没有节点这么声明, 但闸的行为要锁死)', () => {
+    // 与 GWT7 (generation 域: 显式 max_retry 压过一切) 同一条闸, 只是换了 failureKind 参数 ——
+    // 证明 retryBudgetFor 对 'oracle-inconclusive' 走的是普通 generation 路径, 不是隐藏的例外。
+    expect(retryBudgetFor('generation', 3, false, 'oracle-inconclusive')).toBe(3);
+  });
+});

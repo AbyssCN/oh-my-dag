@@ -104,6 +104,27 @@ describe('INV-2 纯核: classifyCriterionRed —— 两个红因字面不同', (
   test('复验跑没跑成写进 detail (fail-open 不吞证据)', () => {
     expect(classifyCriterionRed({ everGreen: true, replanned: true, recheckRan: false }).detail).toContain('没跑成');
   });
+
+  test('★ P2b-runtime: harnessInconclusive=true ⇒ cause 是 harness-inconclusive, detail 带尾巴文本, 优先于 everGreen', () => {
+    // 证伪: 把 classifyCriterionRed 里 harnessInconclusive 那条 if 挪到 everGreen 判定之后
+    // (或删掉) → cause 落回 'rolled-back'/'never-green', 本条红。
+    const c = classifyCriterionRed({
+      everGreen: false,
+      replanned: false,
+      recheckRan: false,
+      harnessInconclusive: true,
+      tail: 'ERROR: file or directory not found',
+    });
+    expect(c.cause).toBe('harness-inconclusive');
+    expect(c.detail).toContain('harness-inconclusive');
+    expect(c.detail).toContain('ERROR: file or directory not found');
+  });
+
+  test('P2b-runtime 回归防呆: 不传新参数的既有两态调用形状行为逐字不变', () => {
+    // 证明 harnessInconclusive/tail 是 optional-with-default, 不强迫既有调用点表态。
+    expect(classifyCriterionRed({ everGreen: true, replanned: true, recheckRan: true }).cause).toBe('rolled-back');
+    expect(classifyCriterionRed({ everGreen: false, replanned: true, recheckRan: true }).cause).toBe('never-green');
+  });
 });
 
 // ── 接线面: 绿快照真被照下来、真被还原回盘 ───────────────────────────────────

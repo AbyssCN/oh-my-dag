@@ -460,8 +460,12 @@ export interface DagRunRecord {
    * 读数板据此按 runId 去重再数,**不按行数** —— 按行数会把一次 goal 数成两次。
    *
    * ⚠ 缺席 = 这次不是 goal 路径 (`dag_run` 没有 judge/冻结判据两条判据) 或早于本次改动。
+   *
+   * `oracleInconclusive` (P2b-runtime, 2026-09-02, 可选): `oracle` 恒为 `false` 时的一个
+   * 附加区分位 —— true = 那个 false 是"判据命令自己没给出判词" (harness-inconclusive),
+   * 不是"命令给出了红判词"。零新列: 复用这个既有的 JSON 列, 不新开表结构。
    */
-  criteria?: { judge: boolean; oracle: boolean };
+  criteria?: { judge: boolean; oracle: boolean; oracleInconclusive?: boolean };
   /**
    * **这次 goal 的验收探针结论**(entry:'solve' 专列, 历史行为 'dag_goal';词表在 `goal/acceptance.ts` 的
    * `AcceptanceProbe`, 这里不重写)。存的是它的**逐字 JSON** —— 五条分支怎么判出来的、
@@ -518,7 +522,7 @@ export interface DagRecorder {
    * 而 `record` 是每张图跑完就落的 —— 执行段那张图写入磁盘时, 验收命令还没判。
    * 一次 goal 的两条记录都写同一份 (读数板按 runId 去重, 不按行数)。
    */
-  updateCriteria(runId: string, criteria: { judge: boolean; oracle: boolean }): void;
+  updateCriteria(runId: string, criteria: { judge: boolean; oracle: boolean; oracleInconclusive?: boolean }): void;
   /**
    * 回填 spec 写入磁盘裁决到该 runId 的**已有**记录 (#209)。
    *

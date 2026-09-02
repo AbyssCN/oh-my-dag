@@ -32,6 +32,7 @@
  * | `gate-rejected` | 退出码 <0 = command-leaf 闸拒,**命令压根没执行** |
  * | `missing-capability` | 退出码 127/126,命令找不到 —— 也是没执行 |
  * | `dep-skip` | 零执行零花费,它自己没有毛病 |
+ * | `oracle-inconclusive` | 冻结判据命令是 bare 整仓 pytest 且退出码 2/4/5 —— 命令没给出判词, 不是代码被判否 (P2b-runtime, 2026-09-02) |
  * | 任何非 `command` 的红 | agent/inproc 的红是执行体的事,不是 oracle 的判词 |
  *
  * **「oracle 说了不」与「oracle 没能说话」是两件事**,而只有前者的判词可以不问模型就写出来。

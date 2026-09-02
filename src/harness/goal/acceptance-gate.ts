@@ -370,7 +370,7 @@ export function isBareWholeSuitePytest(command: string): boolean {
 }
 
 /** bare 整仓 pytest 命中这几个退出码 = 「harness 自己没跑起来」, 不是「代码被判红」。 */
-const PYTEST_HARNESS_INCONCLUSIVE_EXITS = new Set([2, 4, 5]);
+export const PYTEST_HARNESS_INCONCLUSIVE_EXITS = new Set([2, 4, 5]);
 
 export async function probeVacuity(
   command: string,

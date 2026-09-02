@@ -155,4 +155,62 @@ describe('闸红短路 —— 端到端: 强模型那一发到底打没打', () 
     expect(r.results.gate!.failureKind).toBe('gate-rejected'); // 先确认走的是这一格
     expect(calls).toBeGreaterThan(0); // 再确认它没被短路吃掉
   });
+
+  test('★ 冻结判据是 bare 整仓 pytest, 退出码 4 → failureKind ≠ assert-failed, 不进 oracle-red, verifier 照常被问', async () => {
+    // P2b-runtime: bare 整仓 pytest 命中 2/4/5 = harness 自己没跑起来, 不是断言没成立。
+    // 证伪: 把 engine.ts D-K 执行器里的 criterionInconclusive 分支删掉 → failureKind 回落
+    // 'assert-failed' → findRedOracles 认它 → verifier 短路 → calls 回落 0。
+    let calls = 0;
+    const r = await runExecutorDagWithPlan(
+      plan({ accept: { goal: '判据', executor: 'command', command: 'pytest -q' } }),
+      baseConfig({
+        commandRunner: async () => ({
+          text: 'ERROR: file or directory not found: tests/, no tests ran',
+          usage: { in: 0, out: 0 },
+          timedOut: false,
+          signal: null,
+          exitCode: 4,
+        }),
+        freezeCriterion: { command: 'pytest -q' },
+        verifier: async () => {
+          calls++;
+          return { pass: true, reason: '强模型判过了, 目标已完成, 判据命令本身是坏的', usage: { in: 1, out: 1 } };
+        },
+      }),
+    );
+    expect(r.results.accept!.status).toBe('failed'); // 必须仍是 failed —— fail-closed, 不许翻绿
+    expect(r.results.accept!.failureKind).not.toBe('assert-failed');
+    expect(r.results.accept!.failureKind).toBe('oracle-inconclusive');
+    expect(findRedOracles(r.results)).toEqual([]);
+    expect(calls).toBeGreaterThan(0); // 真的问了强模型, 没被短路吃掉
+  });
+
+  test('★ Finding 1: 同一形状, 但子跑的 config 里没有 freezeCriterion (L1→L2 escalatedCfg 那条路) → 结论一样', async () => {
+    // escalatedCfg 把 freezeCriterion 整段剥掉 (run-goal.ts `{ ...config.dag }`), 于是
+    // `node.command === fc.command` 这套判据在这条路上恒答不出来。证伪: 若判据被写成依赖
+    // `config.freezeCriterion` 存在, 这条不配它的测试会失败回 'assert-failed'。
+    let calls = 0;
+    const r = await runExecutorDagWithPlan(
+      plan({ accept: { goal: '判据', executor: 'command', command: 'pytest -q' } }),
+      baseConfig({
+        commandRunner: async () => ({
+          text: 'ERROR: file or directory not found: tests/, no tests ran',
+          usage: { in: 0, out: 0 },
+          timedOut: false,
+          signal: null,
+          exitCode: 4,
+        }),
+        // 刻意不给 freezeCriterion —— 模拟 escalatedCfg 的状态。
+        verifier: async () => {
+          calls++;
+          return { pass: true, reason: '强模型判过了, 目标已完成, 判据命令本身是坏的', usage: { in: 1, out: 1 } };
+        },
+      }),
+    );
+    expect(r.results.accept!.status).toBe('failed');
+    expect(r.results.accept!.failureKind).not.toBe('assert-failed');
+    expect(r.results.accept!.failureKind).toBe('oracle-inconclusive');
+    expect(findRedOracles(r.results)).toEqual([]);
+    expect(calls).toBeGreaterThan(0);
+  });
 });
