@@ -470,11 +470,6 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
         reportPath: r.reportPath ?? '',
         summary: `${r.sources.length} 个来源真抓到正文\n${r.text.slice(0, 600)}`,
       };
-      return {
-        runId: basename(r.reportPath ?? '', '.md'),
-        reportPath: r.reportPath ?? '',
-        summary: `${r.sources.length} 个来源真抓到正文\n${r.text.slice(0, 600)}`,
-      };
     });
   // 长任务叶子超时: OMD_LEAF_TIMEOUT_MS 覆 240s 默认, 1h 兜底防泄漏 (session.abort 不杀子进程)。
   const leafTimeoutMs = (() => { const n = env.OMD_LEAF_TIMEOUT_MS ? Number.parseInt(env.OMD_LEAF_TIMEOUT_MS, 10) : NaN; return Number.isFinite(n) && n > 0 ? n : 3_600_000; })();

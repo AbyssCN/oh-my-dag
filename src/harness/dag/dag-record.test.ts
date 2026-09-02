@@ -10,8 +10,14 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createDagRecorder, recordDagRun } from './dag-record';
-import type { ExecutorDagResult } from './types';
+import { runExecutorDagWithPlan } from './engine';
+import type { AgentLeafRunner, LeafGateStates } from '../leaf-runners';
+import type { ConductorPlan } from '../conductor-plan';
+import type { ExecutorDagConfig, ExecutorDagResult, GenerateFn } from './types';
 
 /** 最小可记的一张图结果 (只填 record 真读的那几个字段)。 */
 const fakeResult = (planName: string, usage?: { leavesIn?: number; cacheHit?: number }): ExecutorDagResult =>
@@ -166,6 +172,81 @@ describe('留痕的派生面 — 命令原文 + 效果指标计数', () => {
     expect(nodes.find((n) => n.id === 'z')!.writeCounts).not.toBeUndefined();
     rec.close();
   });
+
+  /**
+   * 闸在场态进留痕 (2026-09-02) —— 端到端一条链: **注入的 agentRunner 报 gates → 引擎 →
+   * ExecutorDagResult → 留痕库 → 读回来能数出"多少节点根本没配写闸"**。
+   *
+   * 为什么走整条链而不是只喂一个假 result: `LeafGatePosture` 此前**只活在内存与一行日志里**,
+   * 缺的正是"引擎有没有把它接上留痕"这一跳。只测留痕层会得到一个谁也不填的字段 —— 那是
+   * 本仓反复踩的形态 (碰撞台账 `rows=2924 / strict=0`: 表在、列在、写侧没接)。
+   *
+   * 【怎么让它红 (反向自检, 三处任一)】
+   *  ① 摘掉 `dag-record.ts` 里 `...(r.gates ? { gates: r.gates } : {})` 那一行 → 三个节点的
+   *     `gates` 全变 undefined, 分母塌成 0 → 红;
+   *  ② 摘掉 `engine.ts` 里 `if (r.gates) gates = r.gates;` 或 leaf 组装处的 `...(gates ? { gates } : {})`
+   *     → 同上 (引擎那一跳断了, 留痕层再对也没用);
+   *  ③ 把 dag-record 的搬运改成 `r.gates ?? { writeAllow: 'unavailable', ... }` (给没报的补一个
+   *     "没配") → `noRunnerReport` 那条断言红 —— 那正是把「没记」写成「查过且没配」的抹平。
+   */
+  test('闸在场态随 run 台账落盘 —— "多少节点没配写闸" 数得出来, 且「没记」不被算进分母', async () => {
+    const execTree = mkdtempSync(join(tmpdir(), 'omd-gate-ledger-'));
+    try {
+      // 三个 agent 节点各报一种在场态; 第四个是 command 节点 —— 它这条链上**没人报**。
+      const posture: Record<string, LeafGateStates> = {
+        A: { writeAllow: 'enforced', mcpAllow: 'enforced', touchSession: 'enforced' },
+        B: { writeAllow: 'unavailable', mcpAllow: 'enforced', touchSession: 'unavailable' },
+        C: { writeAllow: 'unavailable', mcpAllow: 'unavailable', touchSession: 'unavailable' },
+      };
+      const agentRunner: AgentLeafRunner = async (input) => {
+        const id = Object.keys(posture).find((k) => input.prompt.includes(`#${k}#`))!;
+        return { text: '做完了', usage: { in: 1, out: 1 }, filesTouched: [], cwd: execTree, gates: posture[id]! };
+      };
+      const plan: ConductorPlan = {
+        name: 'gate-ledger',
+        nodes: {
+          A: { goal: '#A#', executor: 'agent', output_type: 'none' },
+          B: { goal: '#B#', executor: 'agent', output_type: 'none' },
+          C: { goal: '#C#', executor: 'agent', output_type: 'none' },
+          D: { goal: '不打模型的一格', executor: 'command', command: 'true', output_type: 'none' },
+        },
+      };
+      const generate: GenerateFn = async () => ({ text: 'unused', usage: { in: 1, out: 1 } });
+      const result = await runExecutorDagWithPlan(plan, {
+        conductorModel: 'test:conductor',
+        leafModel: 'test:leaf',
+        generate,
+        agentTemplates: new Map(),
+        agentRunner,
+      } as ExecutorDagConfig);
+
+      const rec = createDagRecorder({ path: ':memory:' });
+      const nodes = rec.get(rec.record(result, { runId: 'run-gates' }))!.nodes;
+      const byId = (id: string) => nodes.find((n) => n.id === id)!;
+
+      // ① 三态各自读得回原样 (引擎没在中途把它压平)。
+      expect(byId('A').gates).toEqual(posture.A!);
+      expect(byId('B').gates).toEqual(posture.B!);
+      expect(byId('C').gates).toEqual(posture.C!);
+      // ② command 节点缺席 —— 「这条链上没人报」**不是**「三道闸都没配」。
+      expect(byId('D').gates).toBeUndefined();
+
+      // ③ 本用例的全部意义: 这条数现在**查得出来**, 不必去翻日志。
+      const reported = nodes.filter((n) => n.gates !== undefined);
+      const noWriteGate = reported.filter((n) => n.gates!.writeAllow === 'unavailable');
+      expect({ reported: reported.length, noWriteGate: noWriteGate.length, ids: noWriteGate.map((n) => n.id).sort() }).toEqual({
+        reported: 3, // ← 分母 = **报了的**那些, 不是全量 4
+        noWriteGate: 2,
+        ids: ['B', 'C'],
+      });
+      // ④ 分母不许含没报的那格: 拿全量当分母会把"老行/command 节点"读成"没配写闸"。
+      const noRunnerReport = nodes.length - reported.length;
+      expect(noRunnerReport).toBe(1);
+      rec.close();
+    } finally {
+      rmSync(execTree, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   /**
    * fan-in 产物锚账的三态。形状与上面 `writeCounts` 那条同源, 单列是因为**第二格的含义不同**:

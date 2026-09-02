@@ -3,7 +3,7 @@ import type * as Gateway from '../../model/gateway';
 import type { AgentTemplate } from '../agent-templates';
 import type { ConductorPlan } from '../conductor-plan';
 import type { CavemanLevel } from '../caveman';
-import type { AgentLeafRunner, CommandLeafRunner, LeafModelRouter, LeafWatchdog, ResearchLeafRunner, ShellRun, ToolStep } from '../leaf-runners';
+import type { AgentLeafRunner, CommandLeafRunner, LeafGateStates, LeafModelRouter, LeafWatchdog, ResearchLeafRunner, ShellRun, ToolStep } from '../leaf-runners';
 import type { CheckpointManager } from '../continuity/checkpoint-manager';
 import type { VerifierFn } from '../verifier';
 import type { FaninSummaryConfig } from '../fanin-summary';
@@ -875,6 +875,19 @@ export interface LeafResult {
    * 读数板必须把这两种分开念, 否则"没记"会被读成"没跑过"。
    */
   writeCounts?: [total: number, noop: number];
+  /**
+   * 本节点三道闸的**在场态**(2026-09-02)。形状与语义的真源 = {@link LeafGateStates}。
+   *
+   * 为什么要它上到 LeafResult: `AgentLeafResult.gates` 此前只活在内存与一行日志里 ——
+   * 于是「这个节点根本没配写闸」与「配了且一次都没越界」在**任何可查的账**上都长得一样,
+   * 只能靠人翻日志。碰撞台账那次 `rows=2924 / strict=0` 的缺口是靠 `stats()` **查账**发现的,
+   * 散在日志里的行复制不出那种发现。本字段是把它送进 `DagRunNode.gates` 的那一跳。
+   *
+   * ⚠ **缺席 ≠ 三道闸都没配**(仓规 §静默坑 1 NULL≠0≠不适用):缺席 = **这条链上没人报**
+   * (command / inproc 节点、注入的 fake runner、早于本次改动的记录);`'unavailable'` 才是
+   * 「报了,而这道闸没配」。统计"没配写闸的节点占比"时,分母只能取**报了的**那些。
+   */
+  gates?: LeafGateStates;
   /**
    * **fan-in 产物锚账**(2026-08-07):`[全文里的路径锚总数, LLM 摘要没保住的个数]`。
    *

@@ -4258,6 +4258,10 @@ async function executePlan(
       // §8.5 效果指标的压缩形 [总写次数, no-op 次数]。undefined = 这条链上没人报 (inproc 节点),
       // 与 [0,0] (跑了但一次没写) 刻意分开 —— 读数板必须把两者分开念。
       let writeCounts: [number, number] | undefined;
+      // 三道闸的在场态 (2026-09-02): 只透传不判定, 目的地是留痕库的 DagRunNode.gates。
+      // undefined = 该 runner 不报在场态 (inproc 路径 / 注入的替身), 与 `'unavailable'`
+      // (报了, 而这道闸没配) 刻意分开 —— 抹平就再也数不出"多少节点根本没配写闸"。
+      let gates: LeafResult['gates'];
       // S1 埋点: agent leaf watchdog 采集, 只透传不判定。undefined = 该 runner 不统计 (inproc/旧 runner)。
       let watchdog: NodeCheckpoint['watchdog'];
       // S-1 (2026-08-30) 节点级 self_check 自修环的**引擎侧落账**。此前引擎全文 0 处 `selfRepair`,
@@ -4426,6 +4430,9 @@ async function executePlan(
         // runner 没报 writeEffects (旧 runner / 测试替身) → 保持 undefined, 不编一个 [0,0] 出来:
         // 那会把「没记」伪装成「跑了但没写」, 正是本轮反复在治的那种静默失真。
         if (r.writeEffects) writeCounts = [effects.length, noops.length];
+        // 闸在场态透传 (2026-09-02): runner 没报 → 保持 undefined, **不编三个 'unavailable'**
+        // (那会把「没记」伪装成「三道闸都没配」, 正是坑 #1 的形状)。
+        if (r.gates) gates = r.gates;
         // ── 刀② (2026-08-30 闸门三角结): 写域闸撞墙信号上抛 ─────────────────────────
         // 同一路径撞写域闸 ≥2 次 = 写集疑似写漏那条路径 (一次可能是手滑, 两次是执行体坚持
         // 认为该写那里)。判词本身不改 (write-allow 列清单那半是对的); 此前这个信号只活在
@@ -4656,6 +4663,9 @@ async function executePlan(
             ...(shellRuns ? { shellRuns } : {}),
             ...(watchdog ? { watchdog } : {}),
             ...(writeCounts ? { writeCounts } : {}),
+            // 闸在场态同走失败尾巴: "这个节点没配写闸" 在**失败**节点上比在成功节点上更该看得见
+            // (上面那条注说的就是这个形态 —— 最需要证据的那条路径恰好是把证据扔掉的那条)。
+            ...(gates ? { gates } : {}),
             ...(toolSteps ? { toolSteps } : {}),
             ...(toolStepsDropped ? { toolStepsDropped } : {}),
           });
@@ -4898,7 +4908,7 @@ async function executePlan(
         : [];
       // `artifactRoot` 跟着 `filesTouched` 一起出图: 一组相对路径离开它的根就没有意义,
       // 而 R2 隔离档下这个根与引擎进程的 cwd 不是同一个 (见 LeafResult.artifactRoot 的注)。
-      const leaf: LeafResult = { id, status: 'done', kind: useAgent ? 'agent' : 'inproc', model, output: text, deps: node.depends_on ?? [], usage, filesTouched, ...(artifactRoot ? { artifactRoot } : {}), ...(filesRead.length ? { filesRead } : {}), ...(toolCalls !== undefined ? { toolCalls } : {}), ...(shellRuns ? { shellRuns } : {}), ...(writeCounts ? { writeCounts } : {}), ...(toolSteps ? { toolSteps } : {}), ...(toolStepsDropped ? { toolStepsDropped } : {}), ...(writeCandidates.length ? { writeCandidates } : {}),
+      const leaf: LeafResult = { id, status: 'done', kind: useAgent ? 'agent' : 'inproc', model, output: text, deps: node.depends_on ?? [], usage, filesTouched, ...(artifactRoot ? { artifactRoot } : {}), ...(filesRead.length ? { filesRead } : {}), ...(toolCalls !== undefined ? { toolCalls } : {}), ...(shellRuns ? { shellRuns } : {}), ...(writeCounts ? { writeCounts } : {}), ...(gates ? { gates } : {}), ...(toolSteps ? { toolSteps } : {}), ...(toolStepsDropped ? { toolStepsDropped } : {}), ...(writeCandidates.length ? { writeCandidates } : {}),
         // S-1 (2026-08-30): 自修环三态落账。`!== undefined` 是三态的守门条件 —— 与
         // dag-record.ts:859 的读侧逐字同款; 任何 `?? null` 都会把「不适用」抹成「截断」。
         ...(selfRepair !== undefined ? { selfRepair } : {}),

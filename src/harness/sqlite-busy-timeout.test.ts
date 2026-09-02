@@ -444,40 +444,52 @@ describe('GWT-3b: 两个进程同写一库, 零 SQLITE_BUSY, 全 400 条落库',
     expect(row!.n).toBe(400);
   }, 60_000);
 
-  it('GWT-3b 反向自检: busy_timeout=0 + 真竞争 ⇒ 必须抛 SQLITE_BUSY', async () => {
-    // 闸本身要是活的。把 busy_timeout 设回 0, 重跑并发写, 期望至少一个子进程
-    // 退出码 2 且 stderr 带 BUSY_TEST_FAIL。这一条锁住「busy_timeout 是承重墙」这件事,
-    // 否则上面的 400 行测试可以被空跑 (无竞争) 蒙混过关。
+  // ── GWT-3b 反向自检 (2026-09-02 重写: 从"碰运气撞上"改成"锁已在手才放人") ──────────
+  //
+  // 旧形状 (被替换掉的那个) 是**两个对称子进程各写 200 行, 指望它们的事务窗口重叠**。
+  // 那要求两个独立调度的进程在毫秒级窗口上真撞上 —— 撞不上就 `someBusy === false`, 于是
+  // **一条没有任何问题的代码也会红**。本仓有「一条永远绿的闸不是闸」;它的反面同样成立:
+  // **一条靠运气才红的自检不是自检** —— 它出的红不携带信息, 读的人只会重跑一次了事,
+  // 久了就学会无视它, 那时它连"永远绿"都不如。
+  //
+  // 新形状去掉了运气那一格: **父进程先拿到写锁, 再放子进程去撞**。
+  //   ① 父进程 `BEGIN IMMEDIATE` + 一条 INSERT —— 这一步返回时 WAL 单写者锁**已经在手**
+  //      (不是"大概率在手"), 后面才 spawn 子进程;
+  //   ② 父进程**不到子进程退出不松手** (`Promise.race([exited, 2s 上限])`) —— 于是子进程那次
+  //      写尝试发生在"锁被持有"期间是**构造出来的**, 不是碰上的;
+  //   ③ 2s 上限只为反向臂 (见下) 不挂死。持有臂里子进程 busy_timeout=0 **从不阻塞**,
+  //      实测 67ms 退出, 距上限 ~30x;真被上限截断时不静默读错结果, 而是按
+  //      `releasedBy` 具名报出来 (缺席是一个有名字的值 —— 环境太慢 ≠ BUSY 没抛)。
+  //
+  // 【怎么让它红 (证伪方式)】把下面 writerZero 里那行 `PRAGMA busy_timeout = 0` 改成
+  // `= 20000`(任何 > 2000 的值都行): 子进程会等着父进程在 2s 上限处松手, 然后**写成功**
+  // 退出 0 → `expect(exitCode).toBe(2)` 红。实测两臂读数: 0 → releasedBy='child'/exit=2/67ms;
+  // 20000 → releasedBy='cap'/exit=0/2065ms。守的那件事没变: busy_timeout 是承重墙,
+  // 上面那条 400 行测试不是靠"没竞争"蒙混过关的。
+  it('GWT-3b 反向自检: 写锁确定性持有 + busy_timeout=0 ⇒ 必须抛 SQLITE_BUSY', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'omd-gwt3b-'));
     const dbPath = join(dir, 'gwt3b-zero.db');
 
     {
       const init = new Database(dbPath);
       init.run('PRAGMA journal_mode = WAL');
+      init.run('PRAGMA busy_timeout = 20000');
       init.run('CREATE TABLE t (id INTEGER PRIMARY KEY, who TEXT NOT NULL, payload TEXT NOT NULL)');
       init.close();
     }
 
+    // 子进程: 一条 INSERT 就够 —— 判据是"撞上被持有的写锁", 不是"写得多"。
+    // 200 行 + 50KB payload 那套是旧形状用来**拉长窗口碰运气**的, 新形状不需要窗口。
     const writerZero = [
       'import { Database } from \'bun:sqlite\';',
-      'const path = process.argv[2];',
-      'const who = process.argv[3];',
-      'const startId = parseInt(process.argv[4], 10);',
-      'const N = parseInt(process.argv[5], 10);',
-      'const db = new Database(path);',
+      'const db = new Database(process.argv[2]);',
       'db.run(\'PRAGMA journal_mode = WAL\');',
-      'db.run(\'PRAGMA busy_timeout = 0\');', // ← 反向自检: 关掉承重墙
+      'db.run(\'PRAGMA busy_timeout = 0\');', // ← 证伪杠杆: 改成 20000 → 本测试必红
       'try {',
-      '  const insert = db.prepare(\'INSERT INTO t (id, who, payload) VALUES (?, ?, ?)\');',
-      '  const payload = \'x\'.repeat(50_000);',
-      '  db.transaction(() => {',
-      '    for (let i = 0; i < N; i++) {',
-      '      insert.run(startId + i, who, payload);',
-      '    }',
-      '  })();',
+      '  db.prepare(\'INSERT INTO t (id, who, payload) VALUES (?, ?, ?)\').run(1, \'child\', \'x\');',
       '  process.exit(0);',
       '} catch (e: any) {',
-      '  console.error(\'BUSY_TEST_FAIL\', who, e.code ?? e.message);',
+      '  console.error(\'BUSY_TEST_FAIL\', e.code ?? e.message);',
       '  process.exit(2);',
       '}',
       '',
@@ -485,21 +497,33 @@ describe('GWT-3b: 两个进程同写一库, 零 SQLITE_BUSY, 全 400 条落库',
     const scriptPath = join(dir, 'writer-zero.ts');
     writeFileSync(scriptPath, writerZero);
 
-    const procs = await Promise.all([
-      Bun.spawn(['bun', 'run', scriptPath, dbPath, 'a', '0', '200'], {
-        stdout: 'pipe',
-        stderr: 'pipe',
-      }).exited,
-      Bun.spawn(['bun', 'run', scriptPath, dbPath, 'b', '200', '200'], {
-        stdout: 'pipe',
-        stderr: 'pipe',
-      }).exited,
-    ]);
+    // ① 先把写锁拿到手 —— 这一行返回 = 锁在手, 无时序假设。
+    const holder = new Database(dbPath);
+    holder.run('PRAGMA journal_mode = WAL');
+    holder.run('PRAGMA busy_timeout = 20000');
+    holder.run('BEGIN IMMEDIATE');
+    holder.run('INSERT INTO t (id, who, payload) VALUES (99, \'holder\', \'x\')');
 
-    // 承重墙测试里 transaction + 50KB payload 制造了毫秒级的写窗口重叠,
-    // busy_timeout=0 时必有一边拿到 SQLITE_BUSY → 退出码 2。
-    const someBusy = procs[0] === 2 || procs[1] === 2;
-    expect(someBusy).toBe(true);
+    // ② 锁在手之后才放人。
+    const proc = Bun.spawn(['bun', 'run', scriptPath, dbPath], { stdout: 'pipe', stderr: 'pipe' });
+    const HOLD_CAP_MS = 2_000;
+    const releasedBy = await Promise.race([
+      proc.exited.then(() => 'child-exit' as const),
+      new Promise<'hold-cap'>((r) => setTimeout(() => r('hold-cap'), HOLD_CAP_MS)),
+    ]);
+    holder.run('COMMIT');
+    holder.close();
+
+    const exitCode = await proc.exited;
+    const stderr = await new Response(proc.stderr).text();
+
+    // ③ 上限触发 = 判据没成立 (子进程在锁被持有的整段时间里没退出), 具名报出来 ——
+    //    别把"环境太慢/子进程没跑起来"读成"SQLITE_BUSY 没抛", 那是两件事。
+    expect({ releasedBy, exitCode, stderr }).toEqual({
+      releasedBy: 'child-exit',
+      exitCode: 2,
+      stderr: 'BUSY_TEST_FAIL SQLITE_BUSY\n',
+    });
   }, 60_000);
 });
 

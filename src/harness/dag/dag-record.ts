@@ -17,6 +17,7 @@ import { dirname, join } from 'node:path';
 import { omdRepoRoot } from '../repo-root';
 import type { ExecutorDagResult } from './engine';
 import type { NodeFailureKind } from '../node-failure';
+import type { LeafGateStates } from '../leaf-runners';
 import { deriveRunOutcome, type RunOutcomeKind } from '../run-outcome';
 import type { AcceptanceProbe } from '../goal/acceptance-gate';
 import { isSpecWrite, type SpecWrite } from '../goal/spec-write';
@@ -50,6 +51,22 @@ export interface DagRunNode {
    * `[0,0]` = 这个节点跑了但一次文件都没写。
    */
   writeCounts?: [total: number, noop: number];
+  /**
+   * 本节点三道闸的**在场态**(2026-09-02,来自 `LeafResult.gates`)。
+   *
+   * 记它是为了让「多少节点根本没配写闸」变成一条**查得出来的**数。在此之前 `LeafGatePosture`
+   * 只随结果出 leaf + 打一行日志 —— 而散在日志里的行**复制不出**碰撞台账那次
+   * (`rows=2924 · strict=0 / inferred=0`)的发现:那一条是靠查账查出来的。
+   *
+   * ⚠ **三态,读的时候别互相替代**(§静默坑 1):
+   *   · 字段缺席            = 这条链上没人报(command / inproc 节点、老行)—— **不是**"没配闸";
+   *   · `'unavailable'`     = 报了,而这道闸这次**没配**;
+   *   · `'enforced'`        = 判据面在场,闸真在判(≠ "没越界",那是另一件事)。
+   * 于是"没配写闸的节点占比"的分母只能取**记了这一位的**节点,拿全量当分母会把老行读成没配。
+   *
+   * 同 `command` 存原文那条纪律:存**原始在场态**不存派生的比率 —— 比率的口径以后会改。
+   */
+  gates?: LeafGateStates;
   /**
    * fan-in 产物锚账 `[路径锚总数, LLM 摘要没保住的个数]`(来自 `LeafResult.faninAnchors`)。
    * **三态**(缺席 = 没做过摘要 · `[0,0]` = 做了但全文没有锚, 尺子不适用 · `[N,k]` = 丢了 k 个)
@@ -850,6 +867,10 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
           ...(typeof r.exitCode === 'number' ? { exitCode: r.exitCode } : {}),
           ...(r.failureKind ? { failureKind: r.failureKind } : {}),
           ...(r.writeCounts ? { writeCounts: r.writeCounts } : {}),
+          // 闸在场态 (2026-09-02): 只搬运, 一个字不补。runner 没报 → 这一位缺席,
+          // **绝不**补一个 `?? { writeAllow: 'unavailable', ... }` —— 那正是把"没记"写成
+          // "查过且没配"的抹平, 而这一位量的恰恰是配没配。
+          ...(r.gates ? { gates: r.gates } : {}),
           // 缺席 = 这个节点没做过 fan-in 摘要;`[0,0]` 是**有意义的一格**(做了但全文没有锚)。
           // 用 `!== undefined` 是为了把这个意图写出来 —— ⚠ 不是因为真值判断会出错:
           // 数组恒为真值(`[]` 也是), 所以 `r.faninAnchors ?` 在这里**行为完全一样**
