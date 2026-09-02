@@ -492,6 +492,8 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       hashlineEdit: false,
       cwd,
       leafTimeoutMs,
+      // P3 S4 (owner 2026-09-02 裁): DAG worker leaf 精益面 —— 四只手 + 条件件 run_acceptance, prompt v2。
+      leanLeaf: true,
       ...(agentAdvisor ? { advisor: agentAdvisor } : {}),
       // S4 ext (D-1): 调用方按 run cwd 预加载注入。空数组 → 不传 customTools 键 = 工具面零变化 (D-4)。
       ...(extTools.length ? { customTools: extTools } : {}),
@@ -601,6 +603,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
             cwd: root,
             hashlineEdit: false, // 同上 (owner 2026-08-18): 两个装配点必须同档, 分叉就是两套工具面
             leafTimeoutMs,
+            leanLeaf: true, // 同上: 两个装配点同档 (P3 S4)
             ...(agentAdvisor ? { advisor: agentAdvisor } : {}),
             // 隔离档 = 生产 (branch worktree), 不是 eval —— 这里的 jail 里**要有 git**:
             // worktree 的 `.git` 是指针文件, 不挂就是"隔离叶里 git 全灭" (run 7d50fda2 实测,

@@ -110,6 +110,7 @@ import { createSandboxedLeafRunner } from './hooks/sandboxed-leaf';
 import { loadSandboxConfig } from './hooks/command-policy';
 import { allowlistForRoot, createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from './command-leaf';
 import { renderAcceptanceOutcome, runAcceptance, type AcceptanceOutcome } from './acceptance-run';
+import { buildLeafSystemPromptV2, LEAN_LEAF_TOOLS } from './leaf-prompt-v2';
 import { runtimeAllowlistForRoot } from './env-facts';
 import { formatRepoChecksFailure, runRepoChecks } from './repo-checks';
 import type { RepoCheck } from './repo-checks';
@@ -282,6 +283,14 @@ export interface AgentLeafRunnerOpts {
    * 座位走 pi 通道(测试里看不见 `allowedTools`),所以名单必须可注入。
    */
   minimalToolFaceSeats?: readonly string[];
+  /**
+   * **精益 worker leaf**(P3 S4 / D-10, owner 2026-09-02 裁): 工具面永久 = read/write/edit/bash(+ 有冻结判据时
+   * 的 run_acceptance), system prompt 走 `leaf-prompt-v2`(冻结前缀 + RUN FACTS 后缀)。作用域 = 无 `input.profile`
+   * ∧ 无 `opts.tools` ∧ `input.mcpAllow` 为空;mcp 授权非空时退回全面(mcp 工具必须仍在面上, INV-4)。
+   * 不挂首轮后放开(与座位极简机制不是一回事, 那套原样保留)。缺省 **关**: 生产 DAG 装配点开(assemble.ts),
+   * 对话位 / 零配置叶子逐字节不变(agent-tools.test.ts I-1 基线)。
+   */
+  leanLeaf?: boolean;
   /**
    * advisor 坐标(resolveSeatAdvisor('agent') 的产物,省略 = 无)。按座位通道分派:
    * claude-code 座 → 官方 server tool(settings.advisorModel,配对由 CLI/API 校验);
@@ -1972,8 +1981,14 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     const { provider, modelId } = parseModelRef(model);
     // 座位级极简工具面 (owner 2026-08-18)。显式的 profile.tools / opts.tools 永远胜过它 ——
     // 这只是"没人指定时按座位挑"的缺省。
+    // P3 S4 精益面 (D-10 / INV-4): 作用域三条件齐 → 四只手 (+ 条件件 run_acceptance), prompt 走 v2。
+    // mcpAllow 非空 → 不进精益 (退回全面, mcp 工具照挂); 座位极简机制排在它后面 (精益优先)。
+    const leanScope = opts.leanLeaf === true && !input.profile && !opts.tools && !(input.mcpAllow && input.mcpAllow.length > 0);
+    const leanTools = availableTools.filter((t) => LEAN_LEAF_TOOLS.includes(t.name));
+    const wantLeanFace = leanScope && leanTools.length > 0;
+    if (leanScope && leanTools.length === 0) logger.warn({ model, want: LEAN_LEAF_TOOLS }, '[agent-leaf] 精益工具面一个都没匹配上 → 退回全工具面');
     const seatWantsMinimal =
-      !input.profile && !opts.tools && (opts.minimalToolFaceSeats ?? DEFAULT_MINIMAL_TOOLFACE_SEATS).includes(modelId);
+      !wantLeanFace && !input.profile && !opts.tools && (opts.minimalToolFaceSeats ?? DEFAULT_MINIMAL_TOOLFACE_SEATS).includes(modelId);
     // 全工具面 = 这一发**升级后**要用的那副 (也是其它座位从头到尾用的那副)。
     const fullTools = input.profile ? toolsForProfile(leafProfile) : defaultTools;
     // 极简面**不过 `excluded`**: hashlineEdit 把 `edit` 排掉, 而台账只认 write/edit —— 见
@@ -1986,10 +2001,20 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // P3 S2 (INV-4): `run_acceptance` 只在本次派了冻结判据时追加到面上 —— 没判据的节点连这个名字都看不到,
     // 不给模型一个「调了就拒」的假手;有判据时极简面与全面都带它 (它就是验收那只手)。
     const withAcceptance = Boolean(input.self_check) && acceptanceTool !== undefined;
-    const perCallTools = withAcceptance ? [...(wantMinimalFace ? minimalTools : fullTools), acceptanceTool!] : wantMinimalFace ? minimalTools : fullTools;
-    const perCallSystemPrompt = input.profile || wantMinimalFace || withAcceptance
-      ? buildLeafSystemPrompt({ cwd, tools: perCallTools, contextFiles })
-      : defaultSystemPrompt;
+    const perCallToolsBase = wantLeanFace ? leanTools : wantMinimalFace ? minimalTools : fullTools;
+    const perCallTools = withAcceptance ? [...perCallToolsBase, acceptanceTool!] : perCallToolsBase;
+    const perCallSystemPrompt = wantLeanFace
+      ? buildLeafSystemPromptV2({
+          writeRoot: cwd,
+          ...(input.writeAllow ?? opts.writeAllow ? { writeSet: input.writeAllow ?? opts.writeAllow } : {}),
+          ...(input.self_check ? { acceptance: input.self_check } : {}),
+          allowlist: selfCheckAllowlist(),
+          minutesLeft: input.leafTimeoutMs !== undefined ? Math.max(0, Math.floor(input.leafTimeoutMs / 60_000)) : null,
+          contextFiles,
+        })
+      : input.profile || wantMinimalFace || withAcceptance
+        ? buildLeafSystemPrompt({ cwd, tools: perCallTools, contextFiles })
+        : defaultSystemPrompt;
     // Claude 订阅通道 (NOTES 2026-08-10): claude-code:* 不在两栈, 循环走 SDK (下方调用点分派)。
     // ⚠ sandboxRoot 模式下 claude CLI 的凭证目录 (~/.claude) 不在 bwrap 视图里 —— 订阅座位
     // 暂不支持沙箱叶, 要用得先把凭证挂载进视图 (二期, 见 NOTES)。
