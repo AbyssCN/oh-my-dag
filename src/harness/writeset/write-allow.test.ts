@@ -101,4 +101,13 @@ describe('resolveNodeWriteAllow —— output_path 是绝对路径时的归一 (
   test('outputPath 缺席 → 只回 writeSet 原样 (undefined 不当成一条声明)', () => {
     expect(resolveNodeWriteAllow(['src/a.ts'], undefined, ROOT)).toEqual(['src/a.ts']);
   });
+
+  // 怎么让它红: 把 writeSet 那一侧的归一去掉、只归一 outputPath → 本条红 (P2 审: 同一根因
+  // 在 writeSet 声明本身是绝对路径时原样留着, 与 root-relative 的 checkWriteAllowed 比不上)。
+  test('★ writeSet 里混了绝对条目 → 同样归一成相对 root, 不会因为声明是绝对的就永远比不上目标', () => {
+    const result = resolveNodeWriteAllow(['/repo/src/a.ts', 'docs/**'], undefined, ROOT);
+    expect(result).toContain('src/a.ts');
+    expect(result).not.toContain('/repo/src/a.ts');
+    expect(checkWriteAllowed('src/a.ts', result, ROOT).allowed).toBe(true);
+  });
 });

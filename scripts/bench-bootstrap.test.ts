@@ -54,6 +54,14 @@ describe('bench-bootstrap (E1b 容器配置引导)', () => {
     expect(() => benchSeatModels({ OMD_BENCH_CONDUCTOR_MODEL: 'a', OMD_BENCH_WORKER_MODEL: 'b' })).toThrow(/齐给/);
   });
 
+  test('★ OMD_BENCH_MODEL + OMD_BENCH_JUDGE_MODEL 同给, 三件套缺席 → throw (P2 审: 不许静默落单模型分支吞掉 judge)', () => {
+    // 反向自检: 把 anyRole 的 `Boolean(c || w || v || j)` 改回不含 j 的版本 → 本条当场绿变红
+    // 反面 —— 会静默落进单模型分支, 18 座全钉 gpt-x, OMD_BENCH_JUDGE_MODEL 被吞, 不 throw。
+    expect(() =>
+      benchSeatModels({ OMD_BENCH_MODEL: 'gpt-x', OMD_BENCH_JUDGE_MODEL: 'deepseek-v4-pro' }),
+    ).toThrow(/齐给/);
+  });
+
   test('writeBenchConfig 保留既有其它键, models 整段覆盖', () => {
     const root = mkdtempSync(join(tmpdir(), 'bench-boot-'));
     try {

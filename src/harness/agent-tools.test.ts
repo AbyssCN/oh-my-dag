@@ -93,6 +93,19 @@ describe('read 域闸 confineReadsTo (P2d 子修 1: DAG leaf 读域收口, chat/
     const { read } = toolset(root);
     expect(text(await run(read!, { path: join(outside, 'secret.txt') }))).toContain('OUTSIDE-CONTENT');
   });
+
+  // 反向自检: 把下面 abs() 的 resolve() 包装去掉 (还原成 `abs(cwd, path)` 原样传给 readable),
+  // 本条当场红 —— `..` 没被归一, 前缀比较认出的 `${root}/../outside/...` 仍落在 root 前缀里。
+  it('★ 给了 confineReadsTo: `${root}/../outside/x` 这种带 `..` 的绝对路径同样拒 (P2 审 P1)', async () => {
+    const root = fixture();
+    const outside = mkdtempSync(join(tmpdir(), 'omd-agent-tools-outside-'));
+    writeFileSync(join(outside, 'secret.txt'), 'OUTSIDE-CONTENT');
+    const { read } = Object.fromEntries(
+      createOmdAgentTools({ cwd: root, confineReadsTo: root }).map((t) => [t.name, t]),
+    );
+    const sneaky = `${root}/../${outside.split('/').pop()}/secret.txt`;
+    await expect(run(read!, { path: sneaky })).rejects.toThrow(/BLOCKED/);
+  });
 });
 
 describe('工具集就是闸 —— 不可逆命令', () => {

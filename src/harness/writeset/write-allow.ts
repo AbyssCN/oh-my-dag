@@ -86,12 +86,17 @@ export function describeWriteDenied(target: string, allow: readonly string[], to
  * ⚠ 不在 run-goal.ts 的 prompt 字符串上修 (那是模块头「讲道理拦不住」明文点了名的反模式,
  * 只控制了模型被告知回显什么, 不控制它实际写什么) —— 归一放在这个共用的并集点, 覆盖
  * 任何未来的绝对 `output_path` 生产者, 不论是不是 conductor 自己编的。
+ *
+ * ⚠ P2 审 (2026-09-02): `writeSet` 声明本身也可能是绝对路径 (同一根因的另一半), 与
+ * `outputPath` 一样过这道归一 —— 只归一 outputPath、放过 writeSet, 会让声明是绝对形态
+ * 的合法条目永远比不上 `checkWriteAllowed` 的 root-relative 目标, 造出假拒。
  */
 export function resolveNodeWriteAllow(
   writeSet: readonly string[] | undefined,
   outputPath: string | undefined,
   root: string,
 ): string[] {
-  const normalizedOutput = outputPath ? (isAbsolute(outputPath) ? relative(root, outputPath) : outputPath) : undefined;
-  return [...new Set([...(writeSet ?? []), ...(normalizedOutput ? [normalizedOutput] : [])])];
+  const normalize = (p: string): string => (isAbsolute(p) ? relative(root, p) : p);
+  const normalizedOutput = outputPath ? normalize(outputPath) : undefined;
+  return [...new Set([...(writeSet ?? []).map(normalize), ...(normalizedOutput ? [normalizedOutput] : [])])];
 }
