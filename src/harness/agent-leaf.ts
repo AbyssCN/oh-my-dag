@@ -59,8 +59,8 @@ import {
 // functions required")。0.80 省略时的内部默认就是这个 `streamSimple` —— 显式传 = 行为等价。
 import { streamSimple } from '@earendil-works/pi-ai/compat';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import { homedir } from 'node:os';
 import { parseModelRef } from './fleet';
@@ -1255,6 +1255,89 @@ function findTurnHeadIndex(messages: AgentMessage[], cut: number): number | null
 export const TOOL_RESULT_TRUNCATION_MARK = '[omd 压缩截断]';
 
 /**
+ * 全文**存盘成功**时贴的标记(2026-09-02)。与 `TOOL_RESULT_TRUNCATION_MARK` 分成**两个常量**,
+ * 因为它们说的是两件事:截断 = 开头**没了**;溢出 = 开头**在盘上, 路径在这**。
+ * 合成一个标记 + 一句「可能存了盘」会让读它的人(和模型)分不清该不该去取 —— 仓规 NULL≠0≠不适用。
+ */
+export const TOOL_RESULT_SPILL_MARK = '[omd 溢出存盘]';
+
+/**
+ * 溢出**失败**退回截断时,判词里必然出现的这一句。
+ *
+ * 三态里最容易被抹平的正是这一格:
+ *   · 没配溢出(`spill` 缺席, chat 那条路)→ 逐字节走老截断判词, **不提**写盘;
+ *   · 配了且存盘成功                      → `TOOL_RESULT_SPILL_MARK` + 路径;
+ *   · 配了但存盘失败                      → 老截断判词 + 本句 + 错误原文。
+ * 缺席与失败若都退化成同一句「全文不可取」,事后就再也分不出「这条路没装闸」和
+ * 「装了闸但盘写不动」——而两者的修法完全不同(前者接线, 后者查磁盘/权限)。
+ */
+export const TOOL_RESULT_SPILL_FAILED_MARK = '全文写盘失败';
+
+/**
+ * 溢出落点与写盘实现。
+ *
+ * ## 落点为什么是 `<cwd>/.omd`(三条闸各查过一遍, 不是随手选的)
+ *
+ * 1. **leaf 读得到** —— 隔离档下 leaf 的 cwd 就是那棵 worktree(`run-worktree.ts`),
+ *    `.omd` 在 cwd 之下 ⇒ 落在任何以 cwd 为根的沙箱边界**之内**, leaf 的 `read` 工具
+ *    直接吃绝对路径就能分页读。落 `/tmp` 或主仓会在隔离档下变成「路径给了但读不到」。
+ * 2. **不撞写域闸** —— `write-allow` / `write-version` 只判**工具通道**的 `write`/`edit`
+ *    (`agent-tools.ts` 的 `requireWritable`);压缩是引擎侧自己写盘, 根本不过那两道。
+ *    而 `.omd/` 在 `.gitignore` 里 ⇒ 跑后对账那一侧(`write-set.ts` 取的是
+ *    `git status --porcelain`, 尊重 ignore)也看不见它, 不会把溢出文件读成「越界写」。
+ * 3. **不新发明目录** —— `agent-tools.ts` 的 bash 截断全文早就落在同一处
+ *    (`resolve(cwd, '.omd', 'bash-output-*.log')`)。同一件事两个目录才是坑。
+ */
+export interface ToolResultSpill {
+  /** 落点目录。生产 = `<cwd>/.omd`(见上方三条)。 */
+  dir: string;
+  /**
+   * 写盘实现。省略 = 真 `mkdirSync` + `writeFileSync`。
+   * **只有测试该传** —— 造「盘写不动」那一格(fail-open 分支)没有别的办法可控地触发。
+   */
+  write?: (path: string, text: string) => void;
+}
+
+/**
+ * 一条结果的溢出结局。三态各自带**自己的证据**,不共用一个 `ok: boolean`。
+ * `off` 与 `failed` 都"取不回全文",但那是两个原因、两种修法(见
+ * `TOOL_RESULT_SPILL_FAILED_MARK` 注)。
+ */
+type SpillOutcome =
+  | { kind: 'off' }
+  | { kind: 'stored'; path: string }
+  | { kind: 'failed'; reason: string };
+
+/**
+ * 把一条超长工具结果的**全文**写盘,返回可取回的绝对路径。
+ *
+ * **fail-open, 但不吞证据**(仓规静默坑 2):写不动就退回老截断行为、主流程照跑,
+ * 而那个 `catch` 必须留下 runId 之外拿得到的全部三样 —— 路径 / 字节数 / 错误原文。
+ * 只 `catch {}` 的话,现场表现是「模型说取不到全文」而日志里一片干净。
+ */
+function spillToolResultText(text: string, spill: ToolResultSpill | undefined): SpillOutcome {
+  if (!spill) return { kind: 'off' }; // 闸缺席 ≠ 写盘失败
+  // 文件名带 uuid: 同一棵 worktree 里并发兄弟共用一个 `.omd`(`write-version.ts` 文件注:
+  // 隔离粒度是 per-run 不是 per-leaf), 只按时间戳命名会互相盖。
+  const path = join(spill.dir, `tool-result-${Date.now()}-${randomUUID()}.txt`);
+  try {
+    if (spill.write) spill.write(path, text);
+    else {
+      mkdirSync(spill.dir, { recursive: true });
+      writeFileSync(path, text, 'utf8');
+    }
+    return { kind: 'stored', path };
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    logger.warn(
+      { path, bytes: Buffer.byteLength(text, 'utf8'), err: reason },
+      '[agent-leaf] 超大工具结果全文写盘失败 (fail-open, 回落截断)',
+    );
+    return { kind: 'failed', reason };
+  }
+}
+
+/**
  * 触发截断的比值:保留段 > `keepRecentTokens × 这个数` 才动手。
  *
  * 取 **1.5** 是因为它是既有判据里**已经写死**的那条上界(`chat/compaction.test.ts`
@@ -1276,8 +1359,44 @@ export const MIN_TOOL_RESULT_BYTES = 2_000;
  */
 const BYTES_PER_TOKEN = 4;
 
-/** 把一条工具结果的 text 块截成尾部;没有一块需要截 → null(调用方据此判"没动过")。 */
-function truncateToolResultTail(msg: AgentMessage, maxBytes: number): AgentMessage | null {
+/**
+ * 一条被动过的 text 块的**抬头**。三态各写各的判词 —— 这是模型唯一能看见的差别,
+ * 也是「溢出了」与「溢出失败退回截断」在结果里可分辨的那一格。
+ *
+ * ⚠ `off` 那一支必须与本函数出现之前**逐字节相同**:没配溢出的调用方(chat 那条路、
+ * 全部既有测试)一个字都不该变(仓规 INV-6 那一类零回归)。改它就是行为翻转,不是措辞。
+ */
+function spillHeadline(
+  outcome: SpillOutcome,
+  t: { totalBytes: number; totalLines: number; outputBytes: number },
+): string {
+  const scale = `原 ${formatSize(t.totalBytes)} / ${t.totalLines} 行, 只留末尾 ${formatSize(t.outputBytes)}`;
+  if (outcome.kind === 'stored') {
+    return (
+      `${TOOL_RESULT_SPILL_MARK} ${scale}; 全文已存盘: ${outcome.path} —— ` +
+      '有 read 工具就按需分页读它, 不用重跑这条工具。'
+    );
+  }
+  if (outcome.kind === 'failed') {
+    return (
+      `${TOOL_RESULT_TRUNCATION_MARK} ${scale} —— ${TOOL_RESULT_SPILL_FAILED_MARK} ` +
+      `(${outcome.reason}), 开头已丢弃, 需要的话重新跑一次工具取那一段。`
+    );
+  }
+  return `${TOOL_RESULT_TRUNCATION_MARK} ${scale} —— 开头已丢弃, 需要的话重新跑一次工具取那一段。`;
+}
+
+/**
+ * 把一条工具结果的 text 块截成尾部;没有一块需要截 → null(调用方据此判"没动过")。
+ *
+ * `spill` 给了就**先把全文写盘**再截:截掉的那一段从此取得回来(见 `ToolResultSpill` 的落点注)。
+ * 省略 = 老行为(纯截断)。
+ */
+function truncateToolResultTail(
+  msg: AgentMessage,
+  maxBytes: number,
+  spill?: ToolResultSpill,
+): AgentMessage | null {
   const content = (msg as { content?: unknown }).content;
   if (!Array.isArray(content)) return null;
   let changed = false;
@@ -1289,12 +1408,10 @@ function truncateToolResultTail(msg: AgentMessage, maxBytes: number): AgentMessa
     const t = truncateTail(b.text, { maxBytes, maxLines: DEFAULT_MAX_LINES });
     if (!t.truncated) return block;
     changed = true;
-    return {
-      ...b,
-      text:
-        `${TOOL_RESULT_TRUNCATION_MARK} 原 ${formatSize(t.totalBytes)} / ${t.totalLines} 行, ` +
-        `只留末尾 ${formatSize(t.outputBytes)} —— 开头已丢弃, 需要的话重新跑一次工具取那一段。\n${t.content}`,
-    };
+    // ⚠ 次序: **确认真要截了才写盘**。放到 `truncated` 判定之前会给每一条没超线的结果
+    // 白写一个文件 —— 那是一整棵 worktree 的垃圾, 而且违反"没触发就零副作用"。
+    const outcome = spillToolResultText(b.text, spill);
+    return { ...b, text: `${spillHeadline(outcome, t)}\n${t.content}` };
   });
   return changed ? ({ ...(msg as object), content: next } as AgentMessage) : null;
 }
@@ -1319,12 +1436,14 @@ function truncateToolResultTail(msg: AgentMessage, maxBytes: number): AgentMessa
  *
  * @param retained 保留段(含逐字留下的首条)。
  * @param opts.tolerance 覆盖触发比值;`opts.minBytes` 覆盖单条下限。默认见上方两个常量。
+ * @param opts.spill 给了 → 截之前先把**全文**写盘, 判词里给取回路径(见 `ToolResultSpill`);
+ *                   省略 → **闸缺席**, 逐字节走老截断行为(chat 那条路 / 全部既有调用方)。
  * @returns 截过的新数组;没触发/没得截 → `null`(调用方原样用旧的,**不是**返回一份"看着一样"的拷贝)。
  */
 export function truncateOversizedToolResults(
   retained: AgentMessage[],
   keepRecentTokens: number,
-  opts: { tolerance?: number; minBytes?: number } = {},
+  opts: { tolerance?: number; minBytes?: number; spill?: ToolResultSpill } = {},
 ): AgentMessage[] | null {
   const tolerance = opts.tolerance ?? COMPACTION_RETAINED_TOLERANCE;
   const total = retained.reduce((n, m) => n + estimateTokens(m), 0);
@@ -1341,7 +1460,7 @@ export function truncateOversizedToolResults(
   const out = [...retained];
   let changed = false;
   for (const i of targets) {
-    const t = truncateToolResultTail(retained[i]!, maxBytes);
+    const t = truncateToolResultTail(retained[i]!, maxBytes, opts.spill);
     if (t) {
       out[i] = t;
       changed = true;
@@ -1359,7 +1478,8 @@ export function truncateOversizedToolResults(
  */
 export const TRUNCATION_ONLY_SUMMARY =
   '(这次压缩没有可摘要的历史 —— 切不出摘要点。省下来的空间全部来自把超大工具结果截成尾部, ' +
-  `被截的每一条自己带 ${TOOL_RESULT_TRUNCATION_MARK} 标记。)`;
+  `被动过的每一条自己带 ${TOOL_RESULT_SPILL_MARK}(全文在盘上, 判词里有路径)` +
+  `或 ${TOOL_RESULT_TRUNCATION_MARK}(开头真丢了)标记。)`;
 
 /**
  * 摘要器的两段提示词。**默认是叶子口径**;chat conductor 走同一条压缩路但换措辞
@@ -1411,6 +1531,15 @@ export async function compactLeafContext(opts: {
   /** 省略 → 叶子口径。chat conductor 传自己那一套(切点逻辑不变)。 */
   prompt?: CompactionPrompt;
   /**
+   * 超大工具结果的**溢出落点**(2026-09-02)。给了 → 截之前先把全文写盘, 判词里给取回路径。
+   *
+   * 这里只做**穿透**, 切点/摘要一行没动:`truncateOversizedToolResults` 是压缩路上唯一的
+   * 入口, 落点又必须按 leaf 的 cwd 定(隔离档下每棵 worktree 各写各的 `.omd`), 所以它只能
+   * 从调用方一路递进来 —— 烤成模块级常量会让并发 leaf 共用一个别人的 cwd。
+   * 省略 = 闸缺席, 逐字节走老截断行为(`chat/compaction.ts` 那条路)。
+   */
+  spill?: ToolResultSpill;
+  /**
    * 摘要那一次模型调用。省略 → 真 `callModel`(**账本挂在它出口上**,换掉默认值
    * 等于把这次花的钱从账上抹掉)。只有测试该传:全局 provider 注册表是跨测试文件
    * 共享的可变状态,靠它做隔离单文件绿、全量红(2026-08-07 实测)。
@@ -1427,7 +1556,9 @@ export async function compactLeafContext(opts: {
      * 此前这里直接返 null = 调用方优雅停,活干不完。截断是这个形状唯一动得了的东西,
      * 而且**不花一次模型调用**:没有历史要摘要,也就没有要付钱的地方。
      */
-    const truncated = truncateOversizedToolResults(messages, keepRecentTokens);
+    const truncated = truncateOversizedToolResults(messages, keepRecentTokens, {
+      ...(opts.spill ? { spill: opts.spill } : {}),
+    });
     if (!truncated) return null; // 真的压不动: 没超太多, 或撑爆预算的不是工具结果
     const truncTokensBefore = messages.reduce((n, m) => n + estimateTokens(m), 0);
     logger.info(
@@ -1494,7 +1625,10 @@ export async function compactLeafContext(opts: {
    * 否则这次改动就顺手改了摘要质量,而读数上分不出是哪一半带来的。
    */
   const retained = [head, ...kept];
-  const finalRetained = truncateOversizedToolResults(retained, keepRecentTokens) ?? retained;
+  const finalRetained =
+    truncateOversizedToolResults(retained, keepRecentTokens, {
+      ...(opts.spill ? { spill: opts.spill } : {}),
+    }) ?? retained;
   return {
     messages: [
       finalRetained[0]!,
@@ -2575,6 +2709,9 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
                 messages: ctx.messages,
                 model,
                 keepRecentTokens: keepRecentTokens,
+                // 超大工具结果**存盘而非丢弃**: 落点与 bash 截断全文同一处 (`<cwd>/.omd`),
+                // 隔离档下 cwd 就是那棵 worktree ⇒ 路径给出去 leaf 真读得到。见 `ToolResultSpill`。
+                spill: { dir: join(cwd, '.omd') },
                 ...(controller.signal ? { signal: controller.signal } : {}),
               });
               if (!compacted) return undefined; // 压不动 → 交给 shouldStopAfterTurn 优雅停

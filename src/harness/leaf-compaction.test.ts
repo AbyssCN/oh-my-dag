@@ -9,11 +9,16 @@
  * 里面**没有第二条 user 消息**, 所以"切在 user 上"这种通用对话的做法在这里根本不可用。
  */
 import { describe, expect, it } from 'bun:test';
+import { existsSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { estimateTokens, type AgentMessage } from '@earendil-works/pi-agent-core';
 import type { callModel } from '../model';
 import {
   COMPACTION_RETAINED_TOLERANCE,
   MIN_TOOL_RESULT_BYTES,
+  TOOL_RESULT_SPILL_FAILED_MARK,
+  TOOL_RESULT_SPILL_MARK,
   TOOL_RESULT_TRUNCATION_MARK,
   TRUNCATION_ONLY_SUMMARY,
   compactLeafContext,
@@ -233,5 +238,129 @@ describe('★ 保留段的巨型工具结果截断', () => {
     expect(text).toContain(TAIL_MARK);
     // 代价写明白: 下限 × 条数 会**超**预算 —— 宁可超一点也不留读不出结论的碎尾。
     expect(tokens(out)).toBeGreaterThan(KEEP);
+  });
+});
+
+/**
+ * ★ 超大工具结果:**截断 → 溢出存盘 + 取回路径**(2026-09-02)。
+ *
+ * ## 原来错在哪
+ *
+ * `truncateOversizedToolResults` 只留尾:被截掉的开头**模型拿不回、事后我们也拿不回**。
+ * 判词还写着「需要的话重新跑一次工具取那一段」—— 而那条工具可能是一次 8 分钟的 `bun test`,
+ * 也可能根本不可重放(时间戳 / 网络 / 已经被改掉的树)。丢的是**已经花钱买到的信息**。
+ *
+ * ## 三态,不是两态(仓规 NULL≠0≠不适用)
+ *
+ * | 配了 spill? | 写盘成功? | 判词 |
+ * |---|---|---|
+ * | 否(chat 那条路) | 不适用 | `TOOL_RESULT_TRUNCATION_MARK`,**逐字节等于本次改动之前** |
+ * | 是 | 是 | `TOOL_RESULT_SPILL_MARK` + 绝对路径 + 取回指令 |
+ * | 是 | 否 | `TOOL_RESULT_TRUNCATION_MARK` + `TOOL_RESULT_SPILL_FAILED_MARK` + 错误原文 |
+ *
+ * 后两格若都退化成同一句「取不回全文」,事后就分不出「这条路没接线」与「盘写不动」。
+ *
+ * ## 反向自检(逐条实跑,2026-09-02;基线 = 本文件 17 pass / 0 fail)
+ *
+ * · `agent-leaf.ts` `spillToolResultText` 的 `if (!spill) return { kind: 'off' };` 改成**恒**
+ *   `return { kind: 'off' };` → **15 pass / 2 fail**,红的是 ① 与 ③(② ④ 仍绿 —— 它俩量的
+ *   正是"没配/没触发时别动",闸摘了当然还绿,这才说明四条各钉各的)。
+ * · `catch` 那支的 `return { kind: 'failed', reason }` 改成 `return { kind: 'off' }`
+ *   → **16 pass / 1 fail**,只红 ③ —— 单独钉住「写盘失败 ≠ 没配溢出」这一句。
+ * · `truncateToolResultTail` 里的 `spillToolResultText(b.text, spill)` 提到
+ *   `Buffer.byteLength(...) <= maxBytes` 判定**之前** → **16 pass / 1 fail**,只红 ②。
+ *   ⚠ 记档:② 的第一版(只有"整段没超阈值 → 零文件")摘这一行**不红** —— 整段没超阈值时
+ *   `truncateOversizedToolResults` 在容差那一关就返 null,根本走不到块级判定。所以补了 (b) 那格
+ *   (整段超了、里面混一条没超单条上限的小结果)。**摘掉不红的判据不算判据**,这条是实测补的。
+ * · `spillHeadline` 的 `off` 那一支改掉措辞 → **16 pass / 1 fail**,只红 ④(字节兼容那格)。
+ */
+describe('★ 超大工具结果溢出存盘 (2026-09-02)', () => {
+  const KEEP = 20_000;
+  const HEAD_MARK = '★开头: 这一段以前会被丢掉, 现在必须能从盘上取回来';
+  const TAIL_MARK = '★结论: 全绿';
+
+  /** 一条巨型结果, 头尾各埋哨兵(与上方那组同形, 但本 describe 自带一份 —— 跨闭包借变量会把两组判据绑死)。 */
+  const bigResult = (id: string, chars: number): AgentMessage => {
+    const lines = [HEAD_MARK];
+    for (let i = 0; i < Math.ceil(chars / 80); i++) lines.push(`${String(i).padStart(6, '0')} ${'y'.repeat(72)}`);
+    lines.push(TAIL_MARK);
+    return {
+      role: 'toolResult', toolCallId: id, toolName: 'bash',
+      content: [{ type: 'text', text: lines.join('\n') }],
+      isError: false, timestamp: 1,
+    } as AgentMessage;
+  };
+  /** 超预算的形状: 契约 + 6 条各 ≈3× 预算的结果。 */
+  const oversized = (): AgentMessage[] => [
+    user('契约: 把 X 做完'),
+    ...Array.from({ length: 6 }, (_, i) => bigResult(`t${i}`, 240_000)),
+  ];
+  const textOf = (m: AgentMessage): string =>
+    ((m as { content: { text: string }[] }).content[0] as { text: string }).text;
+
+  it('★ ① 超线 → 判词给绝对路径, 且那个路径真读得到被截掉的开头', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omd-toolspill-'));
+    const out = truncateOversizedToolResults(oversized(), KEEP, { spill: { dir } })!;
+    expect(out).not.toBeNull();
+    const body = textOf(out[1]!);
+    // 判词换了标记 —— 「存盘了」与「丢了」不共用一个词。
+    expect(body).toContain(TOOL_RESULT_SPILL_MARK);
+    expect(body).not.toContain(TOOL_RESULT_TRUNCATION_MARK);
+    // 路径必须是**绝对**路径: leaf 的 read 工具与外部脚本都要能直接吃 (同 bash spill 那条)。
+    const path = /全文已存盘: (\S+)/.exec(body)?.[1];
+    expect(path).toBeTruthy();
+    expect(path!.startsWith('/')).toBe(true);
+    // 只给指针不落盘 = 更坏的静默 —— 文件必须真在, 且必须含**正文里已经没有**的那段开头。
+    expect(existsSync(path!)).toBe(true);
+    expect(readFileSync(path!, 'utf8')).toContain(HEAD_MARK);
+    expect(body).not.toContain(HEAD_MARK); // 开头确实被截了 (否则这条用例什么都没验)
+    expect(body).toContain(TAIL_MARK); // 尾巴照旧留着
+    // 取回指令要给得出**动作**, 不能只报告"存了" —— 否则模型不知道下一步能做什么。
+    expect(body).toContain('read');
+  });
+
+  it('★ ② 没超线的结果 → 逐字节不变, 且一个文件都不许写 (正控)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omd-toolspill-quiet-'));
+    // (a) 整段就没超阈值 → 连截断都不进, 零文件。
+    expect(truncateOversizedToolResults([user('契约'), bigResult('t0', 400)], KEEP, { spill: { dir } })).toBeNull();
+    expect(readdirSync(dir)).toEqual([]);
+
+    // (b) 更严的一格: 整段**超**了阈值 (所以截断真的在跑), 但里面混着一条**没超单条上限**的小结果。
+    //     那一条必须逐字节原样, 也**不许**为它写文件 —— 写了就是"没触发也有副作用"。
+    const mixed = [user('契约'), bigResult('big', 240_000), bigResult('small', 400)];
+    const out = truncateOversizedToolResults(mixed, KEEP, { spill: { dir } })!;
+    expect(out).not.toBeNull();
+    expect(textOf(out[2]!)).toBe(textOf(mixed[2]!)); // 小结果逐字节不变 (连标记都没贴)
+    expect(readdirSync(dir).length).toBe(1); // 只为**真被截**的那一条写了盘
+
+    // (c) 配不配 spill 都不动的部分 (首条契约) 两侧逐字节相同。
+    const big = oversized();
+    const withSpill = truncateOversizedToolResults(big, KEEP, { spill: { dir, write: () => {} } })!;
+    const plain = truncateOversizedToolResults(big, KEEP)!;
+    expect(textOf(withSpill[0]!)).toBe(textOf(plain[0]!));
+  });
+
+  it('★ ③ 写盘失败 → fail-open 回落截断, 且与"没配溢出"可分辨', () => {
+    const boom = (): never => {
+      throw new Error('EACCES: 盘写不动');
+    };
+    const out = truncateOversizedToolResults(oversized(), KEEP, {
+      spill: { dir: '/nonexistent-omd-spill', write: boom },
+    })!;
+    expect(out).not.toBeNull(); // 主流程不许因为写盘失败而失败
+    const body = textOf(out[1]!);
+    expect(body).toContain(TOOL_RESULT_TRUNCATION_MARK); // 回落到老截断行为
+    expect(body).toContain(TOOL_RESULT_SPILL_FAILED_MARK); // 但明说是"失败", 不是"没装"
+    expect(body).toContain('EACCES'); // 证据入判词: 只说失败会让人无从查起 (静默坑 2)
+    expect(body).toContain(TAIL_MARK); // 尾巴照旧 —— 截断该干的活一样干
+  });
+
+  it('★ ④ 没配溢出 → 老判词一字不改, 且不许出现"写盘失败"字样 (缺席 ≠ 失败)', () => {
+    const body = textOf(truncateOversizedToolResults(oversized(), KEEP)![1]!);
+    expect(body).toContain(TOOL_RESULT_TRUNCATION_MARK);
+    expect(body).not.toContain(TOOL_RESULT_SPILL_MARK);
+    expect(body).not.toContain(TOOL_RESULT_SPILL_FAILED_MARK);
+    // 老判词逐字节: 这一句是本次改动之前的原文, 改它就是行为翻转。
+    expect(body).toContain('—— 开头已丢弃, 需要的话重新跑一次工具取那一段。');
   });
 });
