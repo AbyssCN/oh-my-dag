@@ -1992,6 +1992,8 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
     return verdict;
   };
   let exec: ExecutorDagResult;
+  /** P3 S6b: 循环路径第二跑 (D-14 回灌) 的 config 基座 = 第一跑的 execCfg (含 freezeCriterion.waiveRed 等), 不是裸 config.dag。 */
+  let loopBase: ExecutorDagConfig = config.dag;
   try {
     // 护栏③: **只有可执行判据**才进环。非可执行判据的 `oracleOk` 恒 true, 给了它就等于第一轮必停。
     // 环外那个 `accept` 节点保留不动 —— 它仍是收尾时那次权威判定 (`oracleOk` 的取值源没变),
@@ -2017,6 +2019,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
             ...(flatPlan !== undefined ? { deterministicReplan: () => flatPlan } : {}),
           }
         : config.dag;
+    loopBase = execCfg;
     // 包一层判卷官 (只观察不改判); 没配 verifier = 一个字段都不加, 同一份 execCfg 原样进。
     const tappedCfg = config.dag.verifier ? { ...execCfg, verifier: tapVerifier(config.dag.verifier) } : execCfg;
     // ── P3 S6b: 循环路径的引擎 config ─────────────────────────────────────────────
@@ -2046,7 +2049,8 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
     );
     const replanted = withReinjectedFinding(loopPlan, finding);
     try {
-      const { verifier: _noVerifier, ...noVerifierCfg } = withLoopConfig(config.dag, replanted, config, runnable, task);
+      // 基座 = 第一跑的 execCfg (同一份 freezeCriterion / waiveRed / 预算), 只是 verifier 不在 (INV-7 机械保证)。
+      const { verifier: _noVerifier, ...noVerifierCfg } = withLoopConfig(loopBase, replanted, config, runnable, task);
       void _noVerifier;
       exec = await (config._runDag ?? runExecutorDagWithPlan)(replanted, noVerifierCfg);
       reinjected = true;
