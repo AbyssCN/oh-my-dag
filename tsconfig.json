@@ -21,6 +21,13 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
+    // 不可达代码 = 编译期哑雷: 今天无害, 谁动了它上面那句 return/exit, 行为静默回退。
+    // 一次探测抓到 2 个真哑雷 (6d07d8b2 assemble.ts 的旧 runId 回退分支 ·
+    // playbook/load.ts 的逐字复制粘贴重复块), 所以这条常驻。
+    // 证伪配方 (闸必须会红): 往任意 .ts 的 `return` / `process.exit()` 后面插一行语句
+    //   (例: `process.exit(2); return;`) → `bunx tsc --noEmit -p tsconfig.json` 报 TS7027 且非零退出;
+    //   删掉该行 → 恢复 exit 0。(不另立测试: 闸就是 tsc 本身, 再包一层只是重跑同一条命令。)
+    "allowUnreachableCode": false,
 
     // Some stricter flags (disabled by default)
     "noUnusedLocals": false,

@@ -263,7 +263,14 @@ if (userArgs[0] === 'serve') {
   // #252 run worktree 生命周期回收。**缺省 dry-run** —— 要真删必须显式 --apply。
   // 实装在 scripts/ 而不是 src/: 它只在人手里跑, 且放 src/ 会让 seam 目录的「触及文件数」漂
   // (scanConsumers 扫整个 src/), 白白给每个契约添一笔登记面账。
-  const { survey, realDeps, apply: applyGc } = await import('../../scripts/runs-gc');
+  const {
+    survey,
+    realDeps,
+    apply: applyGc,
+    realSpillDeps,
+    sweepSpillFiles,
+    formatSpillReport,
+  } = await import('../../scripts/runs-gc');
   const root = process.cwd();
   const plan = survey(root, realDeps(root));
   const doApply = userArgs.includes('--apply');
@@ -284,6 +291,14 @@ if (userArgs[0] === 'serve') {
     const by: Record<string, number> = {};
     for (const a of hud.archived) by[a.reason] = (by[a.reason] ?? 0) + 1;
     console.log(`hud 分片: 扫 ${hud.scanned} · ${doApply ? '已归档' : '待归档'} ${hud.archived.length} ${JSON.stringify(by)}${hud.failed.length ? ` · 失败 ${hud.failed.length}` : ''}`);
+  }
+  // 溢出文件回收 (2026-09-02, scripts/runs-gc.ts 尾节): `.omd/tool-result-*.txt` 与
+  // `.omd/bash-output-*.log` 与 worktree / HUD 分片共用同一把 --apply 开关 —— 缺省只报数。
+  // 判据不是「关联 run 是否终态」(文件名里没有 runId), 换成年龄 + 在飞 run 起跑下限, 理由见实装头注。
+  {
+    const spill = sweepSpillFiles(realSpillDeps(root), { dryRun: !doApply });
+    console.log(formatSpillReport(spill, doApply));
+    for (const f of spill.failed) console.log(`  ✗ ${f.file}: ${f.note}`);
   }
   if (!doApply) console.log('\n(dry-run。要真干: omd runs gc --apply)');
   process.exit(0);
@@ -527,7 +542,6 @@ async function runPlanDryRunCLI(args: string[]): Promise<void> {
         // PP-INV input_missing — S1 退出码契约: 用法/输入错 = exit 2。诊断行逐字 (不二次包装)。
         process.stderr.write('PP-INV input_missing: --fixture <path> or stdin JSON required\n');
         process.exit(2);
-        return;
       }
       input = { kind: 'text', planText };
     }
@@ -535,7 +549,6 @@ async function runPlanDryRunCLI(args: string[]): Promise<void> {
     // stdin 读不到 (无 pipe / 立即 EOF / OS 错) 等价于 input_missing, 同一出口 (不暴露技术细节)。
     process.stderr.write('PP-INV input_missing: --fixture <path> or stdin JSON required\n');
     process.exit(2);
-    return;
   }
 
   // emit:true → runPlanDryRun 内部在 emit=true 时写 stdout 单行 JSON (S1 I/O 契约);
@@ -551,7 +564,6 @@ async function runPlanDryRunCLI(args: string[]): Promise<void> {
     // PP-INT unhandled — S1 退出码契约: 未捕获 harness 异常 = exit 3。
     process.stderr.write(`PP-INT unhandled: ${e instanceof Error ? e.message : String(e)}\n`);
     process.exit(3);
-    return;
   }
 
   // 诊断逐行写 stderr (INV-21: <code> <name>: <evidence>) —— 透传, 不二次包装。
@@ -598,7 +610,6 @@ async function runVerifySeats(): Promise<void> {
   } catch (e) {
     process.stderr.write(`PP-INT unhandled: ${e instanceof Error ? e.message : String(e)}\n`);
     process.exit(3);
-    return;
   }
 
   // 每对 stdout 一行 (S1 契约); 行内顺序固定 = seat → generator → gen.family → ver.family → match。
@@ -622,7 +633,6 @@ async function runVerifySeats(): Promise<void> {
       }
     }
     process.exit(1);
-    return;
   }
   process.exit(0);
 }
@@ -657,7 +667,6 @@ async function runWithFixture(args: string[]): Promise<void> {
   if (!dir) {
     process.stderr.write('PP-INV input_missing: --fixture <dir> required\n');
     process.exit(2);
-    return;
   }
   const { readFile, writeFile } = await import('node:fs/promises');
   const { join: joinPath } = await import('node:path');
@@ -687,7 +696,6 @@ async function runWithFixture(args: string[]): Promise<void> {
   } catch (e) {
     process.stderr.write(`PP-INV input_missing: read ${planPath} failed: ${e instanceof Error ? e.message : String(e)}\n`);
     process.exit(2);
-    return;
   }
 
   const startedAt = new Date().toISOString();
@@ -868,11 +876,9 @@ async function runWithFixture(args: string[]): Promise<void> {
   } catch (e) {
     process.stderr.write(`PP-INT unhandled: write ${summaryPath} failed: ${e instanceof Error ? e.message : String(e)}\n`);
     process.exit(3);
-    return;
   }
 
   // UNVERIFIED 节点逐行 stdout (S1 契约逐字: `node=<id> state=UNVERIFIED gate=post_leaf
-  // reason=<reason> evidence=<evidence>`, 无 stderr —— 诊断行已被 summary 写入磁盘, 不二次写 stderr)。
   // reason=<reason> evidence=<evidence>`, 无 stderr —— 诊断行已被 summary 写入磁盘, 不二次写 stderr)。
   for (const n of Object.values(nodesOut)) {
     if (n.state === 'UNVERIFIED') {

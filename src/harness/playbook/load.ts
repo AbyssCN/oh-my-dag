@@ -193,12 +193,6 @@ function probeAcceptanceSync(
     // 这正是被打回的那条: "命令没跑成"不得与"判据合格"折叠, 只有 'ok' 才是真的验证过。
     logger.warn({ playbook: playbookName, probeStatus: verdict.status, why: verdict.why }, '[playbook] A-3 判别力探针未通过');
     return false;
-
-    if (verdict.status === 'ok') return true;
-    // ring(恒真) / skipped(样本缺失) / fail_open(命令跑不起来) / bridge_error(桥内异常) 一律拒收 ——
-    // 这正是被打回的那条: "命令没跑成"不得与"判据合格"折叠, 只有 'ok' 才是真的验证过。
-    logger.warn({ playbook: playbookName, probeStatus: verdict.status, why: verdict.why }, '[playbook] A-3 判别力探针未通过');
-    return false;
   } catch (err) {
     // 建临时目录 / 写桥脚本本身失败 (磁盘满等) —— 同样拒收, 留证据。
     logger.warn({ playbook: playbookName, err: String(err) }, '[playbook] A-3 探针准备阶段异常');

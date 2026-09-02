@@ -48,7 +48,7 @@
  */
 import { Database } from 'bun:sqlite';
 import { execFileSync } from 'node:child_process';
-import { existsSync, statSync, readdirSync } from 'node:fs';
+import { existsSync, statSync, readdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 
 export type GcCategory = 'live' | 'too-fresh' | 'too-young' | 'debris' | 'dirty' | 'unmerged' | 'merged-clean';
@@ -262,4 +262,236 @@ if (import.meta.main) {
     else failed++;
   }
   console.log(`\n回收 ${done} 棵${failed ? `, ${failed} 棵停手(见上)` : ''}。runs.db 账未动。`);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 溢出文件回收 (2026-09-02) —— `.omd/tool-result-<ts>-<uuid>.txt` (agent-leaf.ts:1322)
+// 与 `.omd/bash-output-<ts>-<uuid>.log` (agent-tools.ts:1159)。
+//
+// ## 保留判据为什么不是「按关联 run 是否终态」
+//
+// HUD 分片那一格 (src/hud/gc.ts) 能用 `readTerminalRunIds`, 因为分片里**写着 runId**。
+// 溢出文件的命名里**没有 runId** —— 只有 `<ts>-<uuid>`, uuid 是防同棵 worktree 并发兄弟互相
+// 覆盖用的随机数, 不是 runId。文件内容是裸的工具输出, 也不带账。所以「按 run 终态」这条路
+// 在这里**走不通**, 换成下面两条:
+//
+//   1. **年龄** —— `<ts>` 就是写盘时刻 (两个写侧都是 write-once, 从不追加, 所以文件名时戳
+//      = 最终 mtime)。age ≤ 24h 一律不动。24h 与 `STALE_RUNNING_ARCHIVE_MS` 同源同据:
+//      「一个 run 静默一整天还在跑」在本仓不存在。
+//   2. **活跑下限** —— 文件写盘那一刻, 写它的 run 必然已经起跑。所以只要**所有仍在飞的 run
+//      都是在这个文件之后才起跑的**, 这个文件就不可能属于任何在飞的 run。取 `MIN(created_at)`
+//      当下限, `ts >= 下限` 的一律留着。这一条把判据 1 的漏洞 (真跑超 24h 的长任务) 堵上 ——
+//      而它正是要紧的那一格: 溢出文件的路径被**写进了 leaf 的上下文** ("完整输出: <path> ——
+//      有 read 工具就按需分页读它"), run 还在飞时删掉 = leaf 读到 ENOENT。
+//
+// ⚠ 「在飞」不能只看 `status != 终态`: 进程被杀的 run 会把行永久钉在 `running`, 那样下限会
+// 卡在一个远古时刻, 回收从此变成静默空转。所以还要求**属主进程活着**, 或**账在 grace 窗内
+// 更新过** (没记 owner_pid 的行的兜底)。同款残影 src/hud/gc.ts 头注里量过。
+//
+// ## 为什么是删不是归档
+//
+// HUD 分片归档 (挪进 archive/) 成立是因为分片是几 KB 的 JSON, 挪走仍可读。溢出文件按定义
+// 就是**超长**的那些, 挪个目录一个字节都没回收 —— 而回收磁盘正是本格存在的理由。所以到期
+// 就删。不静默的部分由缺省 dry-run + 逐类报数扛 (与 worktree 回收同一把 `--apply` 开关)。
+//
+// ## 只扫顶层 `.omd/`, 不递归
+//
+// 隔离档下 leaf 的 cwd 是 `.omd/runs/<runId>/`, 溢出文件落在那棵树自己的 `.omd/` 里, 由上面
+// 的 worktree 回收连树一起删。递归会让两条判据抢同一批文件。
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const SPILL_GRACE_MS = 24 * 3_600_000;
+
+export type SpillKind = 'tool-result' | 'bash-output';
+export type SpillKeepReason = 'too-fresh' | 'live-window';
+
+const SPILL_PATTERNS: ReadonlyArray<{ re: RegExp; kind: SpillKind }> = [
+  { re: /^tool-result-(\d+)-[0-9a-f-]{36}\.txt$/, kind: 'tool-result' },
+  { re: /^bash-output-(\d+)-[0-9a-f-]{36}\.log$/, kind: 'bash-output' },
+];
+
+/** 文件名 → (类型, 写盘时刻); 不是溢出文件 → null (那时连 scanned 都不计, 别人的文件不归本格管)。 */
+export function parseSpillName(name: string): { kind: SpillKind; tsMs: number } | null {
+  for (const p of SPILL_PATTERNS) {
+    const m = p.re.exec(name);
+    if (m?.[1]) return { kind: p.kind, tsMs: Number(m[1]) };
+  }
+  return null;
+}
+
+/**
+ * 在飞 run 的起跑下限。**三态不折叠** (仓规静默坑 1: NULL ≠ 0 ≠ 不适用):
+ * - `no-db`    库缺席 / 读不出 = **没有在飞信息**, 不是「没有在飞的 run」→ 只有年龄判据生效;
+ * - `none-live` 库在, 且一个在飞的 run 都没有 → 年龄判据独走, 下限不设限;
+ * - `floor`    有在飞的 run, `ms` = 其中最早的 `created_at`。
+ */
+export type SpillLiveFloor = { kind: 'no-db' } | { kind: 'none-live' } | { kind: 'floor'; ms: number };
+
+/** 单个文件的判决 —— 纯函数, 两条判据各自独立, 测试用三个标量就能逐条证伪。 */
+export function decideSpillSweep(
+  tsMs: number,
+  nowMs: number,
+  floor: SpillLiveFloor,
+  graceMs: number = SPILL_GRACE_MS,
+): 'sweep' | SpillKeepReason {
+  if (nowMs - tsMs < graceMs) return 'too-fresh';
+  if (floor.kind === 'floor' && tsMs >= floor.ms) return 'live-window';
+  return 'sweep';
+}
+
+export interface SpillGcItem {
+  file: string;
+  kind: SpillKind;
+  tsMs: number;
+  bytes: number;
+}
+
+export interface SpillGcResult {
+  /**
+   * `.omd/` 在不在。**`false` = 没扫, 与 `scanned === 0` 的「扫了但一个溢出文件都没有」
+   * 是两件事** (仓规静默坑 1) —— 报数那行必须能把这两格分开念。
+   */
+  dirPresent: boolean;
+  /** 认出来的溢出文件总数 (含留下的)。 */
+  scanned: number;
+  swept: SpillGcItem[];
+  /** 留下的按理由分列, 不合并成一个「跳过 N 个」。 */
+  kept: Record<SpillKeepReason, number>;
+  /** 判了要删但 unlink 失败的 (fail-open, 证据在 note)。 */
+  failed: Array<SpillGcItem & { note: string }>;
+  floor: SpillLiveFloor;
+}
+
+export interface SpillSweepDeps {
+  /** `.omd` 顶层文件名; 目录缺席 / 读不动 → null。 */
+  listOmdDir: () => string[] | null;
+  bytesOf: (name: string) => number;
+  /** 真删一个文件 (dryRun 时不调)。 */
+  remove: (name: string) => void;
+  liveFloor: () => SpillLiveFloor;
+  now: () => number;
+}
+
+export interface SpillGcOptions {
+  graceMs?: number;
+  dryRun?: boolean;
+}
+
+/** 扫 `.omd/` 顶层, 按上面两条判据回收溢出文件。零 IO(全经 deps), 所以判据能逐条单测。 */
+export function sweepSpillFiles(deps: SpillSweepDeps, opts: SpillGcOptions = {}): SpillGcResult {
+  const floor = deps.liveFloor();
+  const out: SpillGcResult = {
+    dirPresent: false,
+    scanned: 0,
+    swept: [],
+    kept: { 'too-fresh': 0, 'live-window': 0 },
+    failed: [],
+    floor,
+  };
+  const names = deps.listOmdDir();
+  if (names === null) return out; // 目录缺席 = 没扫; dirPresent 保持 false
+  out.dirPresent = true;
+  const now = deps.now();
+  for (const name of names) {
+    const parsed = parseSpillName(name);
+    if (!parsed) continue; // 别人的文件, 不归本格管 —— 连 scanned 都不计
+    out.scanned += 1;
+    const verdict = decideSpillSweep(parsed.tsMs, now, floor, opts.graceMs);
+    if (verdict !== 'sweep') {
+      out.kept[verdict] += 1;
+      continue;
+    }
+    const item: SpillGcItem = { file: name, kind: parsed.kind, tsMs: parsed.tsMs, bytes: deps.bytesOf(name) };
+    if (opts.dryRun) {
+      out.swept.push(item);
+      continue;
+    }
+    try {
+      deps.remove(name);
+      out.swept.push(item);
+    } catch (err) {
+      out.failed.push({ ...item, note: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  return out;
+}
+
+/**
+ * 真源 deps。`liveFloor` 只认「非终态 ∧ (属主进程活着 ∨ 账在 grace 窗内更新过)」的行 ——
+ * 被杀留下的僵尸 `running` 行不许把下限钉死 (见本节头注 ⚠)。
+ */
+export function realSpillDeps(root: string, opts: SpillGcOptions = {}): SpillSweepDeps {
+  const omdDir = join(root, '.omd');
+  const graceMs = opts.graceMs ?? SPILL_GRACE_MS;
+  return {
+    listOmdDir: () => {
+      try {
+        return readdirSync(omdDir);
+      } catch {
+        return null; // 目录不在 / 读不动 —— 「没扫」, 不冒充「扫了 0 个」
+      }
+    },
+    bytesOf: (name) => {
+      try {
+        return statSync(join(omdDir, name)).size;
+      } catch {
+        return 0;
+      }
+    },
+    remove: (name) => unlinkSync(join(omdDir, name)),
+    now: () => Date.now(),
+    liveFloor: () => {
+      const dbPath = join(omdDir, 'runs.db');
+      if (!existsSync(dbPath)) return { kind: 'no-db' };
+      let db: Database | null = null;
+      try {
+        db = new Database(dbPath, { readonly: true });
+        const rows = db
+          .query(
+            `SELECT created_at, updated_at, owner_pid FROM omd_runs WHERE status NOT IN ('done', 'failed', 'cancelled')`,
+          )
+          .all() as Array<{ created_at: string; updated_at: string; owner_pid: number | null }>;
+        const now = Date.now();
+        let floor = Infinity;
+        for (const r of rows) {
+          const pidAlive = r.owner_pid ? aliveSpillPid(r.owner_pid) : false;
+          const freshLedger = now - new Date(r.updated_at).getTime() < graceMs;
+          if (!pidAlive && !freshLedger) continue; // 僵尸 running 行, 不算在飞
+          const started = new Date(r.created_at).getTime();
+          if (Number.isFinite(started) && started < floor) floor = started;
+        }
+        return floor === Infinity ? { kind: 'none-live' } : { kind: 'floor', ms: floor };
+      } catch {
+        return { kind: 'no-db' }; // 表还没建 / 库被锁 → 当「没有在飞信息」, 不当「没有在飞的 run」
+      } finally {
+        db?.close();
+      }
+    },
+  };
+}
+
+function aliveSpillPid(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false; // ESRCH = 没了; EPERM 也当没了 (不是我们的进程)
+  }
+}
+
+/** 报数那一行 —— 「没扫」与「扫了 0 个」必须念得出区别。 */
+export function formatSpillReport(r: SpillGcResult, doApply: boolean): string {
+  if (!r.dirPresent) return '溢出文件: .omd/ 不在 —— 没扫 (≠ 扫了 0 个)';
+  const mb = (r.swept.reduce((a, b) => a + b.bytes, 0) / 1e6).toFixed(1);
+  const floorTxt =
+    r.floor.kind === 'no-db'
+      ? 'runs.db 缺席 (无在飞信息, 只用年龄判据)'
+      : r.floor.kind === 'none-live'
+        ? '无在飞 run'
+        : `在飞最早起跑 ${new Date(r.floor.ms).toISOString()}`;
+  return (
+    `溢出文件: 扫 ${r.scanned} · ${doApply ? '已删' : '待删'} ${r.swept.length} (${mb} MB) · ` +
+    `留 {太新 ${r.kept['too-fresh']}, 在飞窗 ${r.kept['live-window']}} · ${floorTxt}` +
+    (r.failed.length ? ` · 删失败 ${r.failed.length}` : '')
+  );
 }
