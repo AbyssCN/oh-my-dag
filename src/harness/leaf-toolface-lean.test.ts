@@ -37,7 +37,7 @@ describe('INV-4 · 精益 worker leaf 工具面', () => {
     const run = createAgentLeafRunner({ cwd: root, leanLeaf: true, sdkQueryFn: fakeQuery(seen), skillDeps: { roots: [] } });
     await run({ prompt: 'x', model: MODEL, leafTimeoutMs: 5 * 60_000 });
     expect(seen.options?.allowedTools).toEqual(FOUR);
-    const sp = seen.options?.systemPrompt ?? '';
+    const sp = String(seen.options?.systemPrompt ?? '');
     expect(sp.startsWith(LEAF_PROMPT_V2_PREFIX)).toBe(true);
     expect(sp).toContain(LEAF_FACTS_BOUNDARY);
     expect(sp).toContain('5 minutes left');
@@ -50,7 +50,7 @@ describe('INV-4 · 精益 worker leaf 工具面', () => {
     const run = createAgentLeafRunner({ cwd: root, leanLeaf: true, sdkQueryFn: fakeQuery(seen), skillDeps: { roots: [] } });
     await run({ prompt: 'x', model: MODEL, self_check: { command: 'bun test', expect_exit: 0 } });
     expect(seen.options?.allowedTools).toEqual([...FOUR, 'mcp__omd__run_acceptance']);
-    expect(seen.options?.systemPrompt ?? '').toContain('Acceptance command (frozen): `bun test`');
+    expect(String(seen.options?.systemPrompt ?? '')).toContain('Acceptance command (frozen): `bun test`');
   });
 
   it('★ ③ mcpAllow 非空 → 不进精益: 面上不止四件 (mcp 授权面不被静默剥掉)', async () => {
@@ -61,7 +61,7 @@ describe('INV-4 · 精益 worker leaf 工具面', () => {
     const tools = seen.options?.allowedTools ?? [];
     expect(tools.length).toBeGreaterThan(4);
     expect(tools).toContain('mcp__omd__grep');
-    expect((seen.options?.systemPrompt ?? '').startsWith(LEAF_PROMPT_V2_PREFIX)).toBe(false);
+    expect(String(seen.options?.systemPrompt ?? '').startsWith(LEAF_PROMPT_V2_PREFIX)).toBe(false);
   });
 
   it('★ ④ leanLeaf 缺席 → 老面 (八件), prompt 不是 v2 (零回归)', async () => {
@@ -70,7 +70,7 @@ describe('INV-4 · 精益 worker leaf 工具面', () => {
     const run = createAgentLeafRunner({ cwd: root, sdkQueryFn: fakeQuery(seen), skillDeps: { roots: [] } });
     await run({ prompt: 'x', model: MODEL });
     expect(seen.options?.allowedTools).toHaveLength(8);
-    expect((seen.options?.systemPrompt ?? '').startsWith(LEAF_PROMPT_V2_PREFIX)).toBe(false);
+    expect(String(seen.options?.systemPrompt ?? '').startsWith(LEAF_PROMPT_V2_PREFIX)).toBe(false);
   });
 
   it('⑤ 显式 profile 胜过精益 (作用域条件之一)', async () => {
@@ -78,6 +78,6 @@ describe('INV-4 · 精益 worker leaf 工具面', () => {
     const seen: { options?: Options } = {};
     const run = createAgentLeafRunner({ cwd: root, leanLeaf: true, sdkQueryFn: fakeQuery(seen), skillDeps: { roots: [] } });
     await run({ prompt: 'x', model: MODEL, profile: { name: 'p', tools: ['read', 'grep'] } as never });
-    expect((seen.options?.systemPrompt ?? '').startsWith(LEAF_PROMPT_V2_PREFIX)).toBe(false);
+    expect(String(seen.options?.systemPrompt ?? '').startsWith(LEAF_PROMPT_V2_PREFIX)).toBe(false);
   });
 });

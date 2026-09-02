@@ -38,7 +38,7 @@ describe('INV-4 · run_acceptance 随冻结判据按调用出现', () => {
     const run = createAgentLeafRunner({ cwd: root, sdkQueryFn: fakeQuery(seen), skillDeps: { roots: [] } });
     const r = await run({ prompt: 'x', model: MODEL });
     expect(seen.options?.allowedTools).not.toContain('mcp__omd__run_acceptance');
-    expect(seen.options?.systemPrompt ?? '').not.toContain('run_acceptance');
+    expect(String(seen.options?.systemPrompt ?? '')).not.toContain('run_acceptance');
     expect('acceptance' in r).toBe(false);
   });
 
@@ -48,7 +48,7 @@ describe('INV-4 · run_acceptance 随冻结判据按调用出现', () => {
     const run = createAgentLeafRunner({ cwd: root, sdkQueryFn: fakeQuery(seen), skillDeps: { roots: [] } });
     const r = await run({ prompt: 'x', model: MODEL, self_check: { command: 'bun test', expect_exit: 0 } });
     expect(seen.options?.allowedTools).toContain('mcp__omd__run_acceptance');
-    expect(seen.options?.systemPrompt ?? '').toContain('run_acceptance');
+    expect(String(seen.options?.systemPrompt ?? '')).toContain('run_acceptance');
     expect(r.acceptance).toEqual({ ran: false, rounds: 0, last: null });
   });
 });
