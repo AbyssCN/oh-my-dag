@@ -148,7 +148,7 @@ import { NOVELTY_COLLAPSE_LINE, pushNoveltyRound } from '../pathfinder/proximity
 // 跨层 import 是必要的: engine.ts 拿到了 fc 闭包内的 cr.text, 而接 parse 的活归 accept-delta 单点。
 import { extractFailSet } from '../goal/accept-delta';
 // P2b-runtime (2026-09-02): 运行期同款判据, 复用 P2b 分类期已经导出的窄探测 —— 不重写第二份。
-import { isBareWholeSuitePytest, PYTEST_HARNESS_INCONCLUSIVE_EXITS } from '../goal/acceptance-gate';
+import { isPytestHarnessInconclusive } from '../goal/acceptance-gate';
 // ── T2#5 按簇拆出的兄弟文件 (引擎消费) ──
 import type { GenerateFn, ExecutorDagConfig, LeafResult, ExecutorDagResult, DagObservation, BlameRetryLedger, DagNodeEvent } from './types';
 import { trySpinRepair, type GitDiffFn } from './replan-spin';
@@ -319,9 +319,14 @@ const roundStampNow = (): string => new Date().toISOString();
  * 于是"这条命令是不是配置里那份冻结判据"在那条路上恒答不出来。而这条判据只依赖命令自己的
  * 文本形状, 不依赖有没有配 `freezeCriterion` —— 一条 command 节点自己是不是 bare 整仓
  * pytest, 与它有没有被配成"冻结判据"无关: 命中就是同一件事(harness 没跑起来), 判词也一样。
+ *
+ * ⚠ review fix (P1, 2026-09-02): 判据本身 (含退出码 2 的 collection-error 例外) 已下沉到
+ * `../goal/acceptance-gate.ts` 的 `isPytestHarnessInconclusive` —— `run-goal.ts` 的另外
+ * 两个运行期调用点要走同一份, 三处各写一遍最容易在改例外时漂一处。这里只是薄包装, 留名字
+ * 是因为调用点读起来是"这是不是冻结判据没跑起来", 而不是泛指"是不是 pytest 判词坏了"。
  */
-function isFrozenCriterionInconclusive(command: string | undefined, exitCode: number | null): boolean {
-  return exitCode !== null && !!command && isBareWholeSuitePytest(command) && PYTEST_HARNESS_INCONCLUSIVE_EXITS.has(exitCode);
+function isFrozenCriterionInconclusive(command: string | undefined, exitCode: number | null, text: string): boolean {
+  return isPytestHarnessInconclusive(command, exitCode, text);
 }
 
 // ── 运行期闸 (INV-P2-5; 登记表见 ../invariants.ts) ────────────────────────────
@@ -3313,16 +3318,23 @@ async function executePlan(
             }
           }
           // P2b-runtime: waiveRed 优先于这一格判定 (赦免过的绿不该被回退成 inconclusive)。
-          const inconclusive = !ok && !blocked && !waivedHere && isFrozenCriterionInconclusive(fc.command, cr.exitCode);
+          const inconclusive = !ok && !blocked && !waivedHere && isFrozenCriterionInconclusive(fc.command, cr.exitCode, cr.text ?? '');
           if (inconclusive) freezeInconclusive = true;
-          // #245 INV-5: 红 ∧ 未闸拒 ∧ 未赦免 ∧ 非 inconclusive → 构造失败明细。绿 / 闸拒 / 赦免 /
-          // 未配 / harness 没跑起来 → 不构造 (inconclusive 不是"回归", 不许喂进下一轮 prompt)。
-          if (!ok && !blocked && !waivedHere && !inconclusive) {
-            const failSet = extractFailSet(cr.text);
-            const head = `冻结判据红 (${fc.command} → exit ${cr.exitCode})`;
-            freezeFailDetail = failSet.length
-              ? `${head}\n· 失败 ${failSet.length} 条: ${failSet.join(', ')}`
-              : head;
+          // #245 INV-5: 红 ∧ 未闸拒 ∧ 未赦免 ∧ 非 inconclusive → 构造失败明细。
+          // review fix (P2): inconclusive 不许套用"回归"文案 (会被下一轮读成新引入的失败),
+          // 但也不许整块消音 (仓规坑②"fail-open 不许吞证据") —— 换一句诚实的、不带红/回归
+          // 框架的事实, 让下一轮的 conductor 至少知道判据命令这次没给出判词、该换个指到具体
+          // 测试文件的命令, 而不是对着一句空 prompt 继续瞎猜。
+          if (!ok && !blocked && !waivedHere) {
+            if (!inconclusive) {
+              const failSet = extractFailSet(cr.text);
+              const head = `冻结判据红 (${fc.command} → exit ${cr.exitCode})`;
+              freezeFailDetail = failSet.length
+                ? `${head}\n· 失败 ${failSet.length} 条: ${failSet.join(', ')}`
+                : head;
+            } else {
+              freezeFailDetail = `冻结判据没给出判词 (${fc.command} → exit ${cr.exitCode}, bare 整仓 pytest, harness 没跑起来 —— 别当回归读, 给一条指到具体测试文件的命令)`;
+            }
           }
           if (inconclusive) {
             logger.info({ node: id, round, command: fc.command, exitCode: cr.exitCode }, '[omd/executor-dag] 冻结判据 (环内) —— harness-inconclusive, 不当回归读');
@@ -3570,6 +3582,8 @@ async function executePlan(
       prevNextSteps = verdict.nextSteps;
       // #245: 冻结判据失败明细同款线程 —— 单轮一鲜, 不留残值。本轮 freeze 绿 / 闸拒 / 赦免 / 未配
       // → freezeFailDetail === undefined → 下一轮 prompt 不挂这一块 (缺席零字节, INV-6)。
+      // inconclusive (review fix, P2) 不落这一格空: 它挂的是不带"红/回归"框架的诚实事实句
+      // (见上方构造处), 不是缺席 —— 别把"有话说但换了说法"读成"没话说"。
       prevCriterionFailDetail = freezeFailDetail;
       prevReason = roundObs.length
         ? `${verdict.reason}\n\n[图外观察者]\n${roundObs.map((o) => `- ${o.message}`).join('\n')}`
@@ -4147,7 +4161,7 @@ async function executePlan(
         // P2b-runtime: 判据/accept 节点自己是 bare 整仓 pytest 且命中 2/4/5 —— harness 没给出
         // 判词, 不是断言没成立。必须在 classifyCommandExit 之前判定, 否则那句 catch-all 'assert-failed'
         // 会先把它吃掉 (见 node-failure.ts:'oracle-inconclusive' 的分格理由)。
-        const criterionInconclusive = !ok && !blocked && isFrozenCriterionInconclusive(node.command, r.exitCode);
+        const criterionInconclusive = !ok && !blocked && isFrozenCriterionInconclusive(node.command, r.exitCode, r.text ?? '');
         return {
           id,
           status: ok ? 'done' : 'failed',

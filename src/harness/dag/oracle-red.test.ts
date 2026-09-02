@@ -213,4 +213,36 @@ describe('闸红短路 —— 端到端: 强模型那一发到底打没打', () 
     expect(findRedOracles(r.results)).toEqual([]);
     expect(calls).toBeGreaterThan(0);
   });
+
+  test('★ 审查回归: 退出码 2 且输出带 collection-error 签名 → 这是被测代码自己坏了, 不是 harness 没跑起来', async () => {
+    // review finding P1: exit 2 = pytest 的 EXIT_INTERRUPTED, 现实里绝大多数出现在
+    // "!!! Interrupted: N errors during collection !!!" —— agent 自己刚写坏的 import/语法错误
+    // 在 collect 阶段就爆了。分类时 (probeVacuity, 跑在改动前) 判它是"harness没跑起来"是对的;
+    // 但**运行期**这次跑的是 agent 改完之后的真代码, 同一个退出码这时候是一次真实的红。
+    // 证伪: 把 isFrozenCriterionInconclusive 对 exit 2 加的 collection-error 排除删掉 →
+    // 这条测试的 failureKind 断言从 'assert-failed' 落回 'oracle-inconclusive', findRedOracles
+    // 从非空落回空, verifier 从没被短路调用落回被短路跳过。
+    let calls = 0;
+    const r = await runExecutorDagWithPlan(
+      plan({ accept: { goal: '判据', executor: 'command', command: 'pytest -q' } }),
+      baseConfig({
+        commandRunner: async () => ({
+          text: '!!! Interrupted: 1 error during collection !!!\nImportError: cannot import name "foo" from "bar"',
+          usage: { in: 0, out: 0 },
+          timedOut: false,
+          signal: null,
+          exitCode: 2,
+        }),
+        freezeCriterion: { command: 'pytest -q' },
+        verifier: async () => {
+          calls++;
+          return { pass: false, reason: '强模型判的', usage: { in: 1, out: 1 } };
+        },
+      }),
+    );
+    expect(r.results.accept!.status).toBe('failed');
+    expect(r.results.accept!.failureKind).toBe('assert-failed'); // 真红, 不许读成 harness-inconclusive
+    expect(findRedOracles(r.results).map((x) => x.id)).toEqual(['accept']); // 短路生效
+    expect(calls).toBe(0); // 短路吃掉了 verifier 调用 —— 这正是"真红该被短路认领"的证明
+  });
 });

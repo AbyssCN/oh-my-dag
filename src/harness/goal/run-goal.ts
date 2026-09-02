@@ -43,8 +43,7 @@ import {
   acceptanceCommandBlockReason,
   acceptanceVacuityReason,
   checklistDiscriminationReason,
-  isBareWholeSuitePytest,
-  PYTEST_HARNESS_INCONCLUSIVE_EXITS,
+  isPytestHarnessInconclusive,
   type ProbeItemOutcome,
 } from './acceptance-gate';
 // P2b-runtime (2026-09-02): 冻结判据 harness-inconclusive 的运行尾巴要落进人读的 receipt,
@@ -465,8 +464,9 @@ export interface RunGoalResult {
   rubricRejection?: { source: 'frozen-drift' | 'probe'; reason: string };
   /**
    * **终态字面** (INV-5, 2026-08-29 否决边契约)。默认逐字等于 {@link outcome};
-   * 只有一格例外 —— rubric 分型而验收步缺席时它是 {@link TERMINAL_RUBRIC_UNWIRED},
-   * 因为那一格既不是"判据判红"也不是"环没收敛", 而是**这条判据压根没被接上**。
+   * 有两格例外 —— rubric 分型而验收步缺席时它是 {@link TERMINAL_RUBRIC_UNWIRED};
+   * 判据命令自己没给出判词 (P2b-runtime, bare 整仓 pytest 命中 2/4/5) 时它是
+   * {@link TERMINAL_CRITERION_INCONCLUSIVE} —— 两格都是"归因不是判红/没收敛"的同类例外。
    *
    * 为什么不新开一个 `RunOutcomeKind`: 那张词表有 9 个消费面 + db schema, 而这一位要答的
    * 问题是"归因时该把它算在哪一格", 不是"下一步做什么" (下一步与 not-converged 同: 别加轮数)。
@@ -474,7 +474,9 @@ export interface RunGoalResult {
   terminalLabel?: string;
   /**
    * **判据判红时的红因** (INV-2)。含 `rolled-back` = 本 run 曾转绿而终态低于那次绿
-   * (去看回滚/毒集那条链); 含 `never-green` = 一次都没转过绿 (去看修复轮)。
+   * (去看回滚/毒集那条链); 含 `never-green` = 一次都没转过绿 (去看修复轮); 含
+   * `harness-inconclusive` (P2b-runtime) = 判据命令自己没给出判词 (bare 整仓 pytest 命中
+   * 2/4/5), 不是代码被判红 —— 去看 `detail` 里带的跑输出尾, 换一条指到具体测试文件的命令。
    * 缺席 = 判据没判红 / 非可执行判据 (不是"红因不明")。
    */
   criterionRedCause?: string;
@@ -2154,7 +2156,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   ) {
     try {
       const rc = await config.dag.commandRunner({ command: runnable.command });
-      oracleRecheckInvalid = isBareWholeSuitePytest(runnable.command) && rc.exitCode !== null && PYTEST_HARNESS_INCONCLUSIVE_EXITS.has(rc.exitCode);
+      oracleRecheckInvalid = isPytestHarnessInconclusive(runnable.command, rc.exitCode, rc.text ?? '');
       if (oracleRecheckInvalid) recheckTail = rc.text;
       // 带&&防呆: harness-inconclusive 的退出码不该被读成"复验也命中了 expectExit"这种巧合绿。
       oracleRecheckGreen = !oracleRecheckInvalid && rc.exitCode === (runnable.expectExit ?? 0);
@@ -2266,8 +2268,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   // 的注), 而是直接读 run-goal 自己就有的 `acceptLeaf.exitCode` (D-K 执行器恒填这一位,
   // 与 `escalatedCfg` 有没有带 `freezeCriterion` 无关) 与上面已经算好的 `oracleRecheckInvalid`。
   const criterionHarnessInconclusive =
-    (isBareWholeSuitePytest(runnable?.command ?? '') && acceptLeaf?.exitCode != null && PYTEST_HARNESS_INCONCLUSIVE_EXITS.has(acceptLeaf.exitCode)) ||
-    oracleRecheckInvalid;
+    isPytestHarnessInconclusive(runnable?.command, acceptLeaf?.exitCode ?? null, acceptLeaf?.output ?? '') || oracleRecheckInvalid;
   const criterionRed =
     runnable !== null && !oracleOk
       ? classifyCriterionRed({
@@ -2681,7 +2682,10 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
         : outcome === 'blocked' ? `阻塞: ${blocked!.slice(0, 300)}`
         // P2b-runtime: 判在 oracle-failed 通用文案之前 —— 同一个 outcome, 但成因是"判据命令
         // 自己没给出判词", 不是"代码被判红" (与 rubricUnwiredTerminal 同一种"归因不是判红"处置)。
-        : criterionInconclusiveTerminal ? `${TERMINAL_CRITERION_INCONCLUSIVE}: ${criterionRed!.detail}`
+        // review fix (P2): 这里只印标签, 不重复带 detail —— `criterionRed.detail` (含最多 800
+        // 字的跑输出尾) 已经由本行下面 INV-2/INV-1/INV-4 那句 `· ${criterionRed.detail}` 统一
+        // 追加一次, 两处都印会把同一段 pytest 输出在同一行里印两遍。
+        : criterionInconclusiveTerminal ? TERMINAL_CRITERION_INCONCLUSIVE
         : outcome === 'oracle-failed' ? '环说成了但冻结判据(环外)没过 (D-I: 以判据为准)'
         // 两条路都落 delivered-with-red, 摘要必须说清是哪一条 —— 混着念就是在编现场:
         // converged=true 那条 accept **真跑真绿**, 照抄「accept 被级联压死没跑」会让读的人

@@ -372,6 +372,31 @@ export function isBareWholeSuitePytest(command: string): boolean {
 /** bare 整仓 pytest 命中这几个退出码 = 「harness 自己没跑起来」, 不是「代码被判红」。 */
 export const PYTEST_HARNESS_INCONCLUSIVE_EXITS = new Set([2, 4, 5]);
 
+/**
+ * P2b-runtime review fix (2026-09-02, P1): 退出码 2 (pytest `EXIT_INTERRUPTED`) 有两种成因,
+ * 分类时 (probeVacuity, 跑在任何改动**之前**) 分不清也不需要分——但**运行期**跑的是 agent
+ * 已经改过的真代码, 这时 2 绝大多数就是 `!!! Interrupted: N errors during collection !!!`,
+ * 即 collect 阶段的 ImportError/SyntaxError —— 那是被测代码这次真被判红了, 不是 harness
+ * 没跑起来。命中这个签名就不许读成 inconclusive, 必须落回 `classifyCommandExit` 的真红判词。
+ * (4/5 不受影响: 4 是用法错误、5 是没收集到测试, 两者都与"这次改动是不是把代码写坏了"无关。)
+ */
+export function pytestCollectionError(text: string): boolean {
+  return /errors? during collection|ERROR collecting/i.test(text);
+}
+
+/**
+ * 运行期共用判据 (P2b-runtime + review fix, 2026-09-02): 一条 command 是不是 bare 整仓
+ * pytest 且命中 harness-自伤退出码, **减去**「exit 2 但其实是 collection 阶段真被判红」那一格。
+ * `src/harness/dag/engine.ts` 与 `src/harness/goal/run-goal.ts` 的三个运行期调用点共用这一份,
+ * 避免 exit-2 例外只在其中一处补, 另外两处继续误判 (同一件事分三处各写一遍最容易漂)。
+ */
+export function isPytestHarnessInconclusive(command: string | undefined, exitCode: number | null, text: string): boolean {
+  if (exitCode === null || !command || !isBareWholeSuitePytest(command)) return false;
+  if (!PYTEST_HARNESS_INCONCLUSIVE_EXITS.has(exitCode)) return false;
+  if (exitCode === 2 && pytestCollectionError(text)) return false;
+  return true;
+}
+
 export async function probeVacuity(
   command: string,
   runCommand: (input: { command: string }) => Promise<{ exitCode: number | null }>,
