@@ -8,6 +8,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseBlameVerdict, runExecutorDagWithPlan } from './engine';
+import { ModelError } from '../../model';
 import { PLAN_BOUNDARY } from '../conductor-plan';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ContentPart } from '../../model/gateway';
@@ -1627,5 +1628,83 @@ describe('conductor 局部子图 fan-in 摘要 (双视图 + 三态闸)', () => {
     expect(faninSummaryCalls).toHaveLength(0);
     expect('faninAnchors' in aCheckpoint).toBe(false);
     expect(aCheckpoint.faninAnchors).toBeUndefined();
+  });
+});
+
+describe('conductor 展开失败原地重试 (P2a): 格式类/子图被拒类各自重试一次 (不计轮, 降至 medium); 传输类不重试', () => {
+  const LEAF_GOAL = 'LEAF_GOAL_MARKER_p2a';
+  const VALID_SUB = JSON.stringify({ name: 'sub', nodes: { X: { goal: LEAF_GOAL } } });
+  // D-D 禁嵌套: 子节点 executor:'conductor' → expandConductorNode 拒 (status:'nested'),
+  // 而 parsePlan 本身认这个词表值, 故第一发能拿到有效 JSON 但仍在展开闸上被拒。
+  const FORBIDDEN_SUB = JSON.stringify({ name: 'sub', nodes: { X: { goal: LEAF_GOAL, executor: 'conductor' } } });
+  const planMarker = PLAN_BOUNDARY.trim().split('\n')[0]!;
+
+  test('parse-failure retry-recovers: 格式类失败原地重试一次, 第二发降至 medium 且带上一发错误原文', async () => {
+    let expandCalls = 0;
+    const expandPrompts: string[] = [];
+    const expandThinking: (string | undefined)[] = [];
+    const generate: GenerateFn = async (req) => {
+      const user = contentText(req.messages.find((m) => m.role === 'user')?.content);
+      if (user.includes(planMarker)) {
+        expandCalls++;
+        expandPrompts.push(user);
+        expandThinking.push(req.thinkingLevel);
+        if (expandCalls === 1) return { text: '不是合法 JSON {{{', usage: { in: 1, out: 1 } };
+        return { text: VALID_SUB, usage: { in: 1, out: 1 } };
+      }
+      return { text: `out:${leafId(user)}`, usage: { in: 1, out: 1 } };
+    };
+    const r = await runExecutorDagWithPlan(
+      plan({ C: { goal: '顶点, 格式类重试', executor: 'conductor', max_rounds: 1 } }),
+      makeConfig(generate),
+    );
+    expect(expandCalls).toBe(2);
+    expect(expandThinking[1]).toBe('medium');
+    expect(expandThinking[0]).not.toBe('medium');
+    // 第二发必须带上第一发的错误原文 (correction) —— 逐字, 不是复述。
+    expect(expandPrompts[1]).toContain('子图不是有效 plan');
+    expect(r.results.C!.status).toBe('done');
+    expect(r.results.C!.rounds).toBe(1);
+  });
+
+  test('expand-rejected retry-recovers: 子图被拒类原地重试一次, 第二发带上 expand.error 原文', async () => {
+    let expandCalls = 0;
+    const expandPrompts: string[] = [];
+    const generate: GenerateFn = async (req) => {
+      const user = contentText(req.messages.find((m) => m.role === 'user')?.content);
+      if (user.includes(planMarker)) {
+        expandCalls++;
+        expandPrompts.push(user);
+        if (expandCalls === 1) return { text: FORBIDDEN_SUB, usage: { in: 1, out: 1 } };
+        return { text: VALID_SUB, usage: { in: 1, out: 1 } };
+      }
+      return { text: `out:${leafId(user)}`, usage: { in: 1, out: 1 } };
+    };
+    const r = await runExecutorDagWithPlan(
+      plan({ C: { goal: '顶点, 子图被拒重试', executor: 'conductor', max_rounds: 1 } }),
+      makeConfig(generate),
+    );
+    expect(expandCalls).toBe(2);
+    expect(expandPrompts[1]).toContain('D-D 禁嵌套');
+    expect(r.results.C!.status).toBe('done');
+  });
+
+  test('transport-error no-retry: 传输类不重试, 直接落失败叶 (无 backoff 的重试对 429/配额只会加倍花钱)', async () => {
+    let expandCalls = 0;
+    const generate: GenerateFn = async (req) => {
+      const user = contentText(req.messages.find((m) => m.role === 'user')?.content);
+      if (user.includes(planMarker)) {
+        expandCalls++;
+        throw new ModelError('transport', '模拟 429 配额耗尽');
+      }
+      return { text: `out:${leafId(user)}`, usage: { in: 1, out: 1 } };
+    };
+    const r = await runExecutorDagWithPlan(
+      plan({ C: { goal: '顶点, 传输类不重试', executor: 'conductor', max_rounds: 1 } }),
+      makeConfig(generate),
+    );
+    expect(expandCalls).toBe(1);
+    expect(r.results.C!.status).toBe('failed');
+    expect(r.results.C!.output).toContain('[conductor 展开失败: ');
   });
 });
