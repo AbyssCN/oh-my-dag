@@ -8,6 +8,14 @@
  * 的 `discovery` 原语在做的事,而 discovery 按 D-23 是 `explore` 的卡覆盖,不是 map 的)。
  * 与其把这个字段悄悄当空气(那正是仓规在猎杀的「明示却不生效」的死旋钮),compile 在
  * `until:'no-new'` 时诚实拒绝并给出替代路径,而不是假装支持。
+ *
+ * review-fix (P1①,2026-09-02): `lister.executor:'command'` 分支(engine.ts:3677-3683)
+ * 原样把命令 stdout 剥 code fence 后找 `{`…`}` 当 JSON 解析(engine.ts:3735-3737),对纯文本
+ * 「一行一项」的输出永远解不出对象 → 每次 map 调用都在 lister 那步以 infra-error 死给零子节点
+ * (INV-U7)。真正支持这种「模型自己不确定输出是不是 JSON」的分支是 `executor:'agent'`
+ * (engine.ts:3684-3688):它会在 prompt 里追加"只回一个 JSON 对象, 必含数组键"这句话,把
+ * 「跑命令 + 包成 JSON」两件事都交给一个带 bash 工具的 leaf 做,不要求 `list_from` 自己吐 JSON。
+ * 这里改用 `executor:'agent'`,manual/SHORT 措辞跟着改「读文本行」而不是「读 JSON」。
  */
 import { z } from 'zod';
 import type { ConductorPlan } from '../../conductor-plan';
@@ -22,6 +30,8 @@ const MapSchema = z
     stages: z.array(z.object({ goal: z.string().min(1) }).strict()).optional(),
     until: z.enum(['all', 'no-new']).optional(),
     max_items: z.number().int().positive().max(64).optional(),
+    /** review-fix (P2⑤,2026-09-02):见 tools/work.ts 同名字段注释。 */
+    help: z.boolean().optional(),
   })
   .strict();
 
@@ -32,8 +42,9 @@ const ITEM_VAR = 'item';
 const LISTER_ARRAY_KEY = 'items';
 
 const SHORT =
-  'One worker per item of a list that only exists at runtime. list_from is a read-only command that prints ' +
-  'the items. per_item is the goal template with {item}. Optional stages run each item through ordered steps.';
+  'One worker per item of a list that only exists at runtime. list_from is a read-only command; an agent step ' +
+  'runs it and reports one item per output line. per_item is the goal template with {item}. Optional stages ' +
+  'run each item through ordered steps. Pass help:true for the full manual.';
 
 export const mapTool: LeadTool<MapParams> = {
   name: 'map',
@@ -53,16 +64,25 @@ export const mapTool: LeadTool<MapParams> = {
     // per_item 用 {item} 写模板(manual 措辞);map-expand 的插值语法是 `${itemVar}`,这里做一次转写。
     const itemGoal = params.per_item.replace(/\{item\}/g, `\${${ITEM_VAR}}`);
     const stageLines = (params.stages ?? []).map((s, i) => `Stage ${i + 1}: ${s.goal}`);
+    // review-fix (P2⑥,2026-09-02): run 级验收命令不接每个元素的 self_check —— N 个并行子节点里
+    // 任一个先跑到底就会拿全 run 的验收命令(如整仓 `bun test`)给自己判分,而这时其它兄弟可能还在
+    // 半改状态,判到的红不是它自己的错。run 级判据只在 work/best_of 这种「结果即整条 run 的产物」
+    // 时才是那个节点该背的分,N-way 扇出的每个元素不该背。
     const template: ConductorPlan['nodes'][string] = {
       executor: 'agent',
       goal: stageLines.length > 0 ? [itemGoal, ...stageLines].join('\n\n') : itemGoal,
-      ...(ctx.acceptance ? { self_check: { command: ctx.acceptance.command, expect_exit: ctx.acceptance.expect_exit } } : {}),
     };
     const node: ConductorPlan['nodes'][string] = {
       executor: 'map',
       goal: `Runtime work list: ${params.list_from}`,
       map: {
-        lister: { executor: 'command', command: params.list_from },
+        lister: {
+          executor: 'agent',
+          goal:
+            `Run this read-only command: \`${params.list_from}\`. ` +
+            `Report its output as a JSON object with array key "${LISTER_ARRAY_KEY}" — one string per non-blank output line, in order.`,
+          output_schema: { [LISTER_ARRAY_KEY]: 'string[]' },
+        },
         over: LISTER_ARRAY_KEY,
         itemVar: ITEM_VAR,
         ...(params.key_by ? { keyBy: params.key_by } : {}),
