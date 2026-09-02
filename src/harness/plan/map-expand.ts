@@ -63,10 +63,11 @@ export const DEFAULT_MAX_ITEMS = 64;
 //
 // 为什么今天没人守得住:
 //   `dag/engine.ts:3552` 展开完直接 `plan.nodes[child.id] = ...` 写进图, 一个字都不校;
-//   `checkpoint-manager.ts:328` 与 `plan/observers.ts:110` 更是明写
-//   (⚠ 上一行刻意不写 `checkpoint-manager.ts` 的上级目录名 —— 那个词是 `Dag*Seam` 的字段名,
-//    写进来会被 `scripts/gen-seam-catalog.ts` 的 token 级消费方扫描当成本文件真消费了那个接缝,
-//    把一条注释算进 `docs/architecture/seams.md` 的消费方计数里。2026-09-02 实测踩过一次。)
+//   `continuity/checkpoint-manager.ts:328` 与 `plan/observers.ts:110` 更是明写
+//   (这里曾刻意不写 `continuity/` 这个上级目录名 —— 那个词是 `Dag*Seam` 的字段名, 而
+//    `scripts/gen-seam-catalog.ts` 当时对整份正文跑正则, 会把这条**注释**算成本文件真消费了
+//    那个接缝。2026-09-02 已由 `stripNonCode()` 修掉: 扫描只认代码, 注释与字符串字面量剥空。
+//    修掉之后全表 32 个字段的消费方计数下降 —— 那一列此前数的是「文件里提到过这个词」。)
 //   「子 id 由 INV-U2 **构造保证**是 `${parentId}::` 形」, 然后拿这个前缀去匹配毒集 /
 //   作废子树 —— 形状破了, 前缀匹配**静默落空**(匹配不到 ≠ 报错), 毒绿照样被复用。
 //   id 撞车更直接: 后一个 `plan.nodes[id]` 覆盖前一个, N 个元素静默变成 N-1 个子节点。

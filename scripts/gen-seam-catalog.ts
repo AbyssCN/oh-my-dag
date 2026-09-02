@@ -8,9 +8,10 @@
  * 两道闸 (与 schema-field-registry 同哲学 —— 纪律做成会红的闸, 不写散文):
  *   ① `--check`: 重新生成与盘上文件比对, 不一致 = 目录漂移 → exit 1;
  *   ② 死旋钮闸: 任一字段在 src/ (排除 types.ts 与 *.test.ts) 零消费 → exit 1 点名。
- *      消费判定是 token 级 `\b<name>\b` (上界: 泛名字段会多算, 但"至少一个真实消费方"
- *      这个闸只会因此更松不会误杀; 误杀方向 = 字段被消费却报零, token 扫描不会漏
- *      属性访问/解构/对象字面量三种形态)。
+ *      消费判定是 token 级 `\b<name>\b`, 但**只扫代码**: 注释与字符串/模板字面量的正文
+ *      先被 `stripNonCode` 抹成空格 (见那里的判据)。仍是上界 (泛名字段会多算, 但"至少一个
+ *      真实消费方"这个闸只会因此更松不会误杀; 误杀方向 = 字段被消费却报零, token 扫描
+ *      不会漏属性访问/解构/对象字面量三种形态)。
  *
  * 反向自检见 `src/harness/dag/seam-catalog.test.ts`。
  */
@@ -93,6 +94,38 @@ function* walkTs(dir: string): Generator<string> {
   }
 }
 
+/**
+ * 把注释与字符串/模板字面量的正文抹成空格 (长度与换行原样保留, 所以后面的 token 扫描
+ * 与计数逻辑一个字都不用改)。散文提到某个字段名 ≠ 这个文件消费了那个接缝。
+ *
+ * 为什么必须过 TS 解析器, 两条更省的路都实测走不通:
+ *   - 裸正则啃不动 `'http://x'` 里的 `//`、模板里的注释开头符, 反而会吃掉真代码;
+ *   - 裸 `ts.createScanner` 无解析上下文, 实测在 `src/harness/dag/engine.ts` (332KB) 只吐
+ *     7537 个 token 就到 EOF (模板/正则边界判错后整段被当字面量吞掉), 会把真消费方一起抹没。
+ * 真解析器 511 个文件 ~0.5s, 这个量级不值得再省。
+ *
+ * 反向自检 (注释里的字段名不算消费方 / 真代码里的算) 见 `src/harness/dag/seam-catalog.test.ts`。
+ */
+export function stripNonCode(text: string): string {
+  const sf = ts.createSourceFile('scan.ts', text, ts.ScriptTarget.Latest, true);
+  const chars = text.split('');
+  // 换行留着, 免得把跨行注释压成一行影响后续任何按行的读法; 抹成空格而非删除 = 偏移不变
+  const blank = (from: number, to: number) => {
+    for (let i = from; i < to; i++) if (chars[i] !== '\n') chars[i] = ' ';
+  };
+  const visit = (node: ts.Node): void => {
+    const kids = node.getChildren(sf);
+    // 注释是 trivia, 只挂在叶子 token 的 pos 前; 走到叶子才取, 免得同一段注释重复取 (抹两遍无害但白跑)
+    if (kids.length === 0) for (const c of ts.getLeadingCommentRanges(text, node.pos) ?? []) blank(c.pos, c.end);
+    if (ts.isStringLiteralLike(node) || ts.isTemplateHead(node) || ts.isTemplateMiddle(node) || ts.isTemplateTail(node)) {
+      blank(node.getStart(sf), node.end);
+    }
+    for (const k of kids) visit(k);
+  };
+  visit(sf);
+  return chars.join('');
+}
+
 /** 对 src/ 做一遍消费方扫描, 就地填充每个字段的 consumers。 */
 export function scanConsumers(seams: Seam[], srcDir = join(ROOT, 'src')): void {
   const names = seams.flatMap((s) => s.fields.map((f) => f.name));
@@ -100,7 +133,7 @@ export function scanConsumers(seams: Seam[], srcDir = join(ROOT, 'src')): void {
   const hits = new Map<string, Map<string, number>>(names.map((n) => [n, new Map()]));
   for (const file of walkTs(srcDir)) {
     if (file === TYPES_PATH) continue;
-    const text = readFileSync(file, 'utf8');
+    const text = stripNonCode(readFileSync(file, 'utf8'));
     const rel = relative(ROOT, file);
     for (const [name, re] of regexps) {
       const count = text.match(re)?.length ?? 0;
@@ -129,8 +162,8 @@ export function renderCatalog(seams: Seam[]): string {
   lines.push('     重新生成: bun scripts/gen-seam-catalog.ts ; 校验: bun scripts/gen-seam-catalog.ts --check -->');
   lines.push('');
   lines.push('每个 seam = 一组可替换能力。字段全文文档在类型定义里 (点进去看), 本目录回答三件事:');
-  lines.push('**有哪些接缝 · 每个字段谁在消费 · 换实现该去哪换**。消费方是 token 级扫描的上界,');
-  lines.push('列出命中最多的前 3 个文件。');
+  lines.push('**有哪些接缝 · 每个字段谁在消费 · 换实现该去哪换**。消费方是 token 级扫描的上界');
+  lines.push('(只扫代码 —— 注释与字符串字面量里提到字段名不算消费), 列出命中最多的前 3 个文件。');
   lines.push('');
   const totalFields = seams.reduce((n, s) => n + s.fields.length, 0);
   lines.push(`> ${seams.length} 个 seam · ${totalFields} 个字段 · 扫描范围 src/**/*.ts (排除测试)`);

@@ -5,7 +5,8 @@
  *  - 死旋钮闸: 字段在 src/ (非测试) 零消费 → 生成器拒 (用注入的假字段证明它真的会拒)。
  */
 import { describe, expect, test } from 'bun:test';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildCatalog, deadFields, extractSeams, renderCatalog, scanConsumers } from '../../../scripts/gen-seam-catalog';
 
@@ -52,6 +53,41 @@ describe('seam 目录 (gen-seam-catalog)', () => {
     const seams = extractSeams(readFileSync(join(ROOT, 'src/harness/dag/types.ts'), 'utf8'));
     expect(seams).toHaveLength(8);
     expect(seams.reduce((n, s) => n + s.fields.length, 0)).toBe(54);
+  });
+
+  // 2026-09-02 实测踩到的病: `src/harness/plan/map-expand.ts` 的注释里写了某个 Dag*Seam 字段名,
+  // token 级扫描把它算成"本文件消费了那个接缝", 漂移闸当场红 (56 vs 55 文件)。下面两条把
+  // "只认代码" 的正反两面钉死 —— 摘掉 gen-seam-catalog 里的 stripNonCode, 反向那条当场红。
+  const SCAN_FIXTURE = `
+    /** 假 seam */
+    export interface DagFixtureSeam {
+      zzzFixtureKnob9?: boolean;
+    }
+  `;
+  const scanIn = (files: Record<string, string>) => {
+    const dir = mkdtempSync(join(tmpdir(), 'seam-scan-'));
+    for (const [name, body] of Object.entries(files)) writeFileSync(join(dir, name), body);
+    const seams = extractSeams(SCAN_FIXTURE);
+    scanConsumers(seams, dir);
+    return seams[0]!.fields[0]!;
+  };
+
+  test('消费方扫描反向: 只在注释/字符串字面量里出现的字段名不算消费方', () => {
+    const field = scanIn({
+      'commented.ts': '// zzzFixtureKnob9 只在这条注释里出现\n/* 以及 zzzFixtureKnob9 这条块注释 */\nexport const x = 1;\n',
+      'stringy.ts': "export const msg = '旋钮 zzzFixtureKnob9 的说明文字';\nexport const t = `模板里的 zzzFixtureKnob9`;\n",
+    });
+    expect(field.consumerCount).toBe(0);
+    expect(field.consumers).toEqual([]);
+  });
+
+  test('消费方扫描正控: 真代码里的引用照样算 (闸不是永远不报)', () => {
+    const field = scanIn({
+      'commented.ts': '// zzzFixtureKnob9 只在这条注释里出现\nexport const x = 1;\n',
+      'real.ts': 'export function f(cfg: { zzzFixtureKnob9?: boolean }) {\n  const { zzzFixtureKnob9 } = cfg;\n  return zzzFixtureKnob9 === true;\n}\n',
+    });
+    expect(field.consumerCount).toBe(1);
+    expect(field.consumers[0]).toEndWith('real.ts');
   });
 
   test('抽取保真: 必填/可选与 JSDoc 首句都进目录', () => {
