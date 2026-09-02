@@ -32,7 +32,7 @@
  */
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { LANGUAGE_PACKS } from './command-leaf';
+import { LANGUAGE_PACKS, allowlistForRoot } from './command-leaf';
 import { logger } from './logger';
 
 export type LanguageId = 'python' | 'js' | 'go' | 'rust';
@@ -249,6 +249,20 @@ export function probeEnvFacts(root: string, env: Record<string, string | undefin
     testCommandCandidates: [...new Set(testCommandCandidates)],
     scanned: { files: scan.files, dirs: scan.dirs, truncated: scan.truncated, unreadable: scan.unreadable },
   };
+}
+
+/**
+ * **单一来源** (review 抓到的 P2c 缺口, 2026-09-02): 运行期白名单 = marker 表
+ * (`allowlistForRoot`) ∪ 真探测启用的 bin (`probeEnvFacts(...).enabledBins`)。
+ * 之前 `src/mcp/assemble.ts`(command 节点)与 `src/harness/agent-leaf.ts`(self_check)
+ * 各自 inline 一份同样的 union —— 两处独立算同一件事, 改一处漏另一处就是「假红」。
+ * 调用方仍各自决定要不要在 extra 非空时打日志 (口径不同: assemble.ts 打 `[omd/mcp]`,
+ * self_check 打 `[agent-leaf]`), 所以日志不放进这个纯函数里。
+ */
+export function runtimeAllowlistForRoot(root: string, env: Record<string, string | undefined> = process.env): string[] {
+  const base = allowlistForRoot(root);
+  const extra = probeEnvFacts(root, env).enabledBins.filter((b) => !base.includes(b));
+  return [...base, ...extra];
 }
 
 /**

@@ -47,6 +47,8 @@ import {
   type SelfCheckOutcome,
 } from './agent-leaf';
 import { setLoggerDestination } from '../logger';
+import { allowlistForRoot } from './command-leaf';
+import { probeEnvFacts, runtimeAllowlistForRoot } from './env-facts';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 
@@ -331,6 +333,24 @@ describe('P2c — runSelfCheckProbe 真 defaultSpawn 遵守调用方 allowlist (
     if (out.kind === 'exited') {
       expect(out.exitCode).toBe(0);
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// P2c review-fix — runtimeAllowlistForRoot 单源: self_check (agent-leaf.ts) 与
+// command 节点 (assemble.ts) 的 base∪probe union 此前各写一份 inline IIFE, review
+// 抓到「两处独立计算同一件事」——改一处漏另一处就是假红。现在两边共用这一个导出函数。
+// 反向自检: 把 runtimeAllowlistForRoot 函数体里 `...extra` 那段删掉、只 return base
+// → 本测试红 (真探测到的 bin, 如本仓的 python3/uv, 不再出现在返回值里)。
+// ─────────────────────────────────────────────────────────────────────────
+describe('P2c review-fix — runtimeAllowlistForRoot 是 base∪probe 的单一来源', () => {
+  test('返回值是 allowlistForRoot 的超集, 且含 probeEnvFacts 真探测到的全部 bin', () => {
+    const cwd = process.cwd();
+    const base = allowlistForRoot(cwd);
+    const probed = probeEnvFacts(cwd).enabledBins;
+    const combined = runtimeAllowlistForRoot(cwd);
+    for (const bin of base) expect(combined).toContain(bin);
+    for (const bin of probed) expect(combined).toContain(bin);
   });
 });
 

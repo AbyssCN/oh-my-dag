@@ -109,7 +109,7 @@ import {
 import { createSandboxedLeafRunner } from './hooks/sandboxed-leaf';
 import { loadSandboxConfig } from './hooks/command-policy';
 import { allowlistForRoot, createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from './command-leaf';
-import { probeEnvFacts } from './env-facts';
+import { runtimeAllowlistForRoot } from './env-facts';
 import { formatRepoChecksFailure, runRepoChecks } from './repo-checks';
 import type { RepoCheck } from './repo-checks';
 import type { GateSpawn } from './post-leaf-gate';
@@ -1793,6 +1793,20 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
   // oracle 泄漏一次性全封, 不逐工具打地鼠。前置委托: 下面 in-process 装配 (工具/hook/循环) 全不需要。
   if (opts.sandboxRoot) return createSandboxedLeafRunner(opts);
   const cwd = opts.cwd ?? process.cwd();
+  // self_check 的真探测白名单只依赖 cwd (与具体某次 leaf 调用无关), 但它此前算在
+  // runOnce 内部 —— 同一个 runner 每次调用都重扫一遍盘 (review 抓到: ~190ms 同步
+  // readdirSync, 每次 fan-out 里每条 leaf 都白付一次)。这里按 runner 生命周期惰性算
+  // 一次并缓存, 只有真用到 self_check 时才付第一次扫描的成本 (P2c review-fix)。
+  let selfCheckAllowlistCache: string[] | undefined;
+  const selfCheckAllowlist = (): string[] => {
+    if (!selfCheckAllowlistCache) {
+      selfCheckAllowlistCache = runtimeAllowlistForRoot(cwd);
+      const base = allowlistForRoot(cwd);
+      const extra = selfCheckAllowlistCache.filter((b) => !base.includes(b));
+      if (extra.length > 0) logger.info({ cwd, extra }, '[agent-leaf] self_check 白名单按仓环境真探测扩充');
+    }
+    return selfCheckAllowlistCache;
+  };
   // 缺省档按**通道**分 (2026-08-10 owner): 同一个默认值在两种计价下经济学相反, 不能共用。
   //   pi 通道 → xhigh (owner 锁, 定价前提 = deepseek flash per-token 便宜档, xhigh 几乎白送;
   //     agent leaf 改文件/工具循环质量优先, 数量少于 inproc fan-out)。inproc leaf 才走 high。
@@ -2593,12 +2607,8 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
           spec: selfCheck,
           cwd,
           // 与 command 节点同款真探测: base 表之外再并上本仓探到的语言 bin (python3/pytest 等),
-          // 否则 self_check 的外层闸永远看不到这些 (assemble.ts:513-521 同款 union, P2c)。
-          allowlist: (() => {
-            const base = allowlistForRoot(cwd);
-            const extra = probeEnvFacts(cwd).enabledBins.filter((b) => !base.includes(b));
-            return [...base, ...extra];
-          })(),
+          // 否则 self_check 的外层闸永远看不到这些 (runtimeAllowlistForRoot 单一来源, P2c)。
+          allowlist: selfCheckAllowlist(),
           getTouchedSize: () => touched.size,
           // 内容级判据 (2026-08-26): 同一文件二次编辑时计数不动而指纹动 —— 计数那把尺子
           // 会把它误判成"零新增"并当场停掉自修环。两个方向的证伪都在 leaf-self-check.test.ts。
