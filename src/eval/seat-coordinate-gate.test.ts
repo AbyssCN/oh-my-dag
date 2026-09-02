@@ -74,6 +74,9 @@ const NOISE_PROVIDERS: ReadonlySet<string> = new Set([
   'channel', 'rule', 'off', 'grill', 'canary', 'addTicket', 'setSecrets', 'contract',
   'urn', 'W2', 'fixture', 'research', 'file', 'HH', 'SYS', 'package.json', 'conductor',
   'suggest', 'confirmSuggestion', 'syncFromMap',
+  // autoresearch 夜链挖题矿源的 CandidateItem.id 命名空间 `<source>:<stable-key>`
+  // (2026-09-02, docs/plan/2026-09-02-夜间自迭代链-执行契约.md 冻结接口) —— 非模型坐标。
+  'sessions', 'readout',
   // backend-gh 的 run(gh, …, op) 操作标签命名空间 (c2f87e6 新增三步 escalate:stamp/reopen/label,
   // 与上一行 addTicket/syncFromMap 同族) —— 非模型坐标。
   'escalate',
