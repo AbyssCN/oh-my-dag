@@ -28,6 +28,21 @@ describe('bench-bootstrap (E1b 容器配置引导)', () => {
     for (const id of ['leaf', 'agent', 'judge', 'gate', 'lens']) expect(m[id]).toBe('bench:MiniMax-M3');
   });
 
+  // P2a (2026-09-02): escalation 此前恒等于 conductor 坐标 (CONDUCTOR_SEATS 分组), 使
+  // engine.ts 的轮级 conductor 升级 (D-F) 在三角色 bench 模式下永远是同一个坐标 → 结构性
+  // no-op。OMD_BENCH_ESCALATION_MODEL 给一个独立第四坐标, **不给时**必须逐字节回落 conductor
+  // (零回归, 上面「★ 三角色模式」用例锁住这条默认行为)。
+  test('★ OMD_BENCH_ESCALATION_MODEL 给了 → 只路由 escalation 座, conductor/fusion/graft 仍落 conductor 坐标', () => {
+    const m = benchSeatModels({
+      OMD_BENCH_CONDUCTOR_MODEL: 'claude-opus-5',
+      OMD_BENCH_WORKER_MODEL: 'MiniMax-M3',
+      OMD_BENCH_VERIFIER_MODEL: 'gpt-5.6-sol',
+      OMD_BENCH_ESCALATION_MODEL: 'deepseek-v4-pro',
+    });
+    expect(m.escalation).toBe('bench:deepseek-v4-pro');
+    for (const id of ['conductor', 'fusion', 'graft']) expect(m[id]).toBe('bench:claude-opus-5');
+  });
+
   test('★ 四角色模式 (可选): OMD_BENCH_JUDGE_MODEL 给了 → judge 拿独立坐标, 不给 → 与三角色模式逐字相同', () => {
     // 反向自检: 把 JUDGE_SEATS 判断删掉/把 j 恒当 undefined → (a) 这条第一断言红。
     // (a) 四个 env 都给: judge 落到独立第四坐标, 既不等于 verifier 也不等于 leaf(worker)。
@@ -54,19 +69,12 @@ describe('bench-bootstrap (E1b 容器配置引导)', () => {
     expect(() => benchSeatModels({ OMD_BENCH_CONDUCTOR_MODEL: 'a', OMD_BENCH_WORKER_MODEL: 'b' })).toThrow(/齐给/);
   });
 
-  // P2a (2026-09-02): escalation 此前恒等于 conductor 坐标 (CONDUCTOR_SEATS 分组), 使
-  // engine.ts 的轮级 conductor 升级 (D-F) 在三角色 bench 模式下永远是同一个坐标 → 结构性
-  // no-op。OMD_BENCH_ESCALATION_MODEL 给一个独立第四坐标, **不给时**必须逐字节回落 conductor
-  // (零回归, 上面「★ 三角色模式」用例锁住这条默认行为)。
-  test('★ OMD_BENCH_ESCALATION_MODEL 给了 → 只路由 escalation 座, conductor/fusion/graft 仍落 conductor 坐标', () => {
-    const m = benchSeatModels({
-      OMD_BENCH_CONDUCTOR_MODEL: 'claude-opus-5',
-      OMD_BENCH_WORKER_MODEL: 'MiniMax-M3',
-      OMD_BENCH_VERIFIER_MODEL: 'gpt-5.6-sol',
-      OMD_BENCH_ESCALATION_MODEL: 'deepseek-v4-pro',
-    });
-    expect(m.escalation).toBe('bench:deepseek-v4-pro');
-    for (const id of ['conductor', 'fusion', 'graft']) expect(m[id]).toBe('bench:claude-opus-5');
+  test('★ OMD_BENCH_MODEL + OMD_BENCH_JUDGE_MODEL 同给, 三件套缺席 → throw (P2 审: 不许静默落单模型分支吞掉 judge)', () => {
+    // 反向自检: 把 anyRole 的 `Boolean(c || w || v || j)` 改回不含 j 的版本 → 本条当场绿变红
+    // 反面 —— 会静默落进单模型分支, 18 座全钉 gpt-x, OMD_BENCH_JUDGE_MODEL 被吞, 不 throw。
+    expect(() =>
+      benchSeatModels({ OMD_BENCH_MODEL: 'gpt-x', OMD_BENCH_JUDGE_MODEL: 'deepseek-v4-pro' }),
+    ).toThrow(/齐给/);
   });
 
   test('writeBenchConfig 保留既有其它键, models 整段覆盖', () => {

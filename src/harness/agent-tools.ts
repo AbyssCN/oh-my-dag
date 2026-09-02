@@ -731,10 +731,17 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
       if (secretBasenameOf(path)) warnSecret(path);
       const full = abs(cwd, path);
       // ── 读域闸 (P2d 子修 1, 2026-09-02): DAG leaf 专用, chat/TUI 缺省不设边界 ──────────
-      if (!readable(full)) {
+      // ⚠ P1 修复 (P2 审查): `abs()` 对绝对路径原样返回、不 resolve —— `readable()` 只做
+      // 字符串前缀比较, `${root}/../outside/x` 未归一时前缀仍是 root, 直接绕过。判之前
+      // 用 `resolve()` 收一次 `..`, 而非改 `readable()` 本身(写域的 `writable()` 同样靠
+      // 调用方给归一路径, 不在这里顺手改, 免得动到没被点名的那一半)。
+      const resolvedFull = resolve(full);
+      if (!readable(resolvedFull)) {
+        const tmpHint = resolvedFull.startsWith(tmpdir() + sep) || resolvedFull === tmpdir();
         throw new Error(
           `BLOCKED 读域越界: read 的目标 ${display(cwd, full)} 不在读域根内 (${confineReadsToRoot})。` +
-            '要读工作根外的文件, 说明这个节点的分工写错了 — 别绕开它。',
+            '要读工作根外的文件, 说明这个节点的分工写错了 — 别绕开它。' +
+            (tmpHint ? ' (/tmp 可写但不可读 —— 中间产物改落 `<cwd>/.omd`。)' : ''),
         );
       }
       // ★ D-2: 图片走 UTF-8 解码会得到一坨替换字符乱码喂给模型; 早拒, 指引改用 view_image。

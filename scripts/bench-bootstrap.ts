@@ -63,7 +63,11 @@ export function benchSeatModels(env: Record<string, string | undefined>): Record
   // judge 落回 w 分支 —— 与本坐标出现之前逐字节相同, 不逼三角色调用方多传一个 env。
   const j = env.OMD_BENCH_JUDGE_MODEL?.trim();
   const e = env.OMD_BENCH_ESCALATION_MODEL?.trim();
-  const anyRole = Boolean(c || w || v);
+  // ⚠ P2 审 (2026-09-02): j 必须一起进 anyRole —— 否则「只给 OMD_BENCH_MODEL + JUDGE」
+  // 会静默落进下面的单模型分支, JUDGE 一个字都不生效 (配了不生效的空旋钮, 本仓要杀的形态);
+  // 落进三角色分支后 c/w/v 不齐照样 fail-closed throw, 不会因为多了 j 而放宽三件套要求。
+  // 同理 e (P2a 的 escalation 坐标) 也进 anyRole, 否则「只给 MODEL + ESCALATION」同样静默吞掉。
+  const anyRole = Boolean(c || w || v || j || e);
   if (anyRole) {
     if (!(c && w && v))
       throw new Error('bench-bootstrap: 三角色模式要求 CONDUCTOR/WORKER/VERIFIER 三个 OMD_BENCH_*_MODEL 齐给 (fail-closed, 不写半套配置)');
@@ -113,7 +117,7 @@ if (import.meta.main) {
     process.stderr.write(`${(e as Error).message}\n`);
     process.exit(1);
   }
-  // provider 的 model 条目 = 座位映射里出现过的全部裸 id (单模型 1 个, 三角色 ≤3 个)。
+  // provider 的 model 条目 = 座位映射里出现过的全部裸 id (单模型 1 个, 三/四角色 ≤4 个)。
   const ids = [...new Set(Object.values(models).map((c) => c.slice('bench:'.length)))];
   upsertProvider({ id: 'bench', baseUrl, keyEnv: 'OMD_BENCH_API_KEY', api, models: ids.map((id) => ({ id })) });
   const path = writeBenchConfig(process.cwd(), models);
