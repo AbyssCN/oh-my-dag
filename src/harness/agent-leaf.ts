@@ -2217,7 +2217,11 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // ① shouldStopAfterTurn: 超时/上下文预算到了 → 在**轮之间**优雅停, 已写盘的产物完整保留。
     // ② AbortSignal: 单轮自己跑过头 (provider 挂着不返) 的硬兜底。
     // 此前这两件事都只能靠外部秒表 + SIGKILL —— 高层 prompt() 既没有 maxTurns 也不收 signal。
-    const timeoutMs = opts.leafTimeoutMs ?? 3_600_000;
+    // P2e (2026-09-02): 有效超时 = 两个数取紧的那个 —— `input.leafTimeoutMs`(引擎按目标
+    // 剩余预算算的每次调用值) 与 `opts.leafTimeoutMs ?? 3_600_000`(构造期固定兜底)。
+    // 只在这里 (唯一同时看得到两个数的地方) 收紧, 不放宽: 调用方就算给一个很大的
+    // `input.leafTimeoutMs`, 也升不过 opts 那道构造期上限。
+    const timeoutMs = Math.min(input.leafTimeoutMs ?? Number.POSITIVE_INFINITY, opts.leafTimeoutMs ?? 3_600_000);
     const idleTimeoutMs = opts.idleTimeoutMs ?? 180_000;
     const budgetRatio = opts.contextBudgetRatio && opts.contextBudgetRatio > 0 ? opts.contextBudgetRatio : 0.85;
     const wantCompaction = opts.compaction !== false;

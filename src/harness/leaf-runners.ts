@@ -108,6 +108,14 @@ export interface AgentLeafInput {
    * 交互式 steering, headless 当自动喂料通道是借用 (D-6), 借完要明写。
    */
   self_check?: SelfCheckSpec;
+  /**
+   * P2e (2026-09-02): **本次调用**的超时上限 (ms), 由引擎侧 `remainingBudgetMs()` 按目标
+   * 剩余预算算出 —— 与 `AgentLeafRunnerOpts.leafTimeoutMs`(构造期固定兜底, 默认 1h)是两件事。
+   * 有效超时 = `Math.min(本字段, opts.leafTimeoutMs)`(只收紧不放宽, 收紧闸单一真源在
+   * agent-leaf.ts 里算, 因为只有那里同时看得到两个数)。
+   * 缺席 = 本次调用不受目标预算约束, 沿用 opts 级兜底 (老调用方逐字节零回归)。
+   */
+  leafTimeoutMs?: number;
 }
 
 /**

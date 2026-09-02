@@ -152,9 +152,6 @@ export function createSandboxedLeafRunner(opts: AgentLeafRunnerOpts): AgentLeafR
     if (!gitBinds) logger.warn({ root }, '[omd/sandboxed-leaf] 要求挂 git 元数据但解析不出 (不是 git 树?) — jail 里仍无 git');
   }
   const optsJson = serializableOpts(opts);
-  // 与 agent-leaf 的默认同源 (2026-08-01 一起从 240s 提到 1h): 这里若还留 240s,
-  // 隔离档的叶子会被父进程在 4.5 分钟处杀掉, 而 in-process 档能跑 1 小时 —— 同一个叶子两个寿命。
-  const timeoutMs = opts.leafTimeoutMs ?? 3_600_000;
   // D-9 执行端: 保留的 sandboxSafe 工具在 worker 侧只是 decl (execute 过不了 JSON 边界),
   // 真调用经文件桥回到**这里的原有实例** (与 serializableOpts 同一张 `sandboxSafe === true` 判据)。
   // 零保留工具 → 不开桥、payload 不落 toolBridge 键 —— 与零 ext 基线逐字节一致。
@@ -187,6 +184,11 @@ export function createSandboxedLeafRunner(opts: AgentLeafRunnerOpts): AgentLeafR
   }
 
   return async (input: AgentLeafInput): Promise<AgentLeafResult> => {
+    // P2e (2026-09-02): 与 agent-leaf 的默认同源 (2026-08-01 一起从 240s 提到 1h) ——
+    // 这里若只认 opts.leafTimeoutMs, 引擎按剩余预算收紧的 `input.leafTimeoutMs` 只会传进
+    // worker 内部的 agent-leaf 调用, jail 这层外部杀进程计时器却仍按老的固定 1h 走,
+    // 同一次调用两个天花板。按调用取紧的那个, 与 in-process 档 (agent-leaf.ts) 同一条闸。
+    const timeoutMs = input.leafTimeoutMs ?? opts.leafTimeoutMs ?? 3_600_000;
     const id = `${process.pid}-${++seq}`;
     const payloadRel = `.omd-leaf-payload-${id}.json`;
     const resultRel = `.omd-leaf-result-${id}.json`;

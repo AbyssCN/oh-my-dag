@@ -1115,17 +1115,36 @@ async function executePlan(
       ? `时间预算已尽: 已用 ${Math.round(spent / 1000)}s / 上限 ${Math.round(msCap / 1000)}s`
       : null;
   };
-  // P2e (2026-09-02): leaf 超时 ≤ 剩余预算 —— 同一只钟, 只是从"要不要开新一轮"改问
+  // P2e (2026-09-02 修订): leaf 超时 ≤ 剩余预算 —— 同一只钟, 只是从"要不要开新一轮"改问
   // "这一发该给多久"。dispatchBudgetHit 只在轮边界/子图 pump 里查, 单个 agent leaf 在轮中
   // 能跑多久与目标预算完全脱节, 只受 agent-leaf 自己那颗固定 1h 兜底钟管 (batch-7 现场:
-  // 40min 预算实跑到 54min)。`Math.max(1, …)`: 剩余已 ≤0 也不许传 0 —— 0 在 agent-leaf 里的
-  // 语义是"不设超时" (语义反转会比不传更糟)。clamp 到 3_600_000 (agent-leaf 默认上限同款魔数):
-  // 预算充裕时不许把单次调用的超时**拉高**过历史默认, 这条闸只收紧不放宽。
+  // 40min 预算实跑到 54min)。
+  // ⚠ 首版 `Math.max(1, …)` 把"剩余已耗尽"变成"给 1ms" —— 现场验证: 1ms 超时下
+  // agent-leaf 在第一轮内 abort, 返回空文本 + `timedOut:true`, 而 engine.ts 从不读
+  // `r.timedOut` (只读 stalled/spinFused), 无产物声明的节点就此被判 `done` 空产出静默通过
+  // (谎报完工, 仓规 §静默坑)。剩余不够用不是"给一个几乎为 0 的超时", 是"这一发不该派":
+  // 低于 `LEAF_MIN_SLICE_MS` 时 `remainingBudgetMs()` 返回 `undefined`, 由调用处判"不派发",
+  // 结构化成 `budgetStopped`(与轮边界预算耗尽同一套词表), 不是悄悄塞一个必死的计时器。
+  // clamp-到-3_600_000 挪去 agent-leaf.ts (`Math.min(input.leafTimeoutMs, opts.leafTimeoutMs)`)
+  // —— 那是唯一同时看得到"这次给多久"与"构造期兜底"两个数的地方, 这里不再重复夹一次。
+  const LEAF_MIN_SLICE_MS = 5_000;
   const remainingBudgetMs = (): number | undefined => {
     const msCap = config.loopBudget?.ms;
     if (msCap === undefined) return undefined;
     const spent = Date.now() - (config._budgetAnchor ?? planStartedAt);
-    return Math.min(3_600_000, Math.max(1, msCap - spent));
+    const left = msCap - spent;
+    return left > LEAF_MIN_SLICE_MS ? left : undefined;
+  };
+  // 上面那个 undefined 抹平了"没配预算"与"配了但已耗尽"两种事实 (NULL≠0≠不适用) ——
+  // 前者不该拦派发, 后者该拦。这里单独判后者, 给派发点一个可读的 `budgetStopped` 消息。
+  const leafDispatchBudgetStopped = (): string | undefined => {
+    const msCap = config.loopBudget?.ms;
+    if (msCap === undefined) return undefined;
+    const spent = Date.now() - (config._budgetAnchor ?? planStartedAt);
+    const left = msCap - spent;
+    return left <= LEAF_MIN_SLICE_MS
+      ? `时间预算已尽: 剩余 ${Math.max(0, Math.round(left / 1000))}s ≤ 最小可用切片 ${Math.round(LEAF_MIN_SLICE_MS / 1000)}s (已用 ${Math.round(spent / 1000)}s / 上限 ${Math.round(msCap / 1000)}s)`
+      : undefined;
   };
   const cancelReason = (): string => {
     const r = config.cancelSignal?.reason;
@@ -3620,7 +3639,15 @@ async function executePlan(
         // SDD S3 碰撞台账会话: runId + 节点维度稳定后缀 (lister 是 map 节点的子 agent)。
         // 引擎不建 runner (由接线层注入、跨 run 复用) → session 只能走调用期 input (AgentLeafInput.touchSession)。
         const touchRunId = continuity?.runId ?? config.sessionId;
-        const r = await config.agentRunner({ prompt: listerPrompt, model: listerModel, ...(touchRunId ? { touchSession: `${touchRunId}:${id}:lister` } : {}) });
+        // P2e: fan-out lister 探针与主 leaf 派发同一只钟 —— 未收紧前它恒用固定 1h 默认,
+        // 目标预算快用完时探针照样能拿满 1h。
+        const listerBudgetMs = remainingBudgetMs();
+        const r = await config.agentRunner({
+          prompt: listerPrompt,
+          model: listerModel,
+          ...(touchRunId ? { touchSession: `${touchRunId}:${id}:lister` } : {}),
+          ...(listerBudgetMs !== undefined ? { leafTimeoutMs: listerBudgetMs } : {}),
+        });
         recordGeneration({
           traceId: obsTraceId,
           name: `map-lister-agent:${id}`,
@@ -4452,6 +4479,24 @@ async function executePlan(
             );
           }
         }
+        // P2e (2026-09-02 修订): 剩余预算不够一个可用切片 → 这一发不派, 不是塞一个必死的
+        // 计时器 (首版 `leafTimeoutMs:1` 现场实测: agent-leaf 第一轮内 abort, 空文本 +
+        // `timedOut:true`, 而 engine.ts 从不读 `r.timedOut` → 无产物声明的节点被判 `done`
+        // 空产出静默通过, 正是谎报完工)。结构化成 `budgetStopped`, 与轮边界预算耗尽同词表,
+        // "加预算 resume 能成"。
+        const dispatchBudgetStopped = leafDispatchBudgetStopped();
+        if (dispatchBudgetStopped) {
+          logger.warn({ node: id, why: dispatchBudgetStopped }, '[omd/executor-dag] 剩余预算不够一个可用切片 → agent 叶不派发');
+          return {
+            id,
+            status: 'failed',
+            kind: 'agent',
+            output: '[时间预算已尽, 未派发]',
+            deps,
+            usage: { in: 0, out: 0 },
+            budgetStopped: dispatchBudgetStopped,
+          };
+        }
         // P2e: 配了目标预算 → 这一发的超时不许超过剩余额度 (未配 → undefined, 不下发字段,
         // 老调用方逐字节零回归)。
         const leafBudgetMs = remainingBudgetMs();
@@ -4507,7 +4552,13 @@ async function executePlan(
           ...(r.usage ? { usage: r.usage } : {}),
           startTime: agentStart,
           endTime: new Date(),
-          metadata: { filesTouched: r.filesTouched?.length ?? 0, ...(r.stalled ? { stalled: true } : {}) },
+          metadata: {
+            filesTouched: r.filesTouched?.length ?? 0,
+            ...(r.stalled ? { stalled: true } : {}),
+            // P2e: 只有它落盘, "本节点这次给了多少超时预算" 才可对 dag-runs.db join —— 之前
+            // 这个字段哪儿都不落, 前一版契约声称的信号无处可查。
+            ...(leafBudgetMs !== undefined ? { leafTimeoutMs: leafBudgetMs } : {}),
+          },
         });
         text = r.text;
         usage = r.usage;
