@@ -2241,8 +2241,31 @@ async function executePlan(
         '[omd/executor-dag] 内环多轮未收敛 → conductor 轮级升级重画 (D-F)',
       );
     }
-    let sub: ConductorPlan;
-    try {
+    // ── 2. 纯展开: D-B 内容寻址 id + D-D 禁嵌套 + 环检测 + 硬顶 ──
+    // 执行段的附加禁单 (research) 按调用传 —— 契约段不传, 它的 research 子节点是正当的。
+    // E-T2: researchRunner 缺席时契约段也禁 —— 这不是政策收紧, 是能力缺席 (子节点执行期必败)。
+    // (forbidExecutors 提到 attemptExpand 之前算, 与展开尝试次数无关。)
+    const forbidBase =
+      plan!.name === EXECUTE_SEGMENT_PLAN_NAME ? EXECUTE_SEGMENT_FORBIDDEN_EXECUTORS : undefined;
+    const forbidExecutors = config.researchRunner
+      ? forbidBase
+      : new Map<string, string>([
+          ...(forbidBase ?? []),
+          ['research', '本部署无 search provider — research 子节点执行期必败 (E-T2), 用本地材料的 agent/leaf 完成'],
+        ]);
+    // P2a (2026-09-02): generate() 成功之后的 parsePlan 格式类拒绝 / applyPlanFilters 管线抛错 /
+    // expandConductorNode 子图被拒, 三者都是"模型这一发画错了, 换句话再问一次多半就好"的自纠类错误,
+    // 与 generate() 自身抛错 (transport/quota/config —— 换个说法问也不会变, 立即重试只是白烧一次
+    // 配额) 完全不同类。所以 generate() 故意留在 attemptExpand **调用方**看不到 try/catch 里的位置
+    // (它自己不 catch), 一旦抛错就直接冒到下面的外层 catch —— 与 planAndExecute/tryPatchReplan
+    // 两处兄弟调用点的自纠重试同款套路, 唯独这里此前一直缺席。
+    const attemptExpand = async (
+      extra: string,
+      thinking: 'off' | 'low' | 'medium' | 'high' | 'xhigh' | undefined,
+    ): Promise<
+      | { ok: true; sub: ConductorPlan; expand: ReturnType<typeof expandConductorNode> }
+      | { ok: false; correction: string }
+    > => {
       const sys = conductorSystemPrompt({
         ...(config.agents ? { agents: config.agents } : {}),
         templates: templateRoster(templates),
@@ -2255,7 +2278,8 @@ async function executePlan(
         `${PLAN_BOUNDARY}${trustHeader(runNonce)}${node.goal ?? id}${depCtx}${ownerCtx}${retryCtx}\n\n` +
         // D-D 写进 prompt 而不只靠事后拒: 让它知道边界, 比让它撞上去便宜。
         '注意: 本次分解出的节点**不得**再用 executor:"conductor" 或 executor:"map" —— ' +
-        '你现在就是运行时展开, 已经知道清单了, 直接把步骤列出来即可。';
+        '你现在就是运行时展开, 已经知道清单了, 直接把步骤列出来即可。' +
+        extra;
       // **prompt 观测面** (2026-07-31)。走 `logger.debug` 而不是新加旋钮/读 env:
       // 默认 logger 的 debug 是空函数 → 生产零成本; 想看的人 (冒烟脚本 / 排障) 用
       // `setCoreLogger` 注入一个会记的实现即可 —— 现成的接缝, 不新开一个。
@@ -2271,58 +2295,84 @@ async function executePlan(
         ],
         // 坐标 (含轮级升级) 在上面算好, 见 conductorCoord。
         model: conductorCoord,
-        traceName: `conductor:${id}`, // 节点内重展开 —— 观测上要认得出是哪个 conductor 节点的第几轮
+        // 节点内重展开 —— 观测上要认得出是哪个 conductor 节点的第几轮; 原地重试再挂 `:retry`
+        // 后缀 (成本账与首发分开, 便于事后从 langfuse/usage 账本核对重试没有偷偷计进轮预算)。
+        traceName: extra ? `conductor:${id}:retry` : `conductor:${id}`,
         traceNodeId: id,
-        thinkingLevel: config.conductorThinkingLevel ?? config.seatThinking?.(conductorCoord) ?? 'high',
+        thinkingLevel: thinking,
         maxTokens: config.conductorMaxTokens ?? (Number(process.env.OMD_CONDUCTOR_MAX_TOKENS) || 32_768),
       });
       usageAcc = addUsage(usageAcc, usage);
-      const parsed = parsePlan(text, { knownTemplates: new Set(templates.keys()), knownServers: knownMcpServerNames(mcpRegistryRoot(config)) });
-      if (!parsed.ok) throw new Error(`子图不是有效 plan: ${parsed.error}`);
-      // ── D-N 展开闸 (前半): 子图过**与外层同一条** pass 管线 (oracle 过滤 → prune → dedup →
-      // evidence → stamp)。此前子图一条 pass 都不过, 后果不是"少了点优化"而是两个实打实的洞:
-      //   ① `tier` 在子节点上是**哑弹** —— stamp 才是把档位翻译成坐标的那一步, 不过它就全部
-      //      掉到静态 leafModel, conductor 写 tier:'strong' 白写。
-      //   ② evidence pass 的硬闸 (UI 交付物必须挂确定性截图闸) 对子图不生效。
-      // 管线抛错 = fail-closed 拒整份子图, 与外层 plan 撞上坏 pass 时同一语义。
-      sub = applyPlanFilters(parsed.plan, config);
+      let sub: ConductorPlan;
+      try {
+        const parsed = parsePlan(text, { knownTemplates: new Set(templates.keys()), knownServers: knownMcpServerNames(mcpRegistryRoot(config)) });
+        if (!parsed.ok) throw new Error(`子图不是有效 plan: ${parsed.error}`);
+        // ── D-N 展开闸 (前半): 子图过**与外层同一条** pass 管线 (oracle 过滤 → prune → dedup →
+        // evidence → stamp)。此前子图一条 pass 都不过, 后果不是"少了点优化"而是两个实打实的洞:
+        //   ① `tier` 在子节点上是**哑弹** —— stamp 才是把档位翻译成坐标的那一步, 不过它就全部
+        //      掉到静态 leafModel, conductor 写 tier:'strong' 白写。
+        //   ② evidence pass 的硬闸 (UI 交付物必须挂确定性截图闸) 对子图不生效。
+        // 管线抛错 = fail-closed 拒整份子图, 与外层 plan 撞上坏 pass 时同一语义。
+        sub = applyPlanFilters(parsed.plan, config);
+      } catch (err) {
+        return { ok: false, correction: err instanceof Error ? err.message : String(err) };
+      }
+      const expand = expandConductorNode(id, sub, {
+        ...(node.max_nodes ? { maxNodes: node.max_nodes } : {}),
+        ...(forbidExecutors ? { forbidExecutors } : {}),
+      });
+      if (expand.status !== 'ok') {
+        // 'empty' 也走这条: 与 map 的「空清单 = 成功 0 子」**刻意不同**。map 的空是 lister 如实报告
+        // "没有东西要处理", 是一条真实且常见的信息; conductor 的空是**它没能把这件事分解出来** ——
+        // 这里根本到不了 (PlanSchema 要求 ≥1 节点, 空的在 parsePlan 就被拒了), 但万一到了,
+        // 判成 done 就是给"没做任何事"发一张成功票, 那是 empty-done 的同一种坏。
+        return {
+          ok: false,
+          correction: `子图被拒 (${expand.status}): ${expand.error ?? '空子图 — conductor 没能分解出任何步骤'}`,
+        };
+      }
+      return { ok: true, sub, expand };
+    };
+
+    let sub: ConductorPlan;
+    let expand: ReturnType<typeof expandConductorNode>;
+    try {
+      const defaultThinking = config.conductorThinkingLevel ?? config.seatThinking?.(conductorCoord) ?? 'high';
+      let attempt = await attemptExpand('', defaultThinking);
+      if (!attempt.ok) {
+        logger.warn(
+          { node: id, round, err: attempt.correction },
+          '[omd/executor-dag] conductor 展开失败 (可自纠) → 原地重试一次 (不计轮)',
+        );
+        // 降至 medium (P2a): 这是一次机械式格式纠正, 不是重新决策 —— 不需要首发那份 high 推理。
+        // ⚠ 尊重显式 override: 调用方若钉了 conductorThinkingLevel, 两发都该用它 —— 不然一个
+        // 明确把 conductor 压到 'low' 的调用方, 重试反而比首发想得更用力, 于理不通。只有
+        // "没人管、由 seatThinking/缺省算出来的那份 'high'" 才该被这次机械纠正降级。
+        const correction = `\n\n【上一次展开失败, 请修正后重新输出完整合法的 plan】\n${attempt.correction}`;
+        attempt = await attemptExpand(correction, config.conductorThinkingLevel ?? 'medium');
+        if (!attempt.ok) {
+          logger.warn({ node: id, round, err: attempt.correction }, '[omd/executor-dag] conductor 展开失败 → 重试后仍失败');
+          return {
+            leaf: {
+              id, status: 'failed', failureKind: 'infra-error', kind: 'conductor',
+              output: `[conductor 展开失败: ${attempt.correction}] (重试后仍失败)`,
+              deps, usage: usageAcc,
+            },
+            children: [], usage: usageAcc, results: new Map(), detector: { rejected: [] }, lint: [], claims: [], claimObs: [], childIds: [],
+            budgetHalt: null,
+          };
+        }
+      }
+      sub = attempt.sub;
+      expand = attempt.expand;
     } catch (err) {
+      // generate() 自身抛错 (transport/quota/config 类) —— 不重试: 无 backoff 的立即重试对
+      // 429/配额只是把同一发再打一次, 没有任何自纠机会, 只会加倍花钱 (与 D-D 边界"拒了不许重试"
+      // 同一纪律的另一种形状)。
       const msg = err instanceof Error ? err.message : String(err);
       logger.warn({ node: id, round, err: msg }, '[omd/executor-dag] conductor 节点展开失败 → failed');
       return {
         leaf: { id, status: 'failed', failureKind: 'infra-error', kind: 'conductor', output: `[conductor 展开失败: ${msg}]`, deps, usage: usageAcc },
-        children: [], usage: usageAcc, results: new Map(), detector: { rejected: [] }, lint: [], claims: [], claimObs: [], childIds: [],
-        budgetHalt: null,
-      };
-    }
-
-    // ── 2. 纯展开: D-B 内容寻址 id + D-D 禁嵌套 + 环检测 + 硬顶 ──
-    // 执行段的附加禁单 (research) 按调用传 —— 契约段不传, 它的 research 子节点是正当的。
-    // E-T2: researchRunner 缺席时契约段也禁 —— 这不是政策收紧, 是能力缺席 (子节点执行期必败)。
-    const forbidBase =
-      plan!.name === EXECUTE_SEGMENT_PLAN_NAME ? EXECUTE_SEGMENT_FORBIDDEN_EXECUTORS : undefined;
-    const forbidExecutors = config.researchRunner
-      ? forbidBase
-      : new Map<string, string>([
-          ...(forbidBase ?? []),
-          ['research', '本部署无 search provider — research 子节点执行期必败 (E-T2), 用本地材料的 agent/leaf 完成'],
-        ]);
-    const expand = expandConductorNode(id, sub, {
-      ...(node.max_nodes ? { maxNodes: node.max_nodes } : {}),
-      ...(forbidExecutors ? { forbidExecutors } : {}),
-    });
-    if (expand.status !== 'ok') {
-      // 'empty' 也走这条: 与 map 的「空清单 = 成功 0 子」**刻意不同**。map 的空是 lister 如实报告
-      // "没有东西要处理", 是一条真实且常见的信息; conductor 的空是**它没能把这件事分解出来** ——
-      // 这里根本到不了 (PlanSchema 要求 ≥1 节点, 空的在 parsePlan 就被拒了), 但万一到了,
-      // 判成 done 就是给"没做任何事"发一张成功票, 那是 empty-done 的同一种坏。
-      logger.warn({ node: id, round, status: expand.status, error: expand.error }, '[omd/executor-dag] conductor 子图被拒');
-      return {
-        leaf: {
-          id, status: 'failed', failureKind: 'infra-error', kind: 'conductor',
-          output: `[子图被拒 (${expand.status}): ${expand.error ?? '空子图 — conductor 没能分解出任何步骤'}]`,
-          deps, usage: usageAcc,
-        },
         children: [], usage: usageAcc, results: new Map(), detector: { rejected: [] }, lint: [], claims: [], claimObs: [], childIds: [],
         budgetHalt: null,
       };
