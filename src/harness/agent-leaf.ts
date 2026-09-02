@@ -109,6 +109,7 @@ import {
 import { createSandboxedLeafRunner } from './hooks/sandboxed-leaf';
 import { loadSandboxConfig } from './hooks/command-policy';
 import { allowlistForRoot, createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from './command-leaf';
+import { probeEnvFacts } from './env-facts';
 import { formatRepoChecksFailure, runRepoChecks } from './repo-checks';
 import type { RepoCheck } from './repo-checks';
 import type { GateSpawn } from './post-leaf-gate';
@@ -764,7 +765,7 @@ export async function runSelfCheckProbe(opts: {
   const blocked = commandBlockReason(opts.command, opts.allowlist);
   if (blocked) return { kind: 'blocked', reason: blocked };
   const timeoutMs = opts.timeoutMs ?? 60_000;
-  const spawn = opts.spawn ?? ((c: string, d: string, t?: number) => defaultSpawn(c, d, t));
+  const spawn = opts.spawn ?? ((c: string, d: string, t?: number) => defaultSpawn(c, d, opts.allowlist, t));
   const { stdout, stderr, exitCode, signal } = await spawn(opts.command, opts.cwd, timeoutMs);
   // 信号死 (signal !== null) 一律折成 exitCode = null —— 与 commandRunner 同款口径 (H5-1
   // 「三字段互不推断」)。命令超时被杀 = 已 timedOut, exitCode 可能是 124 (bash 内建) 也可能
@@ -777,6 +778,7 @@ export async function runSelfCheckProbe(opts: {
 async function defaultSpawn(
   command: string,
   cwd: string,
+  allowlist: readonly string[],
   timeoutMs?: number,
   spawnRaw?: (cmd: string, cwd: string, timeoutMs: number) => Promise<{
     stdout: string;
@@ -794,9 +796,11 @@ async function defaultSpawn(
 }> {
   // 走 command-leaf 的真 runner (createCommandLeafRunner 返回一次性 runner 函数)。
   // 单次 inline 创建: runner 闭包持有 allowlist/timeoutMs, 与 command 节点共用同一套闸
-  // (commandBlockReason + 白名单 + 超时, INV-2-2)。
+  // (commandBlockReason + 白名单 + 超时, INV-2-2)。allowlist 直接透传调用方给的表 ——
+  // 之前这里硬编码一份 11 项影子表, 外层闸放行的命令 (如 grep) 到这里被二次拒绝且不报错
+  // (P2c)。
   const runner = createCommandLeafRunner({
-    allowlist: ['bun', 'bunx', 'node', 'tsc', 'git', 'echo', 'ls', 'cat', 'pwd', 'true', 'false'],
+    allowlist: [...allowlist],
     timeoutMs: timeoutMs ?? 60_000,
     cwd,
   });
@@ -2588,7 +2592,13 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       ? buildSelfCheckFollowUp({
           spec: selfCheck,
           cwd,
-          allowlist: allowlistForRoot(cwd),
+          // 与 command 节点同款真探测: base 表之外再并上本仓探到的语言 bin (python3/pytest 等),
+          // 否则 self_check 的外层闸永远看不到这些 (assemble.ts:513-521 同款 union, P2c)。
+          allowlist: (() => {
+            const base = allowlistForRoot(cwd);
+            const extra = probeEnvFacts(cwd).enabledBins.filter((b) => !base.includes(b));
+            return [...base, ...extra];
+          })(),
           getTouchedSize: () => touched.size,
           // 内容级判据 (2026-08-26): 同一文件二次编辑时计数不动而指纹动 —— 计数那把尺子
           // 会把它误判成"零新增"并当场停掉自修环。两个方向的证伪都在 leaf-self-check.test.ts。

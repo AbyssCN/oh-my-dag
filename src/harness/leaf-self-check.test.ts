@@ -314,6 +314,27 @@ describe('GWT-2c — runSelfCheckProbe 安全闸 (INV-2-2)', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────
+// P2c — self_check 真跑 defaultSpawn 时必须用调用方的真实 allowlist, 不是
+// defaultSpawn 内部硬编码的影子表 (agent-leaf.ts:801 之前的缺陷)。
+// 反向自检: 把 defaultSpawn 里 `allowlist,` 改回硬编码的 11 项列表 → 本测试红
+// (exitCode 变回 -1, stdout 含 'blocked not-allowed')。
+// ─────────────────────────────────────────────────────────────────────────
+describe('P2c — runSelfCheckProbe 真 defaultSpawn 遵守调用方 allowlist (不被硬编码影子表拒)', () => {
+  test('grep 在调用方 allowlist 里, 但不在 defaultSpawn 旧硬编码表里 → 真执行, 不被内层影子闸拒', async () => {
+    const out = await runSelfCheckProbe({
+      command: 'grep --version',
+      cwd: process.cwd(),
+      allowlist: [...ALLOWLIST, 'grep'],
+      // 不注入 spawn —— 走真实 defaultSpawn, 才能验到内层闸真的看见了外层 allowlist。
+    });
+    expect(out.kind).toBe('exited');
+    if (out.kind === 'exited') {
+      expect(out.exitCode).toBe(0);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
 // GWT-2b (反向) — 源码面: getFollowUpMessages 在 pi 通道接线存在
 // ─────────────────────────────────────────────────────────────────────────
 describe('GWT-2b (反向, 必须能红) — getFollowUpMessages 接线存在', () => {
