@@ -216,6 +216,29 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
   //  ② **prepareNextTurn** —— 管**单轮内**工具循环的爆炸式增长 (一轮几十次工具调用)。
   const budgetRatio = opts.contextBudgetRatio ?? 0.85;
   const keepRecentTokens = opts.compactionKeepRecentTokens ?? 20_000;
+  /**
+   * 超大工具结果的**溢出落点**(2026-09-02,补 `7a09bab9` 有意留下的另一票)。
+   * 拼一次给两处压缩用 —— 落点是一条决策, 在同一个文件里写两遍就是"同一件事两处"。
+   *
+   * ## ① cwd 从哪来:`opts.cwd`, 不是进程 cwd
+   * chat 位的工作根由调用方显式给(cli/daemon = `process.cwd()`, MCP = `deps.cwd`),
+   * 上面那条召回打点已经在拿同一份拼 `.omd`(`recall-events.jsonl`)⇒ 不需要硬编一个。
+   *
+   * ## ② 模型拿到路径读不读得到:**分两格, 不与 leaf 同**
+   * · `conductor_chat`(MCP headless)那条 —— 工具面里挂着只读三只手 read/ls/grep,
+   *   且 `buildHeadlessHands(deps.cwd)` 的根就是这同一个 cwd ⇒ 路径给出去真读得到。
+   * · TUI / daemon / `omd chat` 那条 —— `createConductorChatTools` 白名单**不给文件工具**
+   *   (角色红线, `src/serve/chat-tools.ts` 头注)⇒ 模型自己读不回, 取回的是**人**:
+   *   对话位人在场, 而路径就落在他脚下这个仓的 `.omd` 里, 一条 `sed -n` 就取得到。
+   *   判词那句"**有 read 工具就**按需分页读它"是条件句, 两格都不撒谎。
+   * · claude-code SDK 那条根本走不到这里(`runChatTurn` 开头就 return, SDK 自管压缩)⇒ 不适用。
+   *
+   * ## ③ 生命周期:比 leaf 更显形, 但仍是磁盘占用不是正确性
+   * leaf 的 cwd 常是用完即弃的 worktree, chat 的 cwd 是**人的真仓** ⇒ 只增不删这件事在这里
+   * 更显形。`.omd/` 在 `.gitignore` 里(不进 `git status --porcelain`, 写集对账看不见它),
+   * 所以不会被读成越界写;堆积与既有 `.omd/bash-output-*.log` 同一票, 归 gc, 不在这次。
+   */
+  const toolResultSpill = { dir: join(opts.cwd, '.omd') };
   const window = piModel.contextWindow;
   const wantCompaction = budgetRatio > 0 && window > 0;
   let compactions = 0;
@@ -242,6 +265,7 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
       messages,
       model: opts.model,
       keepRecentTokens,
+      spill: toolResultSpill, // 截掉的开头存 `<cwd>/.omd`, 不再丢弃 (见 toolResultSpill 三条)
       ...(opts.signal ? { signal: opts.signal } : {}),
       ...(opts.compactionCallModel ? { callModelFn: opts.compactionCallModel } : {}),
     });
@@ -345,6 +369,7 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
               messages: ctx.messages,
               model: opts.model,
               keepRecentTokens,
+              spill: toolResultSpill, // 同轮前那条: 轮内工具循环截掉的开头一样存盘
               ...(opts.signal ? { signal: opts.signal } : {}),
               ...(opts.compactionCallModel ? { callModelFn: opts.compactionCallModel } : {}),
             });

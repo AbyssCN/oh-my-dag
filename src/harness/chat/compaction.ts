@@ -25,7 +25,12 @@
 import type { AgentMessage, CompactionSummaryMessage } from '@earendil-works/pi-agent-core';
 import { logger } from '../../logger';
 import { callModel } from '../../model';
-import { type CompactionPrompt, type LeafCompaction, compactLeafContext } from '../agent-leaf';
+import {
+  type CompactionPrompt,
+  type LeafCompaction,
+  type ToolResultSpill,
+  compactLeafContext,
+} from '../agent-leaf';
 
 /**
  * 摘要那一次模型调用的接缝。
@@ -176,6 +181,22 @@ export async function compactChatMessages(opts: {
   signal?: AbortSignal;
   /** 省略 → 真 `callModel`(账本挂在它出口上)。只有测试该传。 */
   callModelFn?: CompactionCallModel;
+  /**
+   * 超大工具结果的**溢出落点**(2026-09-02,补 `7a09bab9` 有意留下的另一票)。
+   * 给了 → 截之前先把全文写盘、判词里给取回路径;省略 → **闸缺席**,逐字节走老截断行为。
+   *
+   * ## 为什么是穿透一个 `ToolResultSpill`,而不是在这里收 `cwd` 自己拼 `.omd`
+   *
+   * **复用而不是复制**:溢出的判据(何时写)、落点命名(`tool-result-<ts>-<uuid>.txt`)、
+   * fail-open 的三样证据全在 `agent-leaf.ts` 的 `spillToolResultText` 里,压缩路上唯一入口
+   * 也是共用的 `truncateOversizedToolResults`。本文件早就 import 着 `compactLeafContext`
+   * (头注:切点那一半共用),多 import 一个类型不新增任何依赖边,也不新增第二份实现 ——
+   * 这里加的只有**一行穿透**。收 `cwd` 自己拼反而是把落点这条决策抄成第二份。
+   *
+   * 测试要的 `write` 注入接缝也只有这个形状拿得到:「盘写不动」那一格(三态之三)
+   * 没有别的可控触发法。
+   */
+  spill?: ToolResultSpill;
 }): Promise<LeafCompaction | null> {
   const previous = findPreviousSummary(opts.messages);
   // 旧摘要那条消息**不进待压段**(它的内容改由 <previous-summary> 送)。
@@ -194,5 +215,9 @@ export async function compactChatMessages(opts: {
     ...(opts.signal ? { signal: opts.signal } : {}),
     prompt: previous ? buildIncrementalChatPrompt(previous.summary) : CHAT_COMPACTION_PROMPT,
     ...(opts.callModelFn ? { callModelFn: opts.callModelFn } : {}),
+    // ★ 溢出接线的**那一行**(穿透, 不是第二份实现)。摘掉它 → `compaction.test.ts` 的
+    //   「溢出存盘」那个 describe **五条全红**(实跑 17 pass / 5 fail): 下游三条调用路
+    //   一条都到不了。红集的分辨力由 `agent.ts` 那两句各自的证伪给, 见那个 describe 的头注。
+    ...(opts.spill ? { spill: opts.spill } : {}),
   });
 }

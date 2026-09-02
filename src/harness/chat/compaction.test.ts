@@ -14,10 +14,15 @@
  */
 import { createCompactionSummaryMessage, estimateTokens, type AgentMessage } from '@earendil-works/pi-agent-core';
 import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { callModel } from '../../model';
+import {
+  TOOL_RESULT_SPILL_FAILED_MARK,
+  TOOL_RESULT_SPILL_MARK,
+  TOOL_RESULT_TRUNCATION_MARK,
+} from '../agent-leaf';
 import { runChatTurn } from './agent';
 import { CHAT_COMPACTION_PROMPT, DEFAULT_COMPACTION_CALL_MODEL, compactChatMessages } from './compaction';
 import { type OmdSessionStore, createOmdSessionStore, resetSessionCacheForTest } from './session-store';
@@ -391,5 +396,204 @@ describe('不该压的时候不压', () => {
       contextBudgetRatio: 0.000001, compactionKeepRecentTokens: 300, compactionCallModel: fakeCallModel, loopFn: fakeLoop() as never,
     });
     expect(r.compactions).toBe(0);
+  });
+});
+
+/**
+ * ★ 超大工具结果:**截断 → 溢出存盘**,把 chat 这条路接上(2026-09-02)。
+ *
+ * `7a09bab9` 只接了 leaf,chat 这条**有意留着没接**(理由是「同时动两条路,读数上分不出是
+ * 哪一半」)。那批已验完合并,理由不再成立 ⇒ 这里补上。接线只有两处:
+ * `compaction.ts` 一行穿透 + `agent.ts` 的 `toolResultSpill`(落点 `<cwd>/.omd`)。
+ *
+ * ## 三态,不是两态(仓规 NULL≠0≠不适用)
+ *
+ * | 配了 spill? | 写盘成功? | 判词 |
+ * |---|---|---|
+ * | 否(缺省 / `compactChatMessages` 不传) | 不适用 | `TOOL_RESULT_TRUNCATION_MARK`,**逐字节等于接线之前** |
+ * | 是 | 是 | `TOOL_RESULT_SPILL_MARK` + 绝对路径 + 取回指令 |
+ * | 是 | 否 | `TOOL_RESULT_TRUNCATION_MARK` + `TOOL_RESULT_SPILL_FAILED_MARK` + 错误原文 |
+ *
+ * ## ⚠ chat 与 leaf 的差别:路径给出去,**读不读得回分两格**
+ *
+ * leaf 恒有 `read` 工具;chat 不是。`conductor_chat`(MCP headless)那条挂着只读三只手
+ * read/ls/grep 且根就是同一个 cwd ⇒ 模型自己读得回;TUI / daemon / `omd chat` 那条的白名单
+ * **不给文件工具**(角色红线,`src/serve/chat-tools.ts` 头注)⇒ 取回的是**人**。
+ * 判词里那句"**有 read 工具就**按需分页读它"是条件句,两格都不撒谎。详见 `agent.ts`
+ * 的 `toolResultSpill` 注。
+ *
+ * ## 反向自检(逐条实跑,2026-09-02;基线 = 本文件 22 pass / 0 fail)
+ *
+ * 三条接线各摘一次,红集**互不相同** —— 这才说明每条钉的是不同的东西:
+ * · `compaction.ts` 里那行 `...(opts.spill ? { spill: opts.spill } : {})` 摘掉
+ *   → **17 pass / 5 fail**(①②③④⑤ 全红:穿透断了,下游三条路一条都到不了)。
+ *   ⚠ ② 也红是对的:它除了"没触发零副作用"那半,还钉着"真被截的那条必须写盘"。
+ * · `agent.ts` **轮前**那句 `spill: toolResultSpill` 摘掉 → **21 pass / 1 fail**,只红 ④。
+ * · `agent.ts` **轮内** `prepareNextTurn` 那句摘掉 → **21 pass / 1 fail**,只红 ⑤。
+ * 后两条各自单红 = 单元三条量的是 `compactChatMessages` 的接缝,量不到调用方接没接线;
+ * **两组一起才分得开「穿透坏了」与「某个调用方没接线」。**
+ */
+describe('★ chat 那条路的超大工具结果溢出存盘(2026-09-02)', () => {
+  const KEEP = 20_000;
+  const HEAD_MARK = '★开头: 这一段以前会被丢掉, 现在必须能从盘上取回来';
+  const TAIL_MARK = '★结论: 全绿';
+
+  /** 一条巨型工具结果,头尾各埋哨兵(本 describe 自带一份 —— 跨闭包借变量会把两组判据绑死)。 */
+  const bigResult = (id: string, chars: number): AgentMessage =>
+    ({
+      role: 'toolResult',
+      toolCallId: id,
+      toolName: 'bash',
+      content: [
+        {
+          type: 'text',
+          text: [
+            HEAD_MARK,
+            ...Array.from({ length: Math.ceil(chars / 80) }, (_, i) => `${String(i).padStart(6, '0')} ${'y'.repeat(72)}`),
+            TAIL_MARK,
+          ].join('\n'),
+        },
+      ],
+      isError: false,
+      timestamp: 1,
+    }) as unknown as AgentMessage;
+
+  /** 超预算的形状:一问 + 4 条各 ≈6× 预算的结果。 */
+  const oversized = (): AgentMessage[] => [
+    userMsg('★本轮请求: 把 X 做完'),
+    ...Array.from({ length: 4 }, (_, i) => bigResult(`t${i}`, 120_000)),
+  ];
+
+  /** 一条消息的正文(user 的字符串 content 与工具结果的块两种都吃)。 */
+  const bodyOf = (m: AgentMessage): string => {
+    const c = (m as { content?: unknown }).content;
+    if (typeof c === 'string') return c;
+    if (!Array.isArray(c)) return '';
+    return c.map((b) => (b as { text?: string }).text ?? '').join('\n');
+  };
+  /** 保留段里**被动过的**那一条的正文(切点落在哪由算法定,不写死下标)。 */
+  const markedBody = (tail: AgentMessage[]): string => tail.map(bodyOf).find((t) => t.includes('[omd ')) ?? '';
+  /** 落点里本次溢出写下的文件(会话存储也用 `.omd`,只数我们这一族)。 */
+  const spilled = (dir: string): string[] =>
+    existsSync(dir) ? readdirSync(dir).filter((f) => f.startsWith('tool-result-')) : [];
+
+  test('★ ① 配了 spill → 判词给绝对路径, 且那个路径真读得到被截掉的开头', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omd-chat-spill-'));
+    const r = (await compactChatMessages({
+      messages: oversized(), model: MODEL, keepRecentTokens: KEEP,
+      callModelFn: fakeCallModel, spill: { dir },
+    }))!;
+    expect(r).not.toBeNull();
+    const body = markedBody(r.retainedTail);
+    // 判词换了标记 —— 「存盘了」与「丢了」不共用一个词。
+    expect(body).toContain(TOOL_RESULT_SPILL_MARK);
+    expect(body).not.toContain(TOOL_RESULT_TRUNCATION_MARK);
+    // 绝对路径:MCP 那条的 read 工具与人手里的 sed 都直接吃它。
+    const path = /全文已存盘: (\S+)/.exec(body)?.[1];
+    expect(path).toBeTruthy();
+    expect(path!.startsWith('/')).toBe(true);
+    // 只给指针不落盘 = 更坏的静默 —— 文件必须真在, 且含**正文里已经没有**的那段开头。
+    expect(existsSync(path!)).toBe(true);
+    expect(readFileSync(path!, 'utf8')).toContain(HEAD_MARK);
+    expect(body).not.toContain(HEAD_MARK); // 开头确实被截了 (否则这条什么都没验)
+    expect(body).toContain(TAIL_MARK); // 尾巴照旧留着
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('★ ② 正控: 没超阈值 → 逐字节等同没接线时, 且一个文件都不许写', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omd-chat-spill-quiet-'));
+    // (a) 有工具结果、但没超单条上限的形状: 配不配 spill, 保留段**逐字节相同**, 且零文件。
+    //     两侧同一份输入各跑一遍 —— "等同改动前"只能这么量, 不能拿别处的旧数当基线。
+    const quiet = (): AgentMessage[] => {
+      const out: AgentMessage[] = [userMsg('★本轮请求: 把 X 做完')];
+      for (let i = 0; i < 6; i++) out.push(assistantMsg(`第 ${i} 步`), bigResult(`q${i}`, 2_000));
+      return out;
+    };
+    const withSpill = await compactChatMessages({
+      messages: quiet(), model: MODEL, keepRecentTokens: KEEP, callModelFn: fakeCallModel, spill: { dir },
+    });
+    const plain = await compactChatMessages({
+      messages: quiet(), model: MODEL, keepRecentTokens: KEEP, callModelFn: fakeCallModel,
+    });
+    expect(JSON.stringify(withSpill?.retainedTail)).toBe(JSON.stringify(plain?.retainedTail));
+    expect(spilled(dir)).toEqual([]); // 没触发就零副作用 —— 白写文件是一整个仓的垃圾
+
+    // (b) 更严的一格: 整段**超**了阈值(截断真的在跑), 里面混一条没超单条上限的小结果。
+    //     那一条必须逐字节原样, 也不许为它写文件。
+    const mixed = [userMsg('★本轮请求'), bigResult('big', 120_000), bigResult('small', 400)];
+    const r = (await compactChatMessages({
+      messages: mixed, model: MODEL, keepRecentTokens: KEEP, callModelFn: fakeCallModel, spill: { dir },
+    }))!;
+    expect(r).not.toBeNull();
+    // 按 toolCallId 认那一条(不写死下标),正文**逐字节**比 —— 连标记都不许贴。
+    const small = r.retainedTail.find((m) => (m as { toolCallId?: string }).toolCallId === 'small')!;
+    expect(bodyOf(small)).toBe(bodyOf(mixed[2]!));
+    expect(spilled(dir).length).toBe(1); // 只为**真被截**的那一条写了盘
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('★ ③ 写盘失败 → fail-open 回落截断, 且与"没配 spill"可分辨', async () => {
+    const boom = (): never => {
+      throw new Error('EACCES: 盘写不动');
+    };
+    const r = (await compactChatMessages({
+      messages: oversized(), model: MODEL, keepRecentTokens: KEEP,
+      callModelFn: fakeCallModel, spill: { dir: '/nonexistent-omd-chat-spill', write: boom },
+    }))!;
+    expect(r).not.toBeNull(); // 主流程不许因为写盘失败而失败
+    const body = markedBody(r.retainedTail);
+    expect(body).toContain(TOOL_RESULT_TRUNCATION_MARK); // 回落老截断行为
+    expect(body).toContain(TOOL_RESULT_SPILL_FAILED_MARK); // 但明说是"失败", 不是"没装"
+    expect(body).toContain('EACCES'); // 证据入判词 (静默坑 2)
+    expect(body).toContain(TAIL_MARK);
+
+    // 三态之一: **没配** spill 那格, 老判词一字不改, 且不许冒出"写盘失败"字样。
+    const off = (await compactChatMessages({
+      messages: oversized(), model: MODEL, keepRecentTokens: KEEP, callModelFn: fakeCallModel,
+    }))!;
+    const offBody = markedBody(off.retainedTail);
+    expect(offBody).toContain(TOOL_RESULT_TRUNCATION_MARK);
+    expect(offBody).not.toContain(TOOL_RESULT_SPILL_MARK);
+    expect(offBody).not.toContain(TOOL_RESULT_SPILL_FAILED_MARK);
+    // 这一句是接线之前的原文, 改它就是行为翻转而不是措辞。
+    expect(offBody).toContain('—— 开头已丢弃, 需要的话重新跑一次工具取那一段。');
+  });
+
+  test('★ ④ 端到端: 落点是 **`<cwd>/.omd`**, 不是进程 cwd、也不是 /tmp', async () => {
+    // 这条钉的是 `agent.ts` 的接线(`spill: toolResultSpill`)与 cwd 的来源。
+    // 摘掉那一行 → 只有这条红, 上面三条仍绿。
+    await seed('spill1', oversized());
+    const r = await runChatTurn({
+      store, sessionId: 'spill1', prompt: '接着做', model: MODEL, cwd: root,
+      contextBudgetRatio: 0.000001, compactionKeepRecentTokens: KEEP,
+      compactionCallModel: fakeCallModel, loopFn: fakeLoop() as never,
+    });
+    expect(r.compactions).toBeGreaterThan(0);
+    const files = spilled(join(root, '.omd'));
+    expect(files.length).toBeGreaterThan(0);
+    // 落在 cwd 之下才在 MCP 那条的只读手的根之内; 内容必须是被截掉的那段开头。
+    expect(readFileSync(join(root, '.omd', files[0]!), 'utf8')).toContain(HEAD_MARK);
+  });
+
+  test('★ ⑤ 轮内 `prepareNextTurn` 那条也接了线(两处各接各的)', async () => {
+    // 轮前与轮内是**两个调用点**, 各接各的线。只测轮前的话, 轮内那行摘掉不红 ——
+    // 而轮内正是"一轮几十次工具调用"最容易撑爆的地方。
+    // 反向自检(实跑): 摘掉 `prepareNextTurn` 里的 `spill: toolResultSpill` → 只有这条红。
+    await seed('spill2', [userMsg('先聊一句')]); // 短到轮前压不动 ⇒ 文件只可能来自轮内那条
+    const loopWithPrepare = (async (
+      prompts: AgentMessage[],
+      context: { messages: AgentMessage[]; systemPrompt: string },
+      config: { prepareNextTurn?: (a: { context: { messages: AgentMessage[] } }) => Promise<unknown> },
+    ) => {
+      // pi 循环在每次工具轮之后问这一句 —— 这里喂它一份被工具结果撑爆的上下文。
+      await config.prepareNextTurn?.({ context: { ...context, messages: oversized() } });
+      return [...prompts, assistantMsg('答')];
+    }) as never;
+    await runChatTurn({
+      store, sessionId: 'spill2', prompt: '接着做', model: MODEL, cwd: root,
+      contextBudgetRatio: 0.000001, compactionKeepRecentTokens: KEEP,
+      compactionCallModel: fakeCallModel, loopFn: loopWithPrepare,
+    });
+    expect(spilled(join(root, '.omd')).length).toBeGreaterThan(0);
   });
 });
