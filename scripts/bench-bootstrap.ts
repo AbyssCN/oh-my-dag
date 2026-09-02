@@ -23,8 +23,12 @@ import { join } from 'node:path';
 import { upsertProvider } from '../src/model/models-json';
 import { SEATS } from '../src/model/seats';
 
-/** 三角色座位分组 (镜像生产 config: claude-code 组=指挥, openai-codex 组=审核, 其余=worker)。 */
-const CONDUCTOR_SEATS = new Set(['conductor', 'escalation', 'fusion', 'graft']);
+/**
+ * 三角色座位分组 (镜像生产 config: claude-code 组=指挥, openai-codex 组=审核, 其余=worker)。
+ * 'escalation' 拆出去单独判 (见下 benchSeatModels) —— 它有自己的可选独立坐标, 不再无条件
+ * 归进 conductor 组。
+ */
+const CONDUCTOR_SEATS = new Set(['conductor', 'fusion', 'graft']);
 const VERIFIER_SEATS = new Set(['verifier', 'review', 'review-spec']);
 
 /**
@@ -32,12 +36,17 @@ const VERIFIER_SEATS = new Set(['verifier', 'review', 'review-spec']);
  * 两种模式, fail-closed 不写半套:
  *  - 三角色 (owner E2 选型): OMD_BENCH_CONDUCTOR_MODEL + OMD_BENCH_WORKER_MODEL +
  *    OMD_BENCH_VERIFIER_MODEL 三者**齐**给 (缺任一 throw), 座位按组分派;
+ *    可选加 OMD_BENCH_ESCALATION_MODEL 给 'escalation' 一个独立第四坐标 (P2a, 2026-09-02) ——
+ *    不给时回落 conductor 坐标 (与本坐标出现之前逐字节相同)。理由见 engine.ts 的轮级 conductor
+ *    升级 (D-F): escalation 与 conductor 撞同一坐标时, 那条"连转几轮不收敛就换更强脑子"的通道
+ *    在三角色 bench 模式下是结构性 no-op。
  *  - 单模型回退: 只给 OMD_BENCH_MODEL → 18 座全钉一个坐标。
  */
 export function benchSeatModels(env: Record<string, string | undefined>): Record<string, string> {
   const c = env.OMD_BENCH_CONDUCTOR_MODEL?.trim();
   const w = env.OMD_BENCH_WORKER_MODEL?.trim();
   const v = env.OMD_BENCH_VERIFIER_MODEL?.trim();
+  const e = env.OMD_BENCH_ESCALATION_MODEL?.trim();
   const anyRole = Boolean(c || w || v);
   if (anyRole) {
     if (!(c && w && v))
@@ -45,7 +54,7 @@ export function benchSeatModels(env: Record<string, string | undefined>): Record
     return Object.fromEntries(
       SEATS.map((s) => [
         s.id,
-        `bench:${CONDUCTOR_SEATS.has(s.id) ? c : VERIFIER_SEATS.has(s.id) ? v : w}`,
+        `bench:${s.id === 'escalation' ? (e || c) : CONDUCTOR_SEATS.has(s.id) ? c : VERIFIER_SEATS.has(s.id) ? v : w}`,
       ]),
     );
   }
