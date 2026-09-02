@@ -33,6 +33,50 @@ import {
 import { SqliteEdgeStore } from './edge-store';
 import { defaultEmbed } from './embed';
 import type { EmbedFn, MemoryHit, StoredFact, WriteFactResult } from './types';
+import { registerInvariant } from '../invariants';
+
+// ── 运行期闸 (INV-8; 登记表见 ../invariants.ts) ────────────────────────────────
+//
+// 为什么这条是**运行期**的, 不是测试的地盘:
+//   判据要的那个值 —— 「这一刻 (namespace, identity_key) 组里活着几条」—— 只有拿着**库里
+//   真正的行**才数得出来。而这个库是一份**磁盘文件**: 它经 `path` 被多个前端 (TUI 自记忆 /
+//   MCP server) 同时打开, 各自可以注入不同的 safeguard (identityKeyOf 不同), 还带一条
+//   `ALTER TABLE ... ADD COLUMN superseded_by` 的迁移尾巴 (老行那一列恒为 NULL)。
+//   「本进程的写路径构造保证组内至多一条 live」是真的; 「库里此刻至多一条 live」不是 ——
+//   后者要在真跑起来那一刻数。
+//
+// 为什么今天没人守得住:
+//   `revertSupersession` 的注释自己写明了失效形态: 读 (找继任者/判链断没断) 与写 (翻墓碑)
+//   之间若插进另一个写者的一次 supersede, 就会拿着过期的链去复活, 结果是**同 identity 两条
+//   live**。`tx.immediate()` 挡的是同库同锁的那一路; 挡不住已经处在这个状态的库。
+//   而两条 live 之后没有任何东西会红: `liveByIdentity` 是 `LIMIT 1`, 它挑一条就返回 ——
+//   **两条互相矛盾的事实里, 检索按 created_at 挑一条**, 另一条继续躺在 retrieve 的召回池里,
+//   两条都会被灌进后面每一轮的 prompt。没有异常、没有日志、账面上和正常状态一模一样。
+//   (`revertSupersession` 今天只有 tombstone-epitaph 那份用例在跑, 而它测的是返回值真值表,
+//    一次都没数过组内 live 的条数。)
+//
+// 开销: 一次走 `facts_ns_identity` 索引的 SELECT, 只在**人点回滚**那一次发生 (不在写路径,
+//   不在检索路径)。相对同一格里已有的 4 条 UPDATE/DELETE/INSERT 是噪声。
+//
+// 违约响应: 抛在 `tx.immediate()` 的回调里 ⇒ 事务整体回滚, 库停在回滚前那一刻 (fail-closed,
+//   本仓 ① 边界层)。这正是这条闸该有的语义: 拿不准链是不是完整的时候, **别复活**。
+const INV_MEM_8 = registerInvariant<{
+  revived: string;
+  namespace: string;
+  identityKey: string;
+  liveIds: readonly string[];
+}>({
+  id: 'INV-8',
+  module: 'memory/store',
+  why: '同 identity 两条 live = 两条互相矛盾的事实一起进后面每一轮 prompt, 而 liveByIdentity 的 LIMIT 1 只会挑一条, 另一条永远不出现在任何账面上',
+  check: ({ revived, namespace, identityKey, liveIds }) => {
+    if (liveIds.length === 1 && liveIds[0] === revived) return null;
+    return (
+      `回滚 ${revived} 后 (${namespace}, ${identityKey}) 组内 live = ` +
+      `[${liveIds.join(', ')}] (${liveIds.length} 条), 期望恰好 [${revived}]`
+    );
+  },
+});
 
 // RRF + retrieval-pool constants (ported from hybrid.ts).
 const RRF_K = 60;
@@ -345,6 +389,18 @@ export class OmdMemory {
       this.db.run(`DELETE FROM facts_fts WHERE fact_id = ?`, [row.superseded_by]);
       this.db.run(`UPDATE facts SET deleted_at = NULL, deleted_reason = NULL, superseded_by = NULL WHERE id = ?`, [id]);
       this.db.run(`INSERT INTO facts_fts (fact_id, text) VALUES (?, ?)`, [id, row.text]);
+      // INV-8 的运行期闸: 复活写完、事务**还没提交**的这一格是唯一既拿得到最终状态、又还
+      // 来得及不让它落盘的位置。晚一格 (commit 之后) 就只剩事后取证。
+      INV_MEM_8.assert({
+        revived: id,
+        namespace: row.namespace,
+        identityKey: row.identity_key,
+        liveIds: (
+          this.db
+            .query(`SELECT id FROM facts WHERE namespace = ? AND identity_key = ? AND deleted_at IS NULL`)
+            .all(row.namespace, row.identity_key) as { id: string }[]
+        ).map((r) => r.id),
+      });
       done = true;
     });
     tx.immediate();

@@ -9,13 +9,23 @@
  * **闸真的接在生产路径上** —— 这一层 `check` 层测不出来 (`check` 返了证据 ≠ 有人在调它)。
  *   判法只有一个: **把实装改回违约的写法, 看正向用例是不是当场红**。每个 describe 里都写死了
  *   那一行怎么改 —— 照着改一次就是一次证伪, 改完还原。
- *   ⚠ 三条在册不变量今天都是**构造保证**成立的, 走公开入口造不出违约值 —— 所以这一层
+ *   ⚠ 在册项**大多**今天是**构造保证**成立的, 走公开入口造不出违约值 —— 所以这一层
  *   只能靠"改实装", 不能靠"喂坏输入"。这不是测试写偷懒, 是这类不变量的形状决定的。
+ *   例外是 `memory/store::INV-8`: 它守的那份状态住在**磁盘库**里 (多前端共开 + 迁移尾巴),
+ *   本进程的写路径管不着, 所以那一条能直接灌一份真的坏库状态进去。
  */
 import { describe, expect, test } from 'bun:test';
-import { InvariantViolationError, listInvariants, registerInvariant } from './invariants';
+import { Database } from 'bun:sqlite';
+import { InvariantViolationError, listInvariants, registerInvariant, type InvariantSpec } from './invariants';
 import { expandMapNode } from './plan/map-expand';
 import { runDiscoveryLoop } from './plan/discovery';
+import { runExecutorDagWithPlan } from './dag/engine';
+import { PLAN_BOUNDARY, type ConductorPlan } from './conductor-plan';
+import type { ContentPart } from '../model/gateway';
+import type { DagNodeEvent, ExecutorDagConfig, GenerateFn } from './dag/types';
+import { OmdMemory } from './memory/store';
+import { computeWaste } from './waste/report';
+import type { DagRunRecord } from './dag/dag-record';
 
 describe('登记表机制', () => {
   test('注册 → 求值: 成立返 undefined, 违反抛且消息带得上归属', () => {
@@ -45,11 +55,15 @@ describe('登记表机制', () => {
     expect(() => registerInvariant(spec)).toThrow(/重复登记/);
   });
 
-  test('在册清单可枚举, 且三条生产不变量都在表上', () => {
+  test('在册清单可枚举, 且每一条生产不变量都在表上', () => {
     const on = listInvariants().map((s) => `${s.module}::${s.id}`);
     expect(on).toContain('plan/map-expand::INV-U2');
     expect(on).toContain('plan/map-expand::INV-U8');
     expect(on).toContain('plan/discovery::INV-D3');
+    // 第二批 (2026-09-02)
+    expect(on).toContain('dag/engine::INV-P2-5');
+    expect(on).toContain('memory/store::INV-8');
+    expect(on).toContain('waste/report::INV-5');
   });
 });
 
@@ -184,5 +198,289 @@ describe('INV-D3 (plan/discovery · converged 只能来自真 dry)', () => {
     // 闸不是恒真式: 合法组合放行
     expect(inv.check({ status: 'dry', converged: true, rounds: [{ dryStreak: 2 }], dryThreshold: 2 })).toBeNull();
     expect(inv.check({ status: 'budget_halt', converged: false, rounds: [{ dryStreak: 0 }], dryThreshold: 2 })).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 第二批 (2026-09-02)。同上分两层: ① 闸不是恒真式 (直接喂 check) ② 闸真接在生产路径上。
+// ⚠ 第二批与首批有一处不同: `memory/store` 那条**走得通公开入口 + 一次真的坏库状态**,
+//   不必靠改实装 —— 库是磁盘文件, 多前端共开, 「此刻组内几条 live」不由本进程构造保证。
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('INV-P2-5 (dag/engine · 内环跨轮复用集不含任何被污染的路)', () => {
+  const inv = (): InvariantSpec<{
+    parentId: string;
+    reused: readonly string[];
+    poisoned: ReadonlySet<string>;
+    poisonedArtifacts: ReadonlySet<string>;
+    prev: ReadonlyMap<string, { status: string; filesRead?: readonly string[] }>;
+    innerDeps: ReadonlyMap<string, readonly string[]>;
+  }> =>
+    listInvariants().find((s) => s.module === 'dag/engine' && s.id === 'INV-P2-5')! as never;
+
+  const base = {
+    parentId: 'P',
+    poisoned: new Set<string>(),
+    poisonedArtifacts: new Set<string>(),
+    prev: new Map([['P::a', { status: 'done' }]]),
+    innerDeps: new Map<string, readonly string[]>(),
+  };
+
+  test('闸不是恒真式: 三条污染路各返带定位的证据, 干净的复用集放行', () => {
+    const c = inv().check;
+    // ① 被点名的子节点自己进了复用集
+    expect(c({ ...base, reused: ['P::a'], poisoned: new Set(['P::a']) })).toMatch(/复用了被点名的子节点 P::a/);
+    // ② 读过毒制品的兄弟进了复用集 (D-12 图外读: 它与被拒节点之间**没有边**, 前驱闭包兜不住)
+    expect(
+      c({
+        ...base,
+        reused: ['P::b'],
+        poisonedArtifacts: new Set(['out/x.md']),
+        prev: new Map([['P::b', { status: 'done', filesRead: ['out/x.md'] }]]),
+      }),
+    ).toMatch(/读过毒制品 "out\/x\.md"/);
+    // ③ 前驱要重跑而它自己被复用 (上轮产出对应的是上轮的输入)
+    expect(
+      c({
+        ...base,
+        reused: ['P::b'],
+        prev: new Map([['P::b', { status: 'done' }]]),
+        innerDeps: new Map([['P::b', ['P::a']]]),
+      }),
+    ).toMatch(/前驱 P::a 要重跑/);
+    // 附带两条: 上一轮没结果 / 上一轮没 done 也不许复用
+    expect(c({ ...base, reused: ['P::z'] })).toMatch(/上一轮根本没有它的结果/);
+    expect(c({ ...base, reused: ['P::a'], prev: new Map([['P::a', { status: 'failed' }]]) })).toMatch(/status=failed/);
+    // 闸不是恒真式: 干净的复用集放行 (含"读过文件但那文件不在毒制品集里")
+    expect(
+      c({
+        ...base,
+        reused: ['P::a', 'P::b'],
+        poisonedArtifacts: new Set(['out/x.md']),
+        prev: new Map([
+          ['P::a', { status: 'done', filesRead: ['out/ok.md'] }],
+          ['P::b', { status: 'done' }],
+        ]),
+        innerDeps: new Map([['P::b', ['P::a']]]), // 前驱也在复用集里 → 闭包完整
+      }),
+    ).toBeNull();
+  });
+
+  // ⚠ 「闸真接上了」的证伪配方 (照做一次, 改完还原) —— 两条路各证一次, 2026-09-02 实测:
+  //   把 engine.ts 的 `const ok = !!prev && prev.status === 'done' && !poisoned.has(cid)
+  //   && !tainted && inner.every(canReuse);`
+  //   ① 删掉 `!poisoned.has(cid)` → 下面那条正向用例红在 P 节点 output 里的
+  //      `[invariant] dag/engine · INV-P2-5 违反: P: 复用了被点名的子节点 P::…`;
+  //   ② 删掉 `inner.every(canReuse)` → 同一条用例红在 `… 而它的子图内前驱 P::… 要重跑`。
+  //   ⚠ `max_retry: 0` 是**判别力的一部分**, 不是配置噪声: 引擎对"抛错"默认给 1 次 L0 重试
+  //     (engine.ts 的 "抛错 → 给 1 次"), 重试会从第 1 轮干净重跑并收敛, 于是闸虽然真抛了,
+  //     终态却仍是 done —— 那正是首批那条"摘掉判据不红"教训的同形。写死 0 让抛错直达终态。
+  test('正向 (生产路径): 上一轮被点名的子节点及其下游必须重跑, 只有干净的兄弟被复用', async () => {
+    const SUB_PLAN = JSON.stringify({
+      name: 'sub',
+      nodes: { a: { goal: '干 A' }, b: { goal: '干 B', depends_on: ['a'] }, c: { goal: '干 C' } },
+    });
+    const contentText = (x: string | ContentPart[] | undefined): string =>
+      typeof x === 'string' ? (x ?? '') : (x ?? []).map((p) => (p.type === 'text' ? p.text : '')).join('\n');
+
+    let leafCalls = 0;
+    let judgeCalls = 0;
+    // 子节点 id 是**内容寻址**的 (`P::<fp>`), 测试写不死 —— 从 expanded 事件收。
+    // a 的辨认凭据 = 「b 依赖的那一个」(a 与 c 都零依赖, 只有这条边分得开它俩)。
+    const expanded: { id: string; deps: string[] }[] = [];
+    const generate: GenerateFn = async (req) => {
+      const user = contentText(req.messages.find((m) => m.role === 'user')?.content);
+      if (user.includes(PLAN_BOUNDARY.trim().split('\n')[0]!) || user.includes('TASK (dynamic'))
+        return { text: SUB_PLAN, usage: { in: 1, out: 1 } };
+      leafCalls++;
+      return { text: `leaf-${leafCalls}`, usage: { in: 1, out: 1 } };
+    };
+    const cfg = {
+      conductorModel: 'c:m',
+      leafModel: 'l:m',
+      generate,
+      agentTemplates: new Map(),
+      onNodeEvent: (e: DagNodeEvent) => {
+        if (e.type === 'expanded') for (const n of e.nodes) expanded.push({ id: n.id, deps: [...n.deps] });
+      },
+      judgeSend: (async () => {
+        const k = judgeCalls++;
+        const aId = expanded.find((n) => n.deps.length > 0)?.deps[0];
+        return {
+          text: '',
+          parsed:
+            k === 0
+              ? { converged: false, score: 3, failureReason: '还差一点', rejectedNodes: aId ? [aId] : [] }
+              : { converged: true, score: 9, rejectedNodes: [] },
+          usage: { in: 0, out: 0 },
+          raw: {},
+          model: 'judge:fake',
+          attempts: 1,
+        };
+      }) as unknown as NonNullable<ExecutorDagConfig['judgeSend']>,
+    } as unknown as ExecutorDagConfig;
+    const plan: ConductorPlan = {
+      name: 'p',
+      nodes: { P: { goal: 'g', executor: 'conductor', max_rounds: 2, max_retry: 0 } },
+    };
+
+    const r = await runExecutorDagWithPlan(plan, cfg);
+
+    const aId = expanded.find((n) => n.deps.length > 0)!.deps[0]!;
+    const bId = expanded.find((n) => n.deps.length > 0)!.id;
+    const cId = expanded.find((n) => n.deps.length === 0 && n.id !== aId)!.id;
+    expect(r.results?.P?.status).toBe('done');
+    // 复用集 = 只有 c。a 被点名 → 重跑; b 的前驱要重跑 → 一起重跑。
+    expect(r.reusedNodes).toEqual([cId]);
+    expect(r.reusedNodes).not.toContain(aId);
+    expect(r.reusedNodes).not.toContain(bId);
+    // 3 (轮 1) + 2 (轮 2 只跑 a 与 b) = 5。复用真省下了那一次调用, 不是只改了个标记位。
+    expect(leafCalls).toBe(5);
+  });
+});
+
+describe('INV-8 (memory/store · 回滚一次自我进化后组内 live 恰好一条)', () => {
+  /** 同一 identity 的一条 omd.pattern —— outcome 不同即触发 supersede。 */
+  const pattern = (outcome: 'worked' | 'failed', eventId: string) => ({
+    namespace: 'omd.pattern',
+    situation: 'leaf 判据反复红',
+    approach: '先读判据本身再改产物',
+    outcome,
+    source_event_id: eventId,
+    confidence: { level: 'agent_tentative', source_event_ids: [eventId], created_at: new Date() },
+  });
+
+  const seeded = async (): Promise<{ db: Database; mem: OmdMemory; first: string; second: string }> => {
+    const db = new Database(':memory:');
+    const mem = new OmdMemory({ db });
+    const a = await mem.writeFact(pattern('failed', 'ev-1'));
+    const b = await mem.writeFact(pattern('worked', 'ev-2'));
+    if (a.status !== 'written' || b.status !== 'written') throw new Error(`seed 失败: ${JSON.stringify([a, b])}`);
+    return { db, mem, first: a.id, second: b.id };
+  };
+
+  const liveCount = (db: Database): number =>
+    (db.query(`SELECT count(*) AS n FROM facts WHERE deleted_at IS NULL`).get() as { n: number }).n;
+
+  test('正向: 正常链上的回滚过闸, 且组内仍恰好一条 live', async () => {
+    const { db, mem, first } = await seeded();
+    expect(mem.revertSupersession(first)).toBe(true);
+    expect(liveCount(db)).toBe(1);
+  });
+
+  // ⚠ 「闸真接上了」的证伪配方: 摘掉 store.ts 里 `INV_MEM_8.assert({...})` 那一格
+  //   → 下面这条用例当场红 —— 它不再抛, `revertSupersession` 返 true 并把库留在**两条
+  //   live 同 identity** 的状态上, 而这正是"只有注释在守"时它的真实行为。
+  //   ⚠ 坏库状态是**灌进去的真状态**, 不是改实装造出来的: 这个库是磁盘文件, 多前端共开
+  //   (各自可注入不同 safeguard), 还带一条 `ADD COLUMN superseded_by` 的迁移尾巴。
+  //   「本进程写路径构造保证组内至多一条 live」为真, 「库里此刻至多一条」不为真。
+  test('反向 (真坏库状态): 组内已存在另一条外来 live → 回滚抛 InvariantViolationError 且整事务回滚', async () => {
+    const { db, mem, first, second } = await seeded();
+    // 另一个写者 (别的前端 / 别的进程) 在同一组里塞了一条 live —— 本进程的写路径不经手。
+    const row = db.query(`SELECT namespace, identity_key, text, payload, embedding, created_at FROM facts WHERE id = ?`)
+      .get(second) as { namespace: string; identity_key: string; text: string; payload: string; embedding: Uint8Array; created_at: number };
+    db.run(
+      `INSERT INTO facts (id, namespace, identity_key, text, payload, embedding, created_at, deleted_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
+      ['foreign-live', row.namespace, row.identity_key, row.text, row.payload, row.embedding, row.created_at],
+    );
+    expect(liveCount(db)).toBe(2); // 起点: second + foreign-live
+
+    expect(() => mem.revertSupersession(first)).toThrow(InvariantViolationError);
+    expect(() => mem.revertSupersession(first)).toThrow(/memory\/store · INV-8/);
+    expect(() => mem.revertSupersession(first)).toThrow(/组内 live = \[.*\] \(2 条\)/);
+
+    // fail-closed 的另一半: 事务整体回滚, 库停在抛之前 —— first 仍是墓碑, second 仍活着。
+    // (拿不准链完不完整的时候, 正确动作是**别复活**, 不是复活一半。)
+    expect(mem.epitaph(first)).not.toBeNull();
+    expect(mem.epitaph(second)).toBeNull();
+    expect(liveCount(db)).toBe(2);
+  });
+});
+
+describe('INV-5 (waste/report · 每一跑恰好进 n 或 unknownRuns 之一)', () => {
+  const inv = (): InvariantSpec<{
+    runCount: number;
+    missingColumns: readonly string[];
+    metrics: readonly { name: string; needs: readonly string[]; n: number; unknownRuns: number }[];
+  }> => listInvariants().find((s) => s.module === 'waste/report' && s.id === 'INV-5')! as never;
+
+  test('闸不是恒真式: 跑丢了 / 缺列却仍记数, 各返带定位的证据', () => {
+    const c = inv().check;
+    // ① 一跑两边都没记 —— 更小的样本量伪装成更干净的样本量
+    expect(
+      c({ runCount: 3, missingColumns: [], metrics: [{ name: 'waveWidth', needs: [], n: 1, unknownRuns: 1 }] }),
+    ).toMatch(/waveWidth: n=1 \+ unknownRuns=1 ≠ 总跑数 3 \(差 1 跑两边都没记\)/);
+    // ② 缺列却仍记了 n —— 代理判据顶替真列的回潮 (上一轮 verifier 打回的那条)
+    expect(
+      c({
+        runCount: 2,
+        missingColumns: ['overriddenBy'],
+        metrics: [{ name: 'nodeWasteTokens', needs: ['dagRound', 'overriddenBy'], n: 2, unknownRuns: 0 }],
+      }),
+    ).toMatch(/缺列 \[overriddenBy\] 却仍记了 n=2 跑/);
+    // 闸不是恒真式: 守恒且缺列时整体退 unknown → 放行
+    expect(
+      c({
+        runCount: 2,
+        missingColumns: ['overriddenBy'],
+        metrics: [{ name: 'nodeWasteTokens', needs: ['dagRound', 'overriddenBy'], n: 0, unknownRuns: 2 }],
+      }),
+    ).toBeNull();
+    // 闸不是恒真式: 零跑的空库放行 (0 + 0 === 0), 不许把"没跑"读成"跑丢了"
+    expect(c({ runCount: 0, missingColumns: [], metrics: [{ name: 'waveWidth', needs: [], n: 0, unknownRuns: 0 }] })).toBeNull();
+  });
+
+  // ⚠ 「闸真接上了」的证伪配方 (照做一次, 改完还原): 把 report.ts 的 waveWidth 那格
+  //   `if (levels.length === 0) { levelsUnknown += 1; continue; }` 里的 `levelsUnknown += 1;`
+  //   删掉 → 下面这条正向用例当场红在 `INV_WASTE_5.assert` 抛的 InvariantViolationError 上
+  //   (`waveWidth: n=1 + unknownRuns=0 ≠ 总跑数 2`), 不是红在 expect 上。
+  test('正向 (生产路径): 混合库 (一跑有数据 / 一跑整跑没记) 上四个指标的账都对得上', () => {
+    const rec = (levels: string[][], nodes: unknown[]): DagRunRecord =>
+      ({ levels, nodes } as unknown as DagRunRecord);
+    const r = computeWaste([
+      // 有数据的一跑: 四列俱全。
+      rec(
+        [['n1', 'n2']],
+        [
+          { id: 'n1', kind: 'leaf', status: 'done', deps: [], tokensIn: 100, dagRound: 1, overriddenBy: 1, injectedTokens: 10, cacheHitTokens: 5 },
+          { id: 'n2', kind: 'leaf', status: 'done', deps: [], tokensIn: 100, dagRound: 2, injectedTokens: 0, cacheHitTokens: 0 },
+        ],
+      ),
+      // 整跑没记的一跑: 零节点零 levels —— 「没记」, 不是 0 浪费。
+      rec([], []),
+    ]);
+    // 四个指标逐个对账: n + unknownRuns === 2。
+    for (const m of [r.nodeWasteTokens, r.handoffTax, r.cacheHitRate, r.waveWidth])
+      expect(m.n + m.unknownRuns).toBe(2);
+    // 第二跑必须落在 unknown 那一格 (而不是悄悄消失, 也不是被编成 0)。
+    expect(r.waveWidth.unknownRuns).toBe(1);
+    expect(r.waveWidth.n).toBe(1);
+    expect(r.nodeWasteTokens.value).toBe(0.5); // 200 里被覆盖 100
+    expect(r.missingColumns).toEqual([]);
+  });
+
+  // ⚠ 第二半 (缺列却仍记数) 的证伪配方, 与守恒那半**是两格**, 各证一次:
+  //   把 report.ts 的 `if (!hasDagRound || !hasOverriddenBy) { tokensUnknown = perRun.length; }`
+  //   收窄成 `if (!hasDagRound)` —— 那正是"拿剩下那一列当代理"的回潮写法。下面这条用例当场红在
+  //   `INV_WASTE_5.assert` 抛的 `nodeWasteTokens: 缺列 [overriddenBy] 却仍记了 n=1 跑` 上。
+  //   ⚠ 这一格必须单独证: 收窄之后守恒仍然成立 (每跑照样恰好进一格), 只证守恒那半发现不了它。
+  test('正向 (生产路径): 老库形状 (overriddenBy 整列缺席) → 该指标整体退 unknown, 不拿剩下那列当代理', () => {
+    const r = computeWaste([
+      {
+        levels: [['n1']],
+        nodes: [
+          // dagRound 有、overriddenBy 整列没有 —— `ALTER TABLE` 之前那一代行的真实形状。
+          { id: 'n1', kind: 'leaf', status: 'done', deps: [], tokensIn: 100, dagRound: 1, injectedTokens: 10, cacheHitTokens: 5 },
+        ],
+      } as unknown as DagRunRecord,
+    ]);
+    expect(r.missingColumns).toEqual(['overriddenBy']);
+    expect(r.nodeWasteTokens.n).toBe(0); // 整体退 unknown
+    expect(r.nodeWasteTokens.unknownRuns).toBe(1);
+    expect(r.nodeWasteTokens.value).toBeNull(); // 「没记」, 不是 0 浪费
+    // 不缺列的两个指标照常出数 —— 缺列的退让是**逐指标**的, 不牵连别人。
+    expect(r.handoffTax.n).toBe(1);
+    expect(r.cacheHitRate.n).toBe(1);
   });
 });

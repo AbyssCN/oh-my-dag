@@ -32,6 +32,7 @@
 import { Database } from 'bun:sqlite';
 import { existsSync } from 'node:fs';
 import type { DagRunNode, DagRunRecord } from '../dag/dag-record';
+import { registerInvariant } from '../invariants';
 
 /** 单指标的形状 (C-2 契约)。`value` 缺列时是 `null`,`n` / `unknownRuns` 始终是 `number`。 */
 export interface WasteMetric<T> {
@@ -133,6 +134,49 @@ function hasAnyDataField(nodes: readonly DagRunNode[], field: 'dagRound' | 'over
   }
   return false;
 }
+
+// ── 运行期闸 (INV-5;登记表见 ../invariants.ts) ────────────────────────────────
+//
+// 为什么这条是**运行期**的,不是测试的地盘:
+//   判据要的那个值 = **这一次真读到的那批 record**。这批 record 来自磁盘上的
+//   `dag-runs.db`,而那个库同时存在三代形状:新库(四列都有)、老库(`ALTER TABLE`
+//   之前写的行,那几列整列缺席)、以及**半新半老**(库里既有新行也有老行 —— 升级那天
+//   跨过的那一批)。这条要判的是「在**任意**这样一批混合行上,每一跑都恰好落进 n 或
+//   unknownRuns 之一」,而这不是列几个手搓 record 的单测钉得住的性质:能钉住的只是
+//   「我想到的那几种形状」。
+//
+// 为什么今天没人守得住:
+//   四个指标各自维护自己的一对计数器,共 8 个变量、12 个自增点,**没有任何一处对过账**。
+//   一跑同时不进 n 也不进 unknownRuns 时,它就从这份读数里彻底消失了:比值仍然算得出来
+//   (分母是"剩下那些"),`unknownRuns` 也不涨,于是读数板上看不出任何异常 —— 一个更小的
+//   样本量伪装成一个更干净的样本量。这正是本仓静默坑 1 的第三种形态:「没记」「跑了但没
+//   记上」之外,又多了一种「跑了、也记了、但两边都不认」,而它连一列都不占。
+//   第二半同样没人守:某列缺席时该指标必须**整体**退到 unknown,谁要是拿代理判据
+//   (`kind !== 'conductor'` / `deps 非空`)顶上去,`n` 就会在缺列的情况下大于 0 ——
+//   那条正是上一轮 verifier 打回来的写法,今天挡它的只有这段散文。
+//
+// 开销:8 次整数比较 + 一次 4 元素数组遍历,每次 `computeWaste` 一次 —— 而那一次背后是
+//   一整个库的 JSON parse。彻底的噪声。
+const INV_WASTE_5 = registerInvariant<{
+  runCount: number;
+  missingColumns: readonly string[];
+  /** 逐指标: 名字 · 它依赖哪几列 · 这一次记了多少 n / unknownRuns。 */
+  metrics: readonly { name: string; needs: readonly string[]; n: number; unknownRuns: number }[];
+}>({
+  id: 'INV-5',
+  module: 'waste/report',
+  why: '一跑既不进 n 也不进 unknownRuns 就从读数里消失了 —— 更小的样本量伪装成更干净的样本量, 而缺列时 n>0 = 有人拿代理判据顶替了真列',
+  check: ({ runCount, missingColumns, metrics }) => {
+    for (const m of metrics) {
+      if (m.n + m.unknownRuns !== runCount)
+        return `${m.name}: n=${m.n} + unknownRuns=${m.unknownRuns} ≠ 总跑数 ${runCount} (差 ${runCount - m.n - m.unknownRuns} 跑两边都没记)`;
+      const missing = m.needs.filter((c) => missingColumns.includes(c));
+      if (missing.length > 0 && m.n > 0)
+        return `${m.name}: 缺列 [${missing.join(', ')}] 却仍记了 n=${m.n} 跑 (缺列必须整体退 unknown, 不许拿代理判据顶)`;
+    }
+    return null;
+  },
+});
 
 /**
  * 算四个数。**纯函数** —— 不开库,不写盘,只吃 `DagRunRecord[]`。
@@ -315,5 +359,18 @@ export function computeWaste(records: readonly DagRunRecord[]): WasteReport {
     unknownRuns: levelsUnknown,
   };
 
+  // INV-5 的运行期闸: 报告刚拼完、还没离开构造点 —— 唯一一个既拿得到四个指标的完整账、
+  // 又还来得及不让一份对不上的读数流出去的位置。`waveWidth` 的 needs 是空的 (`levels` 列
+  // 老库也带, 本指标永不缺列), 空 needs ⇒ 第二半自然不响, 与守恒那一半各说各的。
+  INV_WASTE_5.assert({
+    runCount: perRun.length,
+    missingColumns,
+    metrics: [
+      { name: 'nodeWasteTokens', needs: ['dagRound', 'overriddenBy'], n: nodeWasteTokens.n, unknownRuns: nodeWasteTokens.unknownRuns },
+      { name: 'handoffTax', needs: ['injectedTokens'], n: handoffTax.n, unknownRuns: handoffTax.unknownRuns },
+      { name: 'cacheHitRate', needs: ['cacheHitTokens'], n: cacheHitRate.n, unknownRuns: cacheHitRate.unknownRuns },
+      { name: 'waveWidth', needs: [], n: waveWidth.n, unknownRuns: waveWidth.unknownRuns },
+    ],
+  });
   return { nodeWasteTokens, handoffTax, cacheHitRate, waveWidth, missingColumns };
 }

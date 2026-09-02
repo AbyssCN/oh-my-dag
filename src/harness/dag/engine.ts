@@ -294,6 +294,7 @@ import type { ContentPart } from '../../model/gateway';
 // 单一住处 (blame.ts, 与冻结的 blame.test.ts 同源); 引擎只接线不重实现 (INV-2)。
 import { parseBlameVerdict, invalidationClosure } from './blame';
 import { awaitNode } from './await-node';
+import { registerInvariant } from '../invariants';
 
 /** 上一轮 plan+results (escalation 重规划轮传入, D-21 跨轮复用的匹配源)。 */
 import type { PriorExec } from './types';
@@ -303,6 +304,59 @@ import type { PriorExec } from './types';
 //   反向自检的 mutation 定位要**唯一**, 内联 `new Date().toISOString()` 会让这一跳
 //   落在 6+ 个 toISOString 调用点上, 闸红的时候分不清是哪个。改成 stub → 立刻红。
 const roundStampNow = (): string => new Date().toISOString();
+
+// ── 运行期闸 (INV-P2-5; 登记表见 ../invariants.ts) ────────────────────────────
+//
+// 为什么这条是**运行期**的, 不是测试的地盘:
+//   判据的三个输入没有一个存在于静态世界: 毒集来自本轮 judge / detector 的**运行时点名**,
+//   毒制品来自被拒子节点这一次真写过的文件, 而"谁读过它"来自兄弟节点这一次真读过的文件。
+//   要判的是「在**任意**毒集 × 任意读写集下, 复用集不含任何一条被污染的路」—— 那是一条
+//   关于运行时值的全称命题, 钉不进单测。
+//
+// 为什么今天没人守得住:
+//   全仓没有一个用例跑过内环跨轮复用 (`innerReused` 零测试提及)。而这条破了之后**什么都不会
+//   发生**: 该重跑的子节点不重跑, 上一轮那份"吃着已被判为坏的输入做出来的"产出被原样当成
+//   本轮结果注入下游 —— 没有异常、没有 failed、judge 看到的正文和真重跑过一模一样。
+//   这正是本仓最重的那一类静默失效: **毒绿复用**。
+//   三条路各自独立地能破:
+//     ① 被点名的子节点本身进了复用集 (`poisoned` 那一格失效);
+//     ② 读过毒制品的兄弟进了复用集 (D-12 的图外读通道 —— 它没有边, 前驱闭包兜不住);
+//     ③ 前驱要重跑而它自己被复用 (输入变了, 上一轮的产出不再对应本轮的输入)。
+//
+// 开销: O(复用集 × (子图内前驱数 + 读文件数))。每个 conductor 节点每轮一次, 而那一轮背后是
+//   整张子图的 LLM 调用。噪声。
+const INV_P2_5 = registerInvariant<{
+  parentId: string;
+  /** 本轮判定可复用的子节点 id。 */
+  reused: readonly string[];
+  /** 本轮毒集 (被点名的子节点 id)。 */
+  poisoned: ReadonlySet<string>;
+  /** 毒制品: 被点名子节点上一轮写过的文件。 */
+  poisonedArtifacts: ReadonlySet<string>;
+  /** 上一轮结局 (只用到 status 与 filesRead)。 */
+  prev: ReadonlyMap<string, { status: string; filesRead?: readonly string[] }>;
+  /** 子节点 → 它的**子图内**前驱 (已过滤成 `${parentId}::` 形)。 */
+  innerDeps: ReadonlyMap<string, readonly string[]>;
+}>({
+  id: 'INV-P2-5',
+  module: 'dag/engine',
+  why: '毒绿复用 —— 被拒的、或吃着被拒产物做出来的子节点不重跑, 上一轮的坏产出被原样当成本轮结果, 全程零异常零 failed',
+  check: ({ parentId, reused, poisoned, poisonedArtifacts, prev, innerDeps }) => {
+    const reusedSet = new Set(reused);
+    for (const cid of reused) {
+      if (poisoned.has(cid)) return `${parentId}: 复用了被点名的子节点 ${cid}`;
+      const p = prev.get(cid);
+      if (p === undefined) return `${parentId}: 复用了 ${cid} 而上一轮根本没有它的结果`;
+      if (p.status !== 'done') return `${parentId}: 复用了 ${cid} 而它上一轮 status=${p.status} (非 done)`;
+      const tainted = (p.filesRead ?? []).find((f) => poisonedArtifacts.has(f));
+      if (tainted !== undefined) return `${parentId}: 复用了 ${cid} 而它上一轮读过毒制品 "${tainted}"`;
+      const broken = (innerDeps.get(cid) ?? []).find((d) => !reusedSet.has(d));
+      if (broken !== undefined)
+        return `${parentId}: 复用了 ${cid} 而它的子图内前驱 ${broken} 要重跑 (输入会变, 上轮产出不再对应)`;
+    }
+    return null;
+  },
+});
 
 // ── barrel re-export: 保持 ./executor-dag 公共面稳定 (importer-closure, 消费方零改) ──
 export type { GenerateFn, ExecutorDagConfig, ExecutorDagResult, LeafResult, DagNodeEvent } from './types';
@@ -1059,6 +1113,18 @@ async function executePlan(
     return spent >= msCap
       ? `时间预算已尽: 已用 ${Math.round(spent / 1000)}s / 上限 ${Math.round(msCap / 1000)}s`
       : null;
+  };
+  // P2e (2026-09-02): leaf 超时 ≤ 剩余预算 —— 同一只钟, 只是从"要不要开新一轮"改问
+  // "这一发该给多久"。dispatchBudgetHit 只在轮边界/子图 pump 里查, 单个 agent leaf 在轮中
+  // 能跑多久与目标预算完全脱节, 只受 agent-leaf 自己那颗固定 1h 兜底钟管 (batch-7 现场:
+  // 40min 预算实跑到 54min)。`Math.max(1, …)`: 剩余已 ≤0 也不许传 0 —— 0 在 agent-leaf 里的
+  // 语义是"不设超时" (语义反转会比不传更糟)。clamp 到 3_600_000 (agent-leaf 默认上限同款魔数):
+  // 预算充裕时不许把单次调用的超时**拉高**过历史默认, 这条闸只收紧不放宽。
+  const remainingBudgetMs = (): number | undefined => {
+    const msCap = config.loopBudget?.ms;
+    if (msCap === undefined) return undefined;
+    const spent = Date.now() - (config._budgetAnchor ?? planStartedAt);
+    return Math.min(3_600_000, Math.max(1, msCap - spent));
   };
   const cancelReason = (): string => {
     const r = config.cancelSignal?.reason;
@@ -2356,6 +2422,21 @@ async function executePlan(
         return ok;
       };
       for (const c of expand.children) canReuse(c.id);
+      // INV-P2-5 的运行期闸: 复用集刚定、还没被任何人读过的这一格 —— 再晚一格
+      // (`innerReused` 已收下 / 子节点已按"绿"跳过) 就只剩事后取证了。
+      INV_P2_5.assert({
+        parentId: id,
+        reused: [...reuseLocal.keys()],
+        poisoned,
+        poisonedArtifacts,
+        prev: prevResults,
+        innerDeps: new Map(
+          [...reuseLocal.keys()].map((cid) => [
+            cid,
+            ((plan!.nodes[cid]?.depends_on ?? []) as string[]).filter((d) => d.startsWith(`${id}::`)),
+          ]),
+        ),
+      });
       for (const cid of reuseLocal.keys()) innerReused.add(cid);
       if (reuseLocal.size > 0) {
         logger.info(
@@ -4362,9 +4443,13 @@ async function executePlan(
             );
           }
         }
+        // P2e: 配了目标预算 → 这一发的超时不许超过剩余额度 (未配 → undefined, 不下发字段,
+        // 老调用方逐字节零回归)。
+        const leafBudgetMs = remainingBudgetMs();
         const r = await config.agentRunner!({
           prompt,
           model,
+          ...(leafBudgetMs !== undefined ? { leafTimeoutMs: leafBudgetMs } : {}),
           // S-1: 判据下发。缺席 = 该节点没判据 (旁路) 或判据被自证闸拒 —— 两者在 leaf 侧行为相同,
           // 分辨靠上面那条 WARN, 不靠 leaf 猜。
           ...(dispatchSelfCheck ? { self_check: dispatchSelfCheck } : {}),
