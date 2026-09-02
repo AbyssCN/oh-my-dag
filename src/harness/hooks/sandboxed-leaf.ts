@@ -23,6 +23,23 @@ import { checkJailArgv, describeJailProblems } from './jail-preflight';
 const WORKER_REL = 'src/harness/leaf-worker.ts';
 
 /**
+ * 外层 bwrap 杀进程计时器的取紧算法 (P2e review-fix, 2026-09-02) —— 单独导出成纯函数只为了
+ * 不用起真 bwrap worker 就能钉住 (起真 worker 要真跑一次 agent SDK, 不是这条闸该测的范围)。
+ *
+ * ⚠ 首版用 `??` (input 有值就整个覆盖 opts) 而不是 `Math.min` —— 与 agent-leaf.ts `runOnce`
+ * 的 in-process 计时器**不是同一条闸**, 尽管上面 (调用处) 的注释这么声称: 运维配了较小的
+ * `opts.leafTimeoutMs` (硬崩溃兜底) 时, 引擎按剩余预算算出的较大 `input.leafTimeoutMs` 会把
+ * 外层杀进程时机反而**放宽**, 而 worker 内部的 agent-leaf 计时器仍正确收紧 —— 同一次调用两个
+ * 天花板, 且方向与「按调用取紧的那个」相反。改成 `Math.min`, 与 agent-leaf.ts:2224 逐字同源。
+ */
+export function sandboxedLeafKillTimeoutMs(
+  input: Pick<AgentLeafInput, 'leafTimeoutMs'>,
+  opts: Pick<AgentLeafRunnerOpts, 'leafTimeoutMs'>,
+): number {
+  return Math.min(input.leafTimeoutMs ?? Number.POSITIVE_INFINITY, opts.leafTimeoutMs ?? 3_600_000);
+}
+
+/**
  * **worker 到底从哪儿取** (2026-07-31, 一次 live 撞出来的 P0)。
  *
  * 原设计只有 {@link WORKER_REL} 一条路, 注释写着「worktree = HEAD checkout, 含此文件」——
@@ -188,7 +205,7 @@ export function createSandboxedLeafRunner(opts: AgentLeafRunnerOpts): AgentLeafR
     // 这里若只认 opts.leafTimeoutMs, 引擎按剩余预算收紧的 `input.leafTimeoutMs` 只会传进
     // worker 内部的 agent-leaf 调用, jail 这层外部杀进程计时器却仍按老的固定 1h 走,
     // 同一次调用两个天花板。按调用取紧的那个, 与 in-process 档 (agent-leaf.ts) 同一条闸。
-    const timeoutMs = input.leafTimeoutMs ?? opts.leafTimeoutMs ?? 3_600_000;
+    const timeoutMs = sandboxedLeafKillTimeoutMs(input, opts);
     const id = `${process.pid}-${++seq}`;
     const payloadRel = `.omd-leaf-payload-${id}.json`;
     const resultRel = `.omd-leaf-result-${id}.json`;

@@ -2523,8 +2523,12 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   // INV-GOAL-3 可证面: 复用现在全发生在**内环**里 (子节点内容寻址, 同 id ≡ 同规格 + 同祖先规格)。
   const reusedNodes = exec.reusedNodes ?? [];
   // D-Q / D-P: 两种"没跑完但不是失败"的收尾, 各自如实报 —— 都恒不算收敛 (fail-closed)。
-  const blocked = execLeaf?.blocked;
-  const budgetStopped = execLeaf?.budgetStopped;
+  // P2e review-fix (2026-09-02): `execLeaf` 只在 conductor 回落图上存在 (id 恒为 `execute`) ——
+  // 平铺图 (默认路径) 的节点键是 `s{sliceId}`, 于是同一个 `blocked`/`budgetStopped` 信号在
+  // 平铺路径上此前读不出来, 落进 oracleRecheckGreen/oracle-failed 那几格, 给出"以判据为准"
+  // 这类误导性下一步。回落: `execLeaf` 缺席时改问图里**任一**节点是否带这个字段。
+  const blocked = execLeaf?.blocked ?? Object.values(exec.results).find((n) => n.blocked)?.blocked;
+  const budgetStopped = execLeaf?.budgetStopped ?? Object.values(exec.results).find((n) => n.budgetStopped)?.budgetStopped;
   // **引擎自己出事**导致环提前退出 (今天唯一来源: judge 调不通)。与 blocked 分开的理由是
   // 下一步相反: blocked 要人给外部输入, 这个要**修引擎** —— 而它此前落 `not-converged`,
   // 于是读的人会去加轮数, 恰恰是最没用的那个动作。

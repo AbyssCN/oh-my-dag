@@ -101,4 +101,85 @@ describe('P2e: agent leaf 超时 ≤ 剩余目标预算', () => {
     expect(r.results.W!.status).toBe('failed');
     expect(r.results.W!.budgetStopped).toBeDefined();
   });
+
+  // review P1①: fan-out lister 探针此前不经过这道闸 —— `remainingBudgetMs()` 在预算耗尽时
+  // 返回 undefined, 被 lister 调用点读成"没配预算"而**不下发** `leafTimeoutMs` 字段, 于是探针
+  // 在预算耗尽的那一刻反而拿到 agent-leaf 的固定 1h 默认, 与主派发点的收紧方向相反。
+  // 反向自检: 把 engine.ts lister 调用点的 `listerBudgetMs` 改回 `remainingBudgetMs()`
+  // (去掉 `leafDispatchBudgetStopped() ? LEAF_MIN_SLICE_MS :` 那半) → 下面 EXHAUSTED 分支
+  // 当场红 (lister 的 `leafTimeoutMs` 变回 `undefined`)。
+  const mapPlan = (): ConductorPlan => ({
+    name: 'p2e-map-plan',
+    nodes: {
+      fan: {
+        executor: 'map',
+        map: {
+          lister: { executor: 'agent', goal: '枚举条目 (测试用空清单)' },
+          over: 'items',
+          itemVar: 'it',
+          template: { goal: '处理 {{it}}' },
+        },
+      },
+    },
+  }) as unknown as ConductorPlan;
+
+  test('map 节点 fan-out lister 探针同样受剩余预算收紧: 耗尽时封顶 LEAF_MIN_SLICE_MS, 不是恒 1h', async () => {
+    let controlInput: AgentLeafInput | undefined;
+    const control = await runExecutorDagWithPlan(mapPlan(), makeConfig({
+      loopBudget: { ms: 60_000 },
+      _budgetAnchor: Date.now() - 5_000, // 已用 5s, 剩余约 55s —— 对照臂: 探针本就该被收紧
+      agentRunner: async (input) => {
+        controlInput = input;
+        return { text: '{"items":[]}', usage: { in: 1, out: 1 } };
+      },
+    }));
+    expect(control.results.fan!.status).toBe('done');
+    expect(controlInput?.leafTimeoutMs).toBeGreaterThan(0);
+    expect(controlInput!.leafTimeoutMs!).toBeLessThan(60_000); // 对照臂证明探针确实接了预算轴
+
+    let exhaustedInput: AgentLeafInput | undefined;
+    const exhausted = await runExecutorDagWithPlan(mapPlan(), makeConfig({
+      loopBudget: { ms: 10_000 },
+      _budgetAnchor: Date.now() - 60_000, // 预算早烧完 (超支 50s)
+      agentRunner: async (input) => {
+        exhaustedInput = input;
+        return { text: '{"items":[]}', usage: { in: 1, out: 1 } };
+      },
+    }));
+    expect(exhausted.results.fan).toBeDefined();
+    expect(exhaustedInput?.leafTimeoutMs).toBeDefined();
+    expect(exhaustedInput!.leafTimeoutMs!).toBeLessThanOrEqual(5_000); // 封顶 LEAF_MIN_SLICE_MS, 不是恒 1h
+  });
+
+  // review P2: 预算拒派此前排在 self_check 判据自证之后 —— 已耗尽的节点若带 self_check 仍会
+  // 先烧一次真探针子进程 (vetSelfCheck 用 commandRunner 真跑), 才被拒派丢弃, 与本闸"省墙钟"
+  // 的立意相反。反向自检: 把 engine.ts 里预算拒派那块挪回 self_check 判据自证之后
+  // (紧邻 `const leafBudgetMs = remainingBudgetMs();` 之前) → 下面这条当场红
+  // (`selfCheckProbed` 变 true)。
+  test('预算已耗尽 + 节点带 self_check → 拒派发生在探针真跑之前, 不白烧一次子进程', async () => {
+    let selfCheckProbed = false;
+    const selfCheckPlan: ConductorPlan = {
+      name: 'p2e-selfcheck-plan',
+      nodes: {
+        W: {
+          goal: '只读检查(无产物声明)',
+          executor: 'agent',
+          self_check: { command: 'true', expect_exit: 0 },
+        },
+      },
+    };
+    const cfg = makeConfig({
+      loopBudget: { ms: 10_000 },
+      _budgetAnchor: Date.now() - 60_000, // 预算早烧完
+      commandRunner: async ({ command }) => {
+        selfCheckProbed = true;
+        return { text: '', usage: { in: 0, out: 0 }, exitCode: 0, timedOut: false, signal: null };
+      },
+      agentRunner: async () => ({ text: '', usage: { in: 0, out: 0 } }),
+    });
+    const r = await runExecutorDagWithPlan(selfCheckPlan, cfg);
+    expect(selfCheckProbed).toBe(false); // 探针一次都没真跑 —— 拒派先于自证
+    expect(r.results.W!.status).toBe('failed');
+    expect(r.results.W!.budgetStopped).toBeDefined();
+  });
 });

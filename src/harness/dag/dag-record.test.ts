@@ -282,6 +282,38 @@ describe('留痕的派生面 — 命令原文 + 效果指标计数', () => {
     rec.close();
   });
 
+  // P2e review-fix (2026-09-02): `budgetStopped` (预算拒派/环预算停) 之前没进这份留痕 ——
+  // 契约声称"这个信号可 join dag-runs.db 的节点派发记录"落了空 (哪儿都不落), 一个被预算拒派
+  // 的节点在盘上与任何别的 failed 节点没有区别。只搬运, 一个字不补: 缺席 = 没被拒派, 不是编
+  // 一个 false/'' 出来。
+  test('budgetStopped 原样进留痕; 普通失败节点这一位缺席 (不是被抹平成同一种 failed)', () => {
+    const rec = createDagRecorder({ path: ':memory:' });
+    const id = rec.record(
+      withNodes(
+        { w: { goal: 'x' }, z: { goal: 'y' } },
+        {
+          // 预算拒派 —— 未真派发, 引擎自己判 failed 并挂 budgetStopped (engine.ts:4487-4498)
+          w: {
+            id: 'w',
+            kind: 'agent',
+            status: 'failed',
+            deps: [],
+            output: '[时间预算已尽, 未派发]',
+            usage: { in: 0, out: 0 },
+            budgetStopped: '时间预算已尽: 剩余 0s ≤ 最小可用切片 5s (已用 60s / 上限 10s)',
+          },
+          // 普通失败 (与预算无关) —— 这一位必须缺席, 不许被抹平成同一种 failed
+          z: { id: 'z', kind: 'agent', status: 'failed', deps: [], output: '', usage: { in: 0, out: 0 } },
+        },
+      ),
+      { runId: 'run-budget-stopped' },
+    );
+    const nodes = rec.get(id)!.nodes;
+    expect(nodes.find((n) => n.id === 'w')!.budgetStopped).toContain('预算');
+    expect(nodes.find((n) => n.id === 'z')!.budgetStopped).toBeUndefined();
+    rec.close();
+  });
+
   test('plan 里没有对应 id 的节点 (map 动态扇出的子节点) 不编命令', () => {
     const rec = createDagRecorder({ path: ':memory:' });
     const id = rec.record(

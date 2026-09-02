@@ -239,6 +239,16 @@ export interface DagRunNode {
    */
   failureKind?: NodeFailureKind;
   /**
+   * **本节点因预算拒派/环预算停而失败的原因** (P2e review-fix, 2026-09-02;词表见
+   * `LeafResult.budgetStopped`, types.ts)。与 `failureKind` 分开的理由同它: 事后算不回来 ——
+   * 一个被预算拒派的节点在盘上此前与任何别的 `failed` 节点没有区别, 契约声称"可 join
+   * dag-runs.db 的节点派发记录"落了空 (哪儿都不落)。
+   *
+   * ⚠ 缺席 = 没被拒派 (真正跑过或不是预算成因的失败), **绝不**补一个空串/false —— 那正是把
+   * "没被拒派"与"拒派了但没记"抹平。
+   */
+  budgetStopped?: string;
+  /**
    * conductor 内环**实跑完的轮数**(2026-08-06)。其它 kind 缺席。
    *
    * ## 为什么它值得单独一列:⑧ 那个 0 至今分不出四件事
@@ -866,6 +876,7 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
           ...(outHash ? { outputHash: outHash } : {}),
           ...(typeof r.exitCode === 'number' ? { exitCode: r.exitCode } : {}),
           ...(r.failureKind ? { failureKind: r.failureKind } : {}),
+          ...(r.budgetStopped ? { budgetStopped: r.budgetStopped } : {}),
           ...(r.writeCounts ? { writeCounts: r.writeCounts } : {}),
           // 闸在场态 (2026-09-02): 只搬运, 一个字不补。runner 没报 → 这一位缺席,
           // **绝不**补一个 `?? { writeAllow: 'unavailable', ... }` —— 那正是把"没记"写成

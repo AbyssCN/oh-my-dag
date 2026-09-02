@@ -3641,7 +3641,12 @@ async function executePlan(
         const touchRunId = continuity?.runId ?? config.sessionId;
         // P2e: fan-out lister 探针与主 leaf 派发同一只钟 —— 未收紧前它恒用固定 1h 默认,
         // 目标预算快用完时探针照样能拿满 1h。
-        const listerBudgetMs = remainingBudgetMs();
+        // review-fix (P1①): `remainingBudgetMs()` 耗尽时返回 `undefined`, 与"没配预算"同一个
+        // 值 (NULL≠0≠不适用的那半漏了) —— 这里若直接读它, 恰在预算耗尽的那一刻不下发字段,
+        // 探针反而落回 agent-leaf 的固定 1h 默认, 与主派发点的收紧方向相反。改问同一个
+        // `leafDispatchBudgetStopped()` 判据, 耗尽时封顶到 `LEAF_MIN_SLICE_MS` (不是不派发 ——
+        // 主派发点才拒派, 这里只是探针, 拒派整个 map 节点代价更大, 封顶已经够堵住"恒 1h")。
+        const listerBudgetMs = leafDispatchBudgetStopped() ? LEAF_MIN_SLICE_MS : remainingBudgetMs();
         const r = await config.agentRunner({
           prompt: listerPrompt,
           model: listerModel,
@@ -4444,6 +4449,28 @@ async function executePlan(
             elapsedMs: now - (nodeStartedAt.get(id) ?? now),
           });
         };
+        // P2e (2026-09-02 修订): 剩余预算不够一个可用切片 → 这一发不派, 不是塞一个必死的
+        // 计时器 (首版 `leafTimeoutMs:1` 现场实测: agent-leaf 第一轮内 abort, 空文本 +
+        // `timedOut:true`, 而 engine.ts 从不读 `r.timedOut` → 无产物声明的节点被判 `done`
+        // 空产出静默通过, 正是谎报完工)。结构化成 `budgetStopped`, 与轮边界预算耗尽同词表,
+        // "加预算 resume 能成"。
+        // review-fix (P2, 2026-09-02): 提到 self_check 判据自证之前 —— 那道闸在有
+        // `commandRunner` 时会真跑一次探针子进程 (下方 `vetSelfCheck`), 预算已耗尽的节点在此前
+        // 会先烧掉这次探针的真实墙钟, 才被这里拒派丢弃, 与本闸"省墙钟"的立意相反。这里之后到
+        // self_check 之间没有东西消费拒派分支, 挪动对未拒派节点行为不变。
+        const dispatchBudgetStopped = leafDispatchBudgetStopped();
+        if (dispatchBudgetStopped) {
+          logger.warn({ node: id, why: dispatchBudgetStopped }, '[omd/executor-dag] 剩余预算不够一个可用切片 → agent 叶不派发');
+          return {
+            id,
+            status: 'failed',
+            kind: 'agent',
+            output: '[时间预算已尽, 未派发]',
+            deps,
+            usage: { in: 0, out: 0 },
+            budgetStopped: dispatchBudgetStopped,
+          };
+        }
         // ── S-1 (2026-08-30): 节点级 self_check 派发给 leaf ────────────────────────────
         // 这里此前**没有** `self_check` 这一项 —— 而这是全仓唯一的 agent 派发点。于是
         // `AgentLeafInput.self_check` 在生产里恒 `undefined`, agent-leaf 那台自修环状态机
@@ -4478,24 +4505,6 @@ async function executePlan(
               '[omd/executor-dag] 无 commandRunner → self_check 判据自证跳过 (fail-open), 判据原样派发',
             );
           }
-        }
-        // P2e (2026-09-02 修订): 剩余预算不够一个可用切片 → 这一发不派, 不是塞一个必死的
-        // 计时器 (首版 `leafTimeoutMs:1` 现场实测: agent-leaf 第一轮内 abort, 空文本 +
-        // `timedOut:true`, 而 engine.ts 从不读 `r.timedOut` → 无产物声明的节点被判 `done`
-        // 空产出静默通过, 正是谎报完工)。结构化成 `budgetStopped`, 与轮边界预算耗尽同词表,
-        // "加预算 resume 能成"。
-        const dispatchBudgetStopped = leafDispatchBudgetStopped();
-        if (dispatchBudgetStopped) {
-          logger.warn({ node: id, why: dispatchBudgetStopped }, '[omd/executor-dag] 剩余预算不够一个可用切片 → agent 叶不派发');
-          return {
-            id,
-            status: 'failed',
-            kind: 'agent',
-            output: '[时间预算已尽, 未派发]',
-            deps,
-            usage: { in: 0, out: 0 },
-            budgetStopped: dispatchBudgetStopped,
-          };
         }
         // P2e: 配了目标预算 → 这一发的超时不许超过剩余额度 (未配 → undefined, 不下发字段,
         // 老调用方逐字节零回归)。
@@ -4555,8 +4564,12 @@ async function executePlan(
           metadata: {
             filesTouched: r.filesTouched?.length ?? 0,
             ...(r.stalled ? { stalled: true } : {}),
-            // P2e: 只有它落盘, "本节点这次给了多少超时预算" 才可对 dag-runs.db join —— 之前
-            // 这个字段哪儿都不落, 前一版契约声称的信号无处可查。
+            // P2e: "本节点这次给了多少超时预算" 落进 recordGeneration 的 metadata ——
+            // review-fix (2026-09-02): 这条落的是 **Langfuse** (src/model/langfuse.ts:332),
+            // 未配 Langfuse 时 `recordGenerationInner` 直接 no-op 返回 (langfuse.ts:345), 与
+            // dag-runs.db (dag-record.ts, 消费 `LeafResult.budgetStopped` 那份) 是两个互不
+            // 相通的库。真正能对 dag-runs.db join 的"预算拒派"信号是同一次 P2e 加的
+            // `LeafResult.budgetStopped` (见 DagRunNode.budgetStopped), 不是这里。
             ...(leafBudgetMs !== undefined ? { leafTimeoutMs: leafBudgetMs } : {}),
           },
         });
