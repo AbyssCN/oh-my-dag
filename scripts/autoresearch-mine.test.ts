@@ -12,12 +12,14 @@
  * 把任一段改成无条件 push 就红。
  */
 import { describe, expect, test } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   collectCandidates,
+  defaultMineIO,
   parseMineArgs,
   parseSince,
   type MineIO,
@@ -148,5 +150,58 @@ describe('CLI (GWT-3b: runs.db 不存在仍写出 candidates.json 并退 0)', ()
     expect((c.errors as { source: string }[]).map((e) => e.source)).toEqual(
       expect.arrayContaining(['failed-runs', 'sessions', 'readout']),
     );
+  });
+});
+
+
+describe('readout 矿源真有源 (缺口 2)', () => {
+  /** 造一个只有 omd_dag_runs 的 dag-runs.db, 两行都因缺 duration 被整图剔除、都不声明 shape。 */
+  function fixtureCwd(): string {
+    const tmp = mkdtempSync(join(tmpdir(), 'omd-mine-readout-'));
+    mkdirSync(join(tmp, '.omd'), { recursive: true });
+    const db = new Database(join(tmp, '.omd', 'dag-runs.db'));
+    db.run('CREATE TABLE omd_dag_runs (nodes TEXT, shape_id TEXT, outcome TEXT)');
+    const nodes = JSON.stringify([
+      { id: 'A', deps: [], durationMs: null },
+      { id: 'B', deps: ['A'], durationMs: 100 },
+    ]);
+    db.run('INSERT INTO omd_dag_runs (nodes, shape_id, outcome) VALUES (?, NULL, ?)', [
+      nodes,
+      'success',
+    ]);
+    db.run('INSERT INTO omd_dag_runs (nodes, shape_id, outcome) VALUES (?, NULL, ?)', [
+      nodes,
+      'success',
+    ]);
+    db.close();
+    return tmp;
+  }
+
+  test('矿源接上 dag-runs.db: candidates 里真出现 readout:* 三条', () => {
+    // 真值链: 两行缺失比例各 0.5 > 0.20 → 全部 excluded-missing → measurable 0
+    //   → speedupMedian null → readout:speedup-null;
+    //   excludedMissing/seen = 2/2 = 1 > 0.5 → readout:duration-excluded;
+    //   shapeDeclRate 0 < 0.1 → readout:shape-decl-low。
+    const c = collectCandidates(
+      defaultMineIO(fixtureCwd()),
+      '2026-08-26T00:00:00.000Z',
+      '2026-09-02T00:00:00.000Z',
+    );
+    expect(c.errors.map((e) => e.source)).not.toContain('readout');
+    expect(c.items.map((i) => i.id)).toEqual(
+      expect.arrayContaining([
+        'readout:speedup-null',
+        'readout:duration-excluded',
+        'readout:shape-decl-low',
+      ]),
+    );
+  });
+
+  test('db 缺席仍 fail-open 留证据 (退化成 errors 一条, 不抛)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'omd-mine-noro-'));
+    const io = defaultMineIO(tmp);
+    const r = io.readout();
+    expect(r.ok).toBe(false);
+    expect(r.ok === false && r.error).toContain('dag-runs.db');
   });
 });

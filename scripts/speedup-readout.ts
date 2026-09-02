@@ -326,6 +326,60 @@ export function renderMarkdown(
 }
 
 /**
+ * §6.5 `summarizeReadout` —— 把同一批 run 行压成夜链挖题要的四个数(缺口 2)。
+ *
+ * 为什么在这里而不是在 miner 里:这四个数的定义(什么算可量、什么算被剔、shape 怎么分桶)
+ * 就是本文件那套判错顺序,复制一份到别处 = 两把尺子各自漂移。miner 只判「这些数好不好看」,
+ * 不重新定义怎么量。
+ *
+ * 三条 NULL ≠ 0 的分辨(仓规 §静默坑 1):
+ *   · 一行都没有 → 返 `null`(「这一类没读到」),不返一排 0 —— 调用方据此进 `errors[]`;
+ *   · 没有一行可量 → `speedupMedian` 读 `null`,不写 0;
+ *   · 因缺 duration 整图剔除(`excludedMissing`)与因环/形态异常剔除是两桶,后者不进这个数。
+ *
+ * `shapeDeclRate` 的分母 = **扫过的全部行**,不是可量行 —— 「图式声明率」问的是计划里有没有
+ * 写 shape_id,与这条 run 的时长记全没记全无关,拿可量行当分母会把两件事绞在一起。
+ *
+ * 字段名必须与 `src/eval/replay/miners.ts:ReadoutSummary` 逐字相同(消费端就是 `mineReadout`)。
+ * 这一条有闸:`scripts/autoresearch-mine.ts` 把本函数的返回值直接赋给声明为那个类型的槽,
+ * 任一字段改名或改型 `bunx tsc --noEmit` 当场红。两个类型故意不同名 —— 同名更容易被当成
+ * 同一个东西各改各的。
+ */
+export type ReadoutRow = { nodes: unknown; shape_id: string | null };
+
+export type SpeedupReadoutSummary = {
+  /** 可量行的 speedup 中位;一行都不可量 → `null`(**不是** 0)。 */
+  speedupMedian: number | null;
+  /** 判为 `ok` 的行数。 */
+  measurable: number;
+  /** 因缺失比例 > 20% 整图剔除的行数(不含环 / 形态异常那一桶)。 */
+  excludedMissing: number;
+  /** `shape_id` 非缺席的行数 / 扫过的全部行数,0..1。 */
+  shapeDeclRate: number;
+};
+
+export function summarizeReadout(rows: readonly ReadoutRow[]): SpeedupReadoutSummary | null {
+  if (rows.length === 0) return null;
+  const speedups: number[] = [];
+  let excludedMissing = 0;
+  let declared = 0;
+  for (const r of rows) {
+    if (shapeBucket(r.shape_id) !== 'absent') declared += 1;
+    const parsed = parseNodesColumn(r.nodes);
+    if (parsed === null) continue; // 形态异常那一桶,不进 excludedMissing
+    const verdict = analyzeRun(parsed);
+    if (verdict.kind === 'ok') speedups.push(verdict.speedup);
+    else if (verdict.kind === 'excluded-missing') excludedMissing += 1;
+  }
+  return {
+    speedupMedian: speedups.length === 0 ? null : median(speedups),
+    measurable: speedups.length,
+    excludedMissing,
+    shapeDeclRate: declared / rows.length,
+  };
+}
+
+/**
  * §7 CLI —— 只读打开 `omd_dag_runs` 的 `nodes / shape_id / outcome`,
  * 渲染「全量」与 `outcome='success'` 两份独立报告。
  *

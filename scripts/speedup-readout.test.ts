@@ -23,6 +23,8 @@ import {
   parseNodesColumn,
   renderMarkdown,
   shapeBucket,
+  summarizeReadout,
+  type ReadoutRow,
   type RunNode,
 } from './speedup-readout';
 
@@ -290,5 +292,63 @@ describe('C-1 renderMarkdown — 剔除计数分列 (excluded_missing / excluded
     expect(md).not.toContain('invalidCycle');
     expect(md).not.toContain('invalidShape');
     expect(md).not.toContain('excludedMissing');
+  });
+});
+
+
+describe('summarizeReadout —— 夜链矿源摘要 (缺口 2)', () => {
+  /** 两条可量 (speedup 1 与 2) + 一条因缺 duration 整图剔除; 三条里一条声明了 shape。 */
+  const ROWS: ReadoutRow[] = [
+    {
+      nodes: JSON.stringify([
+        { id: 'A', deps: [], durationMs: 100 },
+        { id: 'B', deps: ['A'], durationMs: 200 },
+      ]),
+      shape_id: 'one-decision-then-fanout',
+    },
+    {
+      nodes: JSON.stringify([
+        { id: 'A', deps: [], durationMs: 100 },
+        { id: 'B', deps: [], durationMs: 100 },
+      ]),
+      shape_id: null,
+    },
+    {
+      nodes: JSON.stringify([
+        { id: 'A', deps: [], durationMs: null },
+        { id: 'B', deps: ['A'], durationMs: 100 },
+      ]),
+      shape_id: null,
+    },
+  ];
+
+  test('中位 / measurable / excludedMissing / shape 声明率 四格各自有数', () => {
+    // 真值链: 行 1 线性 → speedup 1; 行 2 双根并行 → total 200 / critical 100 = 2;
+    // 行 3 缺失比例 1/2 = 0.5 > 0.20 → excluded-missing。median([1,2]) = 1.5。
+    // 声明率分母 = 扫过的全部行 (3), 分子 = shape_id 非 absent 的行 (1)。
+    expect(summarizeReadout(ROWS)).toEqual({
+      speedupMedian: 1.5,
+      measurable: 2,
+      excludedMissing: 1,
+      shapeDeclRate: 1 / 3,
+    });
+  });
+
+  test('零行 → null (「这一类没读到」不许写成一排 0)', () => {
+    expect(summarizeReadout([])).toBeNull();
+  });
+
+  test('一行都不可量 → speedupMedian 读 null, 不编 0', () => {
+    const s = summarizeReadout([ROWS[2]!]);
+    expect(s).not.toBeNull();
+    expect(s!.speedupMedian).toBeNull();
+    expect(s!.measurable).toBe(0);
+    expect(s!.excludedMissing).toBe(1);
+  });
+
+  test('nodes 列不可解析 → 计进 invalid, 不进 excludedMissing (两桶不合并)', () => {
+    const s = summarizeReadout([{ nodes: 'not json', shape_id: null }]);
+    expect(s!.measurable).toBe(0);
+    expect(s!.excludedMissing).toBe(0);
   });
 });

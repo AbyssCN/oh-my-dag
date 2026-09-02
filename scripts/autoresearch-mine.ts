@@ -35,6 +35,7 @@ import {
   type TicketMapLike,
 } from '../src/eval/replay/miners';
 import { goalDispatchedPath } from '../src/harness/pathfinder/dispatch';
+import { summarizeReadout, type ReadoutRow } from './speedup-readout';
 import { loadMap } from '../src/harness/pathfinder/map-store';
 import { summarizeOpenMaps } from '../src/harness/pathfinder/maps';
 import { triageTestLog } from './test-run-triage';
@@ -54,8 +55,15 @@ export interface MineIO {
   testLog(): { ok: true; log: string } | { ok: false; error: string };
 }
 
-/** readout 摘要的落点 (由人或读数脚本产出; 缺席 = 这一类没读到, 不是零)。 */
-export const READOUT_SUMMARY_PATH = 'runs/autoresearch/readout.json';
+/**
+ * 加速比读数的真源 —— DAG run 账本本身 (与 `scripts/speedup-readout.ts` CLI 同一个库同一张表)。
+ *
+ * ✎ 原先这一源期待一份 `runs/autoresearch/readout.json`, 而全仓没有任何东西产它: 于是这一格
+ * **恒进 errors[]**, 主目标那条 O3a 的题一条都挖不出来 —— fail-open 保住了退出码, 却让整类
+ * 题静默消失。改成进程内直接从账本算摘要, 摘要的定义仍在 speedup-readout.ts 那一把尺子上,
+ * 不在这里另抄一份。
+ */
+export const READOUT_DB_PATH = '.omd/dag-runs.db';
 /** 进化 session 根目录 (与 autoresearch-session.ts 的默认值同)。 */
 export const SESSIONS_DIR = 'runs/autoresearch/sessions';
 
@@ -113,12 +121,20 @@ export function defaultMineIO(cwd: string): MineIO {
     },
 
     readout: () => {
-      const p = join(cwd, READOUT_SUMMARY_PATH);
-      if (!existsSync(p)) return { ok: false, error: `readout 摘要不在: ${p}` };
+      const p = join(cwd, READOUT_DB_PATH);
+      if (!existsSync(p)) return { ok: false, error: `dag-runs.db 不在: ${p}` };
       try {
-        return { ok: true, summary: JSON.parse(readFileSync(p, 'utf8')) as ReadoutSummary };
+        const db = new Database(p, { readonly: true });
+        const rows = db
+          .query('select nodes, shape_id from omd_dag_runs')
+          .all() as ReadoutRow[];
+        db.close();
+        const summary = summarizeReadout(rows);
+        // 一行都没有 → 摘要读作 null。「账本是空的」不是「加速比是 0」(仓规 §静默坑 1)。
+        if (summary === null) return { ok: false, error: `omd_dag_runs 无记录: ${p}` };
+        return { ok: true, summary };
       } catch (e) {
-        return { ok: false, error: `readout 摘要读取失败: ${(e as Error).message}` };
+        return { ok: false, error: `dag-runs.db 读取失败: ${(e as Error).message}` };
       }
     },
 
