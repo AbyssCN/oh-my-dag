@@ -7,6 +7,9 @@
  * 留一个空判据 ③ 探索型必须有学习目标 + 可承受损失 (判不了成败, 至少定得了亏损上限)。
  */
 import { describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { acceptanceCommandBlockReason, acceptanceVacuityReason, isRunnableAcceptanceCommand } from './acceptance-gate';
 import { classifyGoal, classifyPrompt, normalizeClassification, renderAcceptance, type AcceptanceSpec } from './classify-acceptance';
 import { DEFAULT_COMMAND_ALLOWLIST } from '../command-leaf';
@@ -256,6 +259,80 @@ describe('**空世界自检** (G4 反面用例) —— 活还没干之前它就�
       ({ text: '{"tier":"simple","acceptance_kind":"executable","command":"cat README.md"}', usage: { in: 1, out: 1 } })) as never;
     const c = await classifyGoal('随便', { generate: gen, model: 'm:m' });
     expect(c.acceptance.kind).toBe('executable');
+  });
+
+  /**
+   * P2b: bare 整仓 pytest 退出码 2/4/5 = 判据无效; 文件级 pytest 命令的 4/5 保持不受影响
+   * (TDD 形状的正确空世界红)。
+   *
+   * 反向自检: 把 `probeVacuity` 里新加的
+   * `isBareWholeSuitePytest(command) && PYTEST_HARNESS_INCONCLUSIVE_EXITS.has(exitCode)` 分支删掉
+   * → ①②③④ 全部变回 null → 这条测试红。
+   */
+  test('bare 整仓 pytest 退出码 2/4/5 = 判据无效; 文件级命令的 4/5 不受影响', async () => {
+    // ① exit 1 不变 (真的失败, 不是"跑不起来")
+    expect(await acceptanceVacuityReason('pytest -q', () => Promise.resolve({ exitCode: 1 }))).toBeNull();
+    // ② bare 整仓 pytest 命中 2/4/5 → 判据无效, why 里带退出码数字
+    for (const exitCode of [2, 4, 5]) {
+      const why = await acceptanceVacuityReason('pytest -q', () => Promise.resolve({ exitCode }));
+      expect(why).not.toBeNull();
+      expect(why).toContain(String(exitCode));
+    }
+    // ③ `python3 -m pytest -q` 前缀形态同样覆盖
+    expect(
+      await acceptanceVacuityReason('python3 -m pytest -q', () => Promise.resolve({ exitCode: 5 })),
+    ).not.toBeNull();
+    // ④ 回归闸 (reviewer P0 #2): 文件级命令的 4/5 是「空世界红」的正确读数, 绝不能被误判无效
+    expect(
+      await acceptanceVacuityReason('pytest -q tests/test_new.py::test_bar', () => Promise.resolve({ exitCode: 4 })),
+    ).toBeNull();
+    expect(
+      await acceptanceVacuityReason('pytest -q tests/test_new.py::test_bar', () => Promise.resolve({ exitCode: 5 })),
+    ).toBeNull();
+    // ⑤ 非 pytest 命令不受影响
+    expect(await acceptanceVacuityReason('bun test', () => Promise.resolve({ exitCode: 2 }))).toBeNull();
+  });
+
+  test('vetSelfCheck (planner.ts): bare 整仓 pytest 自检命中 4 → 判无效, kept 为 undefined', async () => {
+    const { vetSelfCheck } = await import('../dag/planner');
+    const r = await vetSelfCheck(
+      { command: 'pytest -q', expect_exit: 0 },
+      { runIn: async () => ({ exitCode: 4 }) },
+    );
+    expect(r.kept).toBeUndefined();
+  });
+
+  test('vet 集成: attempt 1 判无效 → 追问一次纠正; 二答仍给同一条 bare pytest → 降级探索型', async () => {
+    // pytest 要过闸 (allowlistForRoot) 得先让语言一致闸判定 python 启用: 真仓根放 pyproject.toml
+    // (强证据) + 真 PATH 上有一个叫 pytest 的文件 (missingBinaryBlockReason 只判"在不在", 不判可执行)。
+    const repoRoot = mkdtempSync(join(tmpdir(), 'p2b-classify-'));
+    const binDir = mkdtempSync(join(tmpdir(), 'p2b-bin-'));
+    writeFileSync(join(repoRoot, 'pyproject.toml'), '');
+    writeFileSync(join(binDir, 'pytest'), '');
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${binDir}:${originalPath ?? ''}`;
+    try {
+      let calls = 0;
+      const gen = (async () => {
+        calls += 1;
+        return { text: '{"tier":"simple","acceptance_kind":"executable","command":"pytest -q"}', usage: { in: 1, out: 1 } };
+      }) as never;
+      const c = await classifyGoal('随便', {
+        generate: gen,
+        model: 'm:m',
+        repoRoot,
+        runCommand: () => Promise.resolve({ exitCode: 4 }),
+      });
+      expect(calls).toBe(2); // 首判 + 恰一次重试, 不无限重试
+      expect(c.acceptance.kind).toBe('exploratory');
+      if (c.acceptance.kind === 'exploratory') {
+        expect(c.acceptance.learningGoal).toContain('pytest -q');
+      }
+    } finally {
+      process.env.PATH = originalPath;
+      rmSync(repoRoot, { recursive: true, force: true });
+      rmSync(binDir, { recursive: true, force: true });
+    }
   });
 
   test('prompt 教了这条 + 教了"别断言自己要写的结论词"', () => {

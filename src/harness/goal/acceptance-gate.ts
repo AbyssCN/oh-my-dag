@@ -332,17 +332,45 @@ export async function acceptanceVacuityReason(
   expectExit = 0,
 ): Promise<string | null> {
   const v = await probeVacuity(command, runCommand, expectExit);
-  return v.status === 'ring' ? v.why : null;
+  return v.status === 'ring' || v.status === 'invalid' ? v.why : null;
 }
 
 /**
  * 空世界自检的**裁决** (给 vet 记 acceptanceProbe 用)。判定与 fail-open 语义与 `string | null`
  * 版逐字相同 —— 只是把"为什么"一起带出来, 不加不减任何决策。
+ *
+ * `invalid` (P2b, 2026-09-02): 与 `ring`(判据恒真)是**不同的病** —— 命令根本没给出「活干没干」
+ * 的判词(harness 自己没跑起来), 不是「活还没干就已经满足」。目前只有一种narrow形状会判它:
+ * 见 `isBareWholeSuitePytest`。
  */
 export type ProbeVacuityVerdict =
   | { status: 'ok' }
   | { status: 'ring'; why: string }
+  | { status: 'invalid'; why: string }
   | { status: 'fail_open' };
+
+/**
+ * 一条命令是不是 **bare 整仓 pytest** —— `pytest ...` 或 `python[3] -m pytest ...`, 且首词/
+ * `-m pytest` 之后**每一个剩余 token 都是 flag** (`-q` / `-x` / `--maxfail=1` 这类)。
+ * 只要出现一个非 flag token (路径 / `::node-id`) 就判 false —— 那是文件级判据, 它的 4/5
+ * 是**想要的**「空世界红」, 这道闸不许碰它 (见本函数调用点的 P0 回归说明)。
+ */
+export function isBareWholeSuitePytest(command: string): boolean {
+  const tokens = command.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return false;
+  let rest: string[];
+  if (tokens[0] === 'pytest') {
+    rest = tokens.slice(1);
+  } else if ((tokens[0] === 'python' || tokens[0] === 'python3') && tokens[1] === '-m' && tokens[2] === 'pytest') {
+    rest = tokens.slice(3);
+  } else {
+    return false;
+  }
+  return rest.every((t) => t.startsWith('-'));
+}
+
+/** bare 整仓 pytest 命中这几个退出码 = 「harness 自己没跑起来」, 不是「代码被判红」。 */
+const PYTEST_HARNESS_INCONCLUSIVE_EXITS = new Set([2, 4, 5]);
 
 export async function probeVacuity(
   command: string,
@@ -360,6 +388,15 @@ export async function probeVacuity(
   // 自检对它无话可说 (而"跑不起来"这件事已经由 acceptanceCommandBlockReason 管了)。
   // null = 死于信号: 跑了但没跑完, 没有判词 ⇒ 与闸拒同样无话可说, 不许读成「空世界里是红的」。
   if (exitCode === null || exitCode < 0) return { status: 'fail_open' };
+  if (isBareWholeSuitePytest(command) && PYTEST_HARNESS_INCONCLUSIVE_EXITS.has(exitCode)) {
+    return {
+      status: 'invalid',
+      why:
+        `[invalid] 退出码 ${exitCode} — 不带路径的整仓 pytest 调用命中 2/4/5 (中断/collection 错误/用法错误/` +
+        '没收集到测试), 这是「测试框架本身没跑起来」, 不是「这次要改的代码被判红」。给一条指到具体测试文件的 ' +
+        'pytest 命令 (如 `pytest -q tests/x.py::y`)。',
+    };
+  }
   if (exitCode !== expectExit) return { status: 'ok' }; // 空世界里是红的 —— 通过自检
   return {
     status: 'ring',
