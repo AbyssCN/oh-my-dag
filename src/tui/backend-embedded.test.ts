@@ -7,7 +7,7 @@
  */
 import type { AgentEvent, AgentMessage } from '@earendil-works/pi-agent-core';
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createOmdSessionStore } from '../harness/chat/session-store';
@@ -15,6 +15,7 @@ import { runChatTurn, type ChatTurnOpts, type ChatTurnResult } from '../harness/
 import { observeModelUsage } from '../model/accounting';
 import type { OmdTuiEvent } from './backend';
 import { createEmbeddedBackend } from './backend-embedded';
+import type { CompactionCallModel } from '../harness/chat/compaction';
 import { createTuiUsageLedger, type UsageRecord } from './usage/ledger';
 
 const fresh = () => mkdtempSync(join(tmpdir(), 'omd-tui-embedded-'));
@@ -458,5 +459,115 @@ describe('★ 在飞排队 + /think 直通 (W1)', () => {
     expect(seen?.thinkingLevel).toBe('low');
     await backend.sendChat({ sessionId: 's', prompt: 'y' });
     expect('thinkingLevel' in (seen ?? {})).toBe(false);
+  });
+});
+
+/**
+ * ★ `/compact` 也接上工具结果溢出存盘(2026-09-02,补 `e1e7344f` 的第三个入口)。
+ *
+ * chat 压缩共**三个入口**:`agent.ts` 的轮前与轮内 `prepareNextTurn`(`e1e7344f` 已接)、
+ * 加这里的手动 `/compact`。三接二会让同一条压缩路上「没装闸」与「装了闸没触发」在结果里
+ * **同形** —— 而这批改动从头到尾消灭的正是这种同形。
+ *
+ * 落点 `<cwd>/.omd`:与 leaf / bash 截断全文 / `agent.ts` 同一处;`.omd/` 在 `.gitignore` 里
+ * ⇒ 不进 `git status --porcelain`,写集对账看不见它。何时写 / 命名 / fail-open 三样证据 /
+ * 三态判词全在 `agent-leaf.ts` 的 `spillToolResultText` 一份里,三个入口共用。
+ *
+ * ## 反向自检(实跑,2026-09-02;基线 = 本文件 33 pass / 0 fail,接线后 35)
+ *
+ * · 摘掉 `backend-embedded.ts` 里 `spill: { dir: join(deps.cwd, '.omd') }` 那一行
+ *   → **34 pass / 1 fail**,只红「① 落点」那条;**正控②仍绿** —— 两条一起才分得开
+ *   「接线起作用了」与「接线把没超阈值的也动了」。
+ */
+describe('★ /compact 的超大工具结果溢出存盘(2026-09-02)', () => {
+  const HEAD_MARK = '★开头: 这一段以前会被丢掉, 现在必须能从盘上取回来';
+  const TAIL_MARK = '★结论: 全绿';
+
+  /** 摘要那次调用的替身 —— 真 `callModel` 要真模型、要网、要钱(同本文件 `runTurn` 注入)。 */
+  const fakeCompactModel = (async () => ({
+    text: '【摘要】压过了。', usage: { in: 1, out: 1 }, raw: {}, model: 'fake:compactor', attempts: 1,
+  })) as unknown as CompactionCallModel;
+
+  const userMsg = (t: string): AgentMessage => ({ role: 'user', content: t, timestamp: 1 }) as AgentMessage;
+  /** 一条工具结果,头尾各埋哨兵;`chars` 控制它超不超单条上限。 */
+  const toolResult = (id: string, chars: number): AgentMessage =>
+    ({
+      role: 'toolResult', toolCallId: id, toolName: 'bash', isError: false, timestamp: 1,
+      content: [{ type: 'text', text: [
+        HEAD_MARK,
+        ...Array.from({ length: Math.ceil(chars / 80) }, (_, i) => `${String(i).padStart(6, '0')} ${'y'.repeat(72)}`),
+        TAIL_MARK,
+      ].join('\n') }],
+    }) as unknown as AgentMessage;
+
+  /** 造一条会话(append-only:一条一条写)。 */
+  const seed = async (backendCwd: string, id: string, ms: AgentMessage[]): Promise<void> => {
+    const s = await createOmdSessionStore(backendCwd).create(id, 't');
+    for (const m of ms) await s.append(m);
+  };
+  /** 落点里本次溢出写下的文件(会话存储也用 `.omd`,只数我们这一族)。 */
+  const spilled = (cwd: string): string[] => {
+    const dir = join(cwd, '.omd');
+    return existsSync(dir) ? readdirSync(dir).filter((f) => f.startsWith('tool-result-')) : [];
+  };
+  const bodyOf = (m: AgentMessage): string => {
+    const c = (m as { content?: unknown }).content;
+    if (typeof c === 'string') return c;
+    if (!Array.isArray(c)) return '';
+    return c.map((b) => (b as { text?: string }).text ?? '').join('\n');
+  };
+
+  test('★ ① 超线 → 全文落在 **`<cwd>/.omd`**, 且读得回被截掉的开头', async () => {
+    const cwd = fresh();
+    const backend = createEmbeddedBackend({
+      cwd, store: createOmdSessionStore(cwd), tools: () => [],
+      resolveModel: () => 'deepseek:deepseek-v4-flash',
+      runTurn: fakeTurn(), compactCallModel: fakeCompactModel,
+    });
+    await seed(cwd, 'k1', [userMsg('★本轮请求'), ...Array.from({ length: 4 }, (_, i) => toolResult(`t${i}`, 120_000))]);
+
+    const r = await backend.compact({ sessionId: 'k1' });
+    expect(r).not.toBeNull();
+    expect(r!.tokensAfter).toBeLessThan(r!.tokensBefore); // 真压下来了, 不是空跑
+
+    const files = spilled(cwd);
+    expect(files.length).toBeGreaterThan(0); // 落在 cwd 之下 —— 不是 /tmp、不是进程 cwd
+    // 只给指针不落盘 = 更坏的静默: 文件必须真在, 且含**投影里已经没有**的那段开头。
+    expect(readFileSync(join(cwd, '.omd', files[0]!), 'utf8')).toContain(HEAD_MARK);
+    const after = await backend.loadHistory({ sessionId: 'k1' });
+    const marked = after.map(bodyOf).find((t) => t.includes('[omd ')) ?? '';
+    expect(marked).toContain('[omd 溢出存盘]'); // 「存盘了」与「丢了」不共用一个词
+    expect(marked).toContain(TAIL_MARK); // 尾巴照旧留着
+    expect(marked).not.toContain(HEAD_MARK); // 开头确实被截了 (否则这条什么都没验)
+  });
+
+  test('★ ② 正控: 没超阈值 → `/compact` 的输出逐字节等同接线之前, 且一个文件都不许写', async () => {
+    const cwd = fresh();
+    const backend = createEmbeddedBackend({
+      cwd, store: createOmdSessionStore(cwd), tools: () => [],
+      resolveModel: () => 'deepseek:deepseek-v4-flash',
+      runTurn: fakeTurn(), compactCallModel: fakeCompactModel,
+    });
+    // 够长 ⇒ 真切得出摘要点 (`/compact` 返 null 就什么都没验到);
+    // 但保留段里每条工具结果都在**单条上限之下** ⇒ 截断根本不该触发。
+    const msgs: AgentMessage[] = [];
+    for (let i = 0; i < 90; i++) {
+      msgs.push(userMsg(`第 ${i} 问 ${'补'.repeat(500)}`));
+      msgs.push({ role: 'assistant', content: [{ type: 'text', text: `第 ${i} 答 ${'字'.repeat(500)}` }],
+        timestamp: 1, stopReason: 'stop' } as unknown as AgentMessage);
+    }
+    for (let i = 0; i < 6; i++) msgs.push(toolResult(`q${i}`, 2_000));
+    await seed(cwd, 'k2', msgs);
+
+    const r = await backend.compact({ sessionId: 'k2' });
+    expect(r).not.toBeNull();
+    expect(spilled(cwd)).toEqual([]); // 没触发就零副作用 —— 白写文件是一整个仓的垃圾
+
+    // 保留下来的工具结果**逐字节**原样: 连标记都不许贴 (贴了就是行为翻转, 不是措辞)。
+    const after = await backend.loadHistory({ sessionId: 'k2' });
+    expect(after.map(bodyOf).some((t) => t.includes('[omd '))) .toBe(false);
+    const kept = after.filter((m) => (m as { role?: string }).role === 'toolResult');
+    expect(kept.length).toBeGreaterThan(0); // 否则下一句在空集上恒真
+    for (const m of kept) expect(bodyOf(m)).toBe(bodyOf(toolResult('ignored', 2_000)));
   });
 });

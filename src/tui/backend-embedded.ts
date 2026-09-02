@@ -19,6 +19,7 @@
  */
 import type { AgentEvent, AgentMessage } from '@earendil-works/pi-agent-core';
 import { estimateTokens } from '@earendil-works/pi-agent-core';
+import { join } from 'node:path';
 import { logger } from '../logger';
 import type { OmdSessionStore } from '../harness/chat/session-store';
 import type { AnyOmdTool } from '../harness/agent-tools';
@@ -318,6 +319,18 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
       const compacted = await compactChatMessages({
         messages,
         model: deps.resolveModel(),
+        // ★ 溢出接线 (2026-09-02): 超大工具结果截掉的开头**存盘而非丢弃**。
+        //   `/compact` 是 chat 压缩的第三个入口 (另两个在 `agent.ts`: 轮前 + 轮内
+        //   `prepareNextTurn`)。留着不接 = 同一条压缩路上「没装闸」与「装了闸没触发」
+        //   在结果里**同形** —— 而这批改动从头到尾消灭的正是这种同形。
+        //
+        //   ⚠ 这里写的是**调用点的 cwd**, 不是第二份实现: 何时写 / 文件怎么命名 /
+        //   fail-open 留哪三样证据 / 三态判词, 全都在 `agent-leaf.ts` 的
+        //   `spillToolResultText` 那一份里, 三个入口共用。落点必须按调用方的工作根定
+        //   (`spill` 这个参数存在的全部理由), 所以每个入口都只能自己报出自己的根 ——
+        //   与 `agent.ts` 的 `toolResultSpill` 是同一条决策的同一种写法, 改落点时搜
+        //   `'.omd'` + `spill` 一次就找齐三处。
+        spill: { dir: join(deps.cwd, '.omd') },
         ...(deps.compactCallModel ? { callModelFn: deps.compactCallModel } : {}),
       });
       if (!compacted) return null;
