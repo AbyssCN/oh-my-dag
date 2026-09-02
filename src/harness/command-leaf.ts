@@ -54,7 +54,7 @@ export const DEFAULT_COMMAND_ALLOWLIST: readonly string[] = [
   //    script 名报 "Script not found" —— 正道是直接写 bunx, 死形态由 ②.4 拒得可教)
   'bun', 'node', 'tsc', 'npx', 'bunx',
   // ② 只读检视 —— 验证叶要能证实自己的产物真存在、非空、内容对
-  'ls', 'cat', 'head', 'tail', 'wc', 'stat', 'file', 'du', 'pwd', 'realpath', 'basename', 'dirname', 'diff',
+  'ls', 'cat', 'head', 'tail', 'wc', 'stat', 'file', 'du', 'pwd', 'realpath', 'basename', 'dirname', 'diff', 'test',
   // ③ 搜索
   'grep', 'rg', 'ugrep', 'find', 'bfs', 'fd',
   // ④ 结构化读取
@@ -323,7 +323,7 @@ export const COMMAND_RISK_TIER: Readonly<Record<string, CommandRiskTier>> = {
   // ② 只读检视
   ls: 'read_only', cat: 'read_only', head: 'read_only', tail: 'read_only', wc: 'read_only',
   stat: 'read_only', file: 'read_only', du: 'read_only', pwd: 'read_only', realpath: 'read_only',
-  basename: 'read_only', dirname: 'read_only', diff: 'read_only',
+  basename: 'read_only', dirname: 'read_only', diff: 'read_only', test: 'read_only',
   // ③ 搜索
   grep: 'read_only', rg: 'read_only', ugrep: 'read_only', find: 'read_only', bfs: 'read_only', fd: 'read_only',
   // ④ 结构化读取

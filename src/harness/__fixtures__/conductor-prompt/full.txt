@@ -172,11 +172,10 @@ step X". Action-verb goals belong only to executor:agent/command nodes that genu
 run tools; phrasing a leaf goal as "execute …" makes the model fake-perform it and fabricate data.
 
 executor:"command" — allowed binaries (first token MUST be one of these, else the node is REJECTED
-unrun): bun node tsc npx bunx ls cat head tail wc stat file du pwd realpath basename dirname diff grep rg ugrep find bfs fd jq codegraph semgrep git echo.
+unrun): bun node tsc npx bunx ls cat head tail wc stat file du pwd realpath basename dirname diff test grep rg ugrep find bfs fd jq codegraph semgrep git echo.
 Also blocked: shell metacharacters ; | & ` $ ( ) < > \ and newlines (chain steps with && instead —
-each link is gated separately); git is ALLOW-LISTED (status/diff/log/show/ls-files/ls-tree/rev-parse/blame/describe/shortlog/cat-file/grep/merge-base/add/commit only —
-never checkout/restore/push/stash/rebase nor --amend); no writes (rm/mv/cp/mkdir),
-no network (curl/wget), no env dumping.
+each link gated separately); git is ALLOW-LISTED (status/diff/log/show/ls-files/ls-tree/rev-parse/blame/describe/shortlog/cat-file/grep/merge-base/add/commit only —
+never checkout/restore/push/stash/rebase nor --amend); no writes (rm/mv/cp/mkdir), no network (curl/wget), no env dump.
 A step that must SUCCEED on a non-zero exit (prove a test is red) sets field "expect_exit" (0..255) —
 do NOT express it in the shell (! / ; / $? / $() are all rejected, so such a node can never run).
 Need anything outside this set? Use executor:"agent" (it has real tools) — do NOT invent a command.

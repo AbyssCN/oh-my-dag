@@ -77,7 +77,7 @@ import {
 } from '../model/role-models';
 import { createAgentLeafRunner } from '../harness/agent-leaf';
 import { createLeafTranscriptSink } from '../harness/leaf-transcript';
-import { probeEnvFacts } from '../harness/env-facts';
+import { runtimeAllowlistForRoot } from '../harness/env-facts';
 import type { SpinRung2StampPools } from '../harness/dag/spin-rung2';
 import { loadRepoChecksManifest } from '../harness/repo-checks-manifest';
 import type { AnyOmdTool } from '../harness/agent-tools';
@@ -512,9 +512,10 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
   // 看起来像"测试没过", 实际上根本没跑。两处口径必须同时换。
   const runAllowlist = (root: string): string[] => {
     const base = allowlistForRoot(root);
-    const extra = probeEnvFacts(root, env).enabledBins.filter((b) => !base.includes(b));
+    const combined = runtimeAllowlistForRoot(root, env);
+    const extra = combined.filter((b) => !base.includes(b));
     if (extra.length > 0) logger.info({ root, extra }, '[omd/mcp] 命令白名单按仓环境真探测扩充');
-    return [...base, ...extra];
+    return combined;
   };
   const commandRunner =
     deps.commandRunner ??

@@ -47,6 +47,8 @@ import {
   type SelfCheckOutcome,
 } from './agent-leaf';
 import { setLoggerDestination } from '../logger';
+import { allowlistForRoot } from './command-leaf';
+import { probeEnvFacts, runtimeAllowlistForRoot } from './env-facts';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 
@@ -310,6 +312,45 @@ describe('GWT-2c — runSelfCheckProbe 安全闸 (INV-2-2)', () => {
     if (out.kind === 'exited') {
       expect(out.exitCode).toBeNull(); // signal !== null ⇒ exitCode = null
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// P2c — self_check 真跑 defaultSpawn 时必须用调用方的真实 allowlist, 不是
+// defaultSpawn 内部硬编码的影子表 (agent-leaf.ts:801 之前的缺陷)。
+// 反向自检: 把 defaultSpawn 里 `allowlist,` 改回硬编码的 11 项列表 → 本测试红
+// (exitCode 变回 -1, stdout 含 'blocked not-allowed')。
+// ─────────────────────────────────────────────────────────────────────────
+describe('P2c — runSelfCheckProbe 真 defaultSpawn 遵守调用方 allowlist (不被硬编码影子表拒)', () => {
+  test('grep 在调用方 allowlist 里, 但不在 defaultSpawn 旧硬编码表里 → 真执行, 不被内层影子闸拒', async () => {
+    const out = await runSelfCheckProbe({
+      command: 'grep --version',
+      cwd: process.cwd(),
+      allowlist: [...ALLOWLIST, 'grep'],
+      // 不注入 spawn —— 走真实 defaultSpawn, 才能验到内层闸真的看见了外层 allowlist。
+    });
+    expect(out.kind).toBe('exited');
+    if (out.kind === 'exited') {
+      expect(out.exitCode).toBe(0);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// P2c review-fix — runtimeAllowlistForRoot 单源: self_check (agent-leaf.ts) 与
+// command 节点 (assemble.ts) 的 base∪probe union 此前各写一份 inline IIFE, review
+// 抓到「两处独立计算同一件事」——改一处漏另一处就是假红。现在两边共用这一个导出函数。
+// 反向自检: 把 runtimeAllowlistForRoot 函数体里 `...extra` 那段删掉、只 return base
+// → 本测试红 (真探测到的 bin, 如本仓的 python3/uv, 不再出现在返回值里)。
+// ─────────────────────────────────────────────────────────────────────────
+describe('P2c review-fix — runtimeAllowlistForRoot 是 base∪probe 的单一来源', () => {
+  test('返回值是 allowlistForRoot 的超集, 且含 probeEnvFacts 真探测到的全部 bin', () => {
+    const cwd = process.cwd();
+    const base = allowlistForRoot(cwd);
+    const probed = probeEnvFacts(cwd).enabledBins;
+    const combined = runtimeAllowlistForRoot(cwd);
+    for (const bin of base) expect(combined).toContain(bin);
+    for (const bin of probed) expect(combined).toContain(bin);
   });
 });
 
