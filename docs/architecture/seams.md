@@ -30,7 +30,7 @@
 | `conductorThinkingLevel` |  | `'off' \| 'low' \| 'medium' \| 'high' \| 'xhigh'` | conductor 分解推理档 (high 默认/复杂 plan 升 max; conductor 是分解器不需深推理, 见 fleet 注释)。 | `src/harness/dag/engine.ts` (1 文件) |
 | `conductorMaxTokens` |  | `number` | conductor 输出 token 预算 (plan JSON 随任务规模涨; thinking conductor 的推理可计入 completion)。 | `src/harness/dag/engine.ts`<br>`src/mcp/assemble.ts` (2 文件) |
 | `inprocThinkingLevel` |  | `'off' \| 'low' \| 'medium' \| 'high' \| 'xhigh'` | inproc leaf 推理档 (默认 high; mass fan-out 省成本, 不走 max — 那是 omd 设计 / best-of-N 的档)。 | `src/harness/dag/engine.ts` (1 文件) |
-| `seatThinking` |  | `(coord: string) => 'off' \| 'low' \| 'medium' \| 'high' \| 'x…` | S-T 座位推理档查询 (坐标 → 档): auto-assign 把「模型 + 推理档」成对下发, 执行期按节点已钉的 坐标反查该座位的档。 | `src/harness/dag/engine.ts`<br>`src/mcp/assemble.ts`<br>`src/harness/execute-slice.ts` (3 文件) |
+| `seatThinking` |  | `(coord: string, seat?: string) => 'off' \| 'low' \| 'medium…` | S-T 座位推理档查询 (坐标 → 档): auto-assign 把「模型 + 推理档」成对下发, 执行期按节点已钉的 坐标反查该座位的档。 | `src/harness/dag/engine.ts`<br>`src/mcp/assemble.ts`<br>`src/harness/execute-slice.ts` (3 文件) |
 
 ## DagRunnersSeam
 

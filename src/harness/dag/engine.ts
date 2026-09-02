@@ -711,7 +711,7 @@ async function planAndExecute(
       messages: [{ role: 'system', content: sys }, { role: 'user', content: `${PLAN_BOUNDARY}${trustHeader(planNonce)}${task}${correction}` }],
       model: conductorModel,
       // S-T 优先序: config 显式 > 座位档 (auto-assign 给 decomposer 座的档) > 硬默认。
-      thinkingLevel: config.conductorThinkingLevel ?? config.seatThinking?.(conductorModel) ?? 'high',
+      thinkingLevel: config.conductorThinkingLevel ?? config.seatThinking?.(conductorModel, 'conductor') ?? 'high',
       maxTokens: conductorMaxTokens,
       // 顶层规划那一发 (与节点内重展开分开看; escalation 轮换前缀)。
       // ⚠ 刻意写成两个**紧跟 `traceName:` 的字面量**而不是 `${seatLabel}:plan` —— seat-usage 的
@@ -1004,7 +1004,7 @@ async function tryPatchReplan(
       // 补丁轮只在 verifier 未过之后跑, 且坐的是 escalation 模型 → 前缀是 escalation 不是 conductor。
       traceName: 'escalation:repair', // 校验失败后的补丁重试 —— 与首次规划分开看 (它的贵是有原因的)
       traceRejectRound: patchGateRejects,
-      thinkingLevel: config.conductorThinkingLevel ?? config.seatThinking?.(conductorModel) ?? 'high',
+      thinkingLevel: config.conductorThinkingLevel ?? config.seatThinking?.(conductorModel, 'conductor') ?? 'high',
       maxTokens: config.conductorMaxTokens ?? (Number(process.env.OMD_CONDUCTOR_MAX_TOKENS) || 32_768),
     });
     usage = addUsage(usage, u);
@@ -2365,7 +2365,7 @@ async function executePlan(
 
     let expand: ReturnType<typeof expandConductorNode>;
     try {
-      const defaultThinking = config.conductorThinkingLevel ?? config.seatThinking?.(conductorCoord) ?? 'high';
+      const defaultThinking = config.conductorThinkingLevel ?? config.seatThinking?.(conductorCoord, 'conductor') ?? 'high';
       let attempt = await attemptExpand('', defaultThinking);
       if (!attempt.ok) {
         logger.warn(
@@ -3801,7 +3801,7 @@ async function executePlan(
           model: config.leafModel,
           traceName: `map-lister:${id}`,
           traceNodeId: id,
-          thinkingLevel: config.inprocThinkingLevel ?? config.seatThinking?.(config.leafModel) ?? 'high',
+          thinkingLevel: config.inprocThinkingLevel ?? config.seatThinking?.(config.leafModel, 'leaf') ?? 'high',
         });
         } finally {
           leafSlot();
@@ -3931,7 +3931,7 @@ async function executePlan(
           traceName: `primitive-leaf:${id}`,
           traceNodeId: id,
           thinkingLevel:
-            config.inprocThinkingLevel ?? config.seatThinking?.(model ?? config.leafModel) ?? 'high',
+            config.inprocThinkingLevel ?? config.seatThinking?.(model ?? config.leafModel, 'leaf') ?? 'high',
         });
         usageAcc = addUsage(usageAcc, r.usage);
         return r.text;
@@ -4649,7 +4649,7 @@ async function executePlan(
         const leafFace = config.leafFace?.({ id, executor: node.executor });
         // P3 S7 (D-18): agent 叶 thinking 按座位逐调用解析 —— node.thinking > 座位档; 座位表没给档时**不下发**
         // 字段, 让 agent-leaf 各通道保持自己的缺省 (pi xhigh / SDK medium), 不顺手降 worker 档。
-        const agentThinking = node.thinking ?? config.seatThinking?.(model);
+        const agentThinking = node.thinking ?? config.seatThinking?.(model, 'agent');
         // P3 S8 (D-25 / INV-14): 进程级在飞槽 —— 嵌套 run (S6b) 各自的 maxFanout 只看得见自己那张图,
         // 这把闸看得见整个进程的总数。release 走 finally (抛错也放槽)。
         const leafSlot = await acquireLeafSlot();
@@ -5203,7 +5203,7 @@ async function executePlan(
           traceNodeId: id,
           // S-T 优先序 (显式永远赢): node.thinking > config 显式档 > 座位档 > 硬默认 high。
           // 座位档来自 auto-assign (量产 worker 座 low / judge·verify 座 xhigh), 老 config 无该段 → 回落 high。
-          thinkingLevel: node.thinking ?? config.inprocThinkingLevel ?? config.seatThinking?.(model) ?? 'high',
+          thinkingLevel: node.thinking ?? config.inprocThinkingLevel ?? config.seatThinking?.(model, 'leaf') ?? 'high',
         });
         text = r.text;
         usage = r.usage;

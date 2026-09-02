@@ -147,8 +147,10 @@ export interface DagThinkingSeam {
    * 坐标反查该座位的档。接线层注入 (读 .omd/config.json 是接线层的活, 执行器不碰 IO);
    * 省略 / 返 undefined → 回落原有默认, 老 config 行为不变 (向后兼容)。
    * 优先序 (同 TPL-3 哲学: 显式永远赢): node.thinking > 本 config 的显式档 > 座位档 > 硬默认。
+   * `seat` (P3 S7 跟进, 2026-09-02) = 引擎按派发桶给的座位提示 (conductor / agent / leaf): 让共用一个模型的
+   * worker 与 lens 各拿各的档, 不被「共坐标取最高档」抬到 xhigh。省略 = 纯坐标反查 (老行为)。
    */
-  seatThinking?: (coord: string) => 'off' | 'low' | 'medium' | 'high' | 'xhigh' | undefined;
+  seatThinking?: (coord: string, seat?: string) => 'off' | 'low' | 'medium' | 'high' | 'xhigh' | undefined;
 }
 
 /** 执行器 seam: 各 kind leaf 的可替换执行体与模型调用注入点 (引擎不直连 transport)。 */

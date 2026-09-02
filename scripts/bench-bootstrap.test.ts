@@ -2,8 +2,9 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { benchSeatModels, writeBenchConfig } from './bench-bootstrap';
+import { benchSeatModels, benchSeatThinking, writeBenchConfig } from './bench-bootstrap';
 import { SEATS } from '../src/model/seats';
+import { resolveSeatThinking } from '../src/model/role-models';
 
 describe('bench-bootstrap (E1b 容器配置引导)', () => {
   test('★ 全 18 座钉到 bench:<model> (SEATS 真源驱动, 座位增减自动跟)', () => {
@@ -101,5 +102,31 @@ describe('bench-bootstrap (E1b 容器配置引导)', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('P3 S7 跟进: bench 写座位档 (autoAssigned 镜像 models + autoAssignedThinking)', () => {
+  test('档表: conductor 组 medium · escalation high · verifier/judge high · worker medium; 18 座全覆盖', () => {
+    const t = benchSeatThinking();
+    expect(Object.keys(t).length).toBe(SEATS.length);
+    expect(t.conductor).toBe('medium');
+    expect(t.escalation).toBe('high');
+    expect(t.verifier).toBe('high');
+    expect(t.judge).toBe('high');
+    expect(t.agent).toBe('medium');
+    expect(t.leaf).toBe('medium');
+  });
+
+  test('★ 写盘后 resolveSeatThinking 按生效坐标 + 座位提示查得 worker medium / verifier high', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omd-bench-thinking-'));
+    const models = benchSeatModels({ OMD_BENCH_CONDUCTOR_MODEL: 'c', OMD_BENCH_WORKER_MODEL: 'w', OMD_BENCH_VERIFIER_MODEL: 'v' });
+    const path = writeBenchConfig(cwd, models);
+    const cfg = JSON.parse(readFileSync(path, 'utf8'));
+    expect(cfg.autoAssigned).toEqual(models);
+    expect(cfg.autoAssignedThinking.agent).toBe('medium');
+    // 证伪: writeBenchConfig 不写 autoAssignedThinking → 下面两条 undefined, 红。
+    expect(resolveSeatThinking('bench:w', { configPath: path, seat: 'agent' })).toBe('medium');
+    expect(resolveSeatThinking('bench:v', { configPath: path, seat: 'verifier' })).toBe('high');
+    expect(resolveSeatThinking('bench:c', { configPath: path, seat: 'conductor' })).toBe('medium');
   });
 });

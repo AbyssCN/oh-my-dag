@@ -570,10 +570,17 @@ function fileAutoAssignedThinking(path = readConfigPath()): Record<string, Think
  */
 export function resolveSeatThinking(
   coord: string,
-  opts: { configPath?: string; autoAssignMap?: Record<string, string>; thinkingMap?: Record<string, ThinkingLevel> } = {},
+  opts: { configPath?: string; autoAssignMap?: Record<string, string>; thinkingMap?: Record<string, ThinkingLevel>; seat?: string } = {},
 ): ThinkingLevel | undefined {
-  const coords = opts.autoAssignMap ?? fileAutoAssigned(opts.configPath);
+  // P3 S7 跟进 (2026-09-02, 首批前核配置抓到的洞): 反查用的是**生效**坐标 —— `models` 手配段压过
+  // `autoAssigned` (与 resolveSeatModel 的 file > auto 同序)。此前只看 autoAssigned: 手配把 agent 钉到
+  // M3 之后, M3 在 autoAssigned 里没有座位 → 恒 undefined → 座位档一次都没到过 worker。
+  const coords = opts.autoAssignMap ?? { ...fileAutoAssigned(opts.configPath), ...fileModels(opts.configPath) };
   const thinking = opts.thinkingMap ?? fileAutoAssignedThinking(opts.configPath);
+  // 座位提示 (引擎按派发桶给: agent / leaf / conductor): 该座位确实落在这个坐标 → 直接取它自己的档,
+  // 不走下面的「共坐标取最高档」—— 否则 worker 与 lens 共用一个模型时 worker 永远被抬到 xhigh,
+  // P3-5「worker medium」结构上不可达。提示的座位不在此坐标 / 没配档 → 退回坐标反查 (老行为)。
+  if (opts.seat && coords[opts.seat] === coord && thinking[opts.seat]) return thinking[opts.seat];
   let best: ThinkingLevel | undefined;
   let winner: string | undefined;
   const collided: string[] = [];

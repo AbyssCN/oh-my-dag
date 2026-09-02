@@ -110,3 +110,22 @@ describe("resolveSeatThinking 坐标反查", () => {
 		).toBe("medium");
 	});
 });
+
+describe("resolveSeatThinking · 生效坐标 + 座位提示 (P3 S7 跟进, 2026-09-02)", () => {
+	test("GWT④: models 手配压过 autoAssigned —— 手配把 agent 钉到别的模型后, 按新坐标仍查得该座位的档", () => {
+		persistAutoAssigned({ agent: "auto:flash" }, path, { agent: "medium" });
+		const raw = JSON.parse(require("node:fs").readFileSync(path, "utf8"));
+		writeFileSync(path, JSON.stringify({ ...raw, models: { agent: "hand:m3" } }));
+		// 证伪: resolveSeatThinking 只看 autoAssigned → 这里 undefined, 红。
+		expect(resolveSeatThinking("hand:m3", { configPath: path })).toBe("medium");
+	});
+
+	test("GWT⑤: 座位提示绕过「共坐标取最高档」—— worker 与 lens 共用模型, agent 座拿 medium 不是 xhigh", () => {
+		persistAutoAssigned({ agent: "shared:m", lens: "shared:m" }, path, { agent: "medium", lens: "xhigh" });
+		expect(resolveSeatThinking("shared:m", { configPath: path })).toBe("xhigh"); // 无提示 = 老规则
+		expect(resolveSeatThinking("shared:m", { configPath: path, seat: "agent" })).toBe("medium");
+		expect(resolveSeatThinking("shared:m", { configPath: path, seat: "lens" })).toBe("xhigh");
+		// 提示的座位不在此坐标 → 退回坐标反查 (老行为), 不编一个档。
+		expect(resolveSeatThinking("shared:m", { configPath: path, seat: "verifier" })).toBe("xhigh");
+	});
+});

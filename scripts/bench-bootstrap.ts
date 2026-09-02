@@ -13,7 +13,10 @@
  *
  * 做两件事, 全走既有真源零新语义:
  *   1. upsertProvider → models.json 登记 provider 'bench' (src/model/models-json.ts:241);
- *   2. 写 <cwd>/.omd/config.json 的 models: 全 18 座 (src/model/seats.ts SEATS) → 'bench:<model>'。
+ *   2. 写 <cwd>/.omd/config.json 的 models: 全 18 座 (src/model/seats.ts SEATS) → 'bench:<model>';
+ *      同时写 autoAssigned (= models) 与 autoAssignedThinking (P3 S7 跟进, 2026-09-02): 引擎按座位逐调用
+ *      下发 thinking (D-18), 没有这段 = 全部 worker 落回通道缺省 xhigh, P3-5「worker medium」在 bench 上是空话。
+ *      档表 = benchSeatThinking: conductor 组 medium (P2a) · escalation high · verifier 组 high · judge high · 其余 worker medium。
  *
  * ⚠ verifier 的关闭**不在这里** —— 那是运行时旗标 OMD_VERIFY=0 (src/harness/verifier.ts:70),
  *   由 adapter 的 run() 环境带, 配置文件不该固化它 (bench 模式明示响亮降级, 见 E1 设计笔记裁1)。
@@ -84,7 +87,20 @@ export function benchSeatModels(env: Record<string, string | undefined>): Record
   return Object.fromEntries(SEATS.map((s) => [s.id, coord]));
 }
 
-/** 写 <cwd>/.omd/config.json (保留既有其它键, models 整段覆盖)。 */
+/**
+ * 纯函数: 座位 → thinking 档 (与 benchSeatModels 的分组同源)。P2a: conductor 组 medium; D-18 / P3-5: worker medium,
+ * verify / judge 高档; escalation high (它是"更强脑子"那一格, 不降)。
+ */
+export function benchSeatThinking(): Record<string, 'off' | 'low' | 'medium' | 'high' | 'xhigh'> {
+  return Object.fromEntries(
+    SEATS.map((s) => [
+      s.id,
+      s.id === 'escalation' ? 'high' : CONDUCTOR_SEATS.has(s.id) ? 'medium' : VERIFIER_SEATS.has(s.id) || JUDGE_SEATS.has(s.id) ? 'high' : 'medium',
+    ]),
+  );
+}
+
+/** 写 <cwd>/.omd/config.json (保留既有其它键; models / autoAssigned / autoAssignedThinking 三段整段覆盖)。 */
 export function writeBenchConfig(cwd: string, models: Record<string, string>): string {
   const dir = join(cwd, '.omd');
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -98,7 +114,8 @@ export function writeBenchConfig(cwd: string, models: Record<string, string>): s
       process.stderr.write(`[bench-bootstrap] 既有 config.json 解析失败, 整体重建: ${(e as Error).message}\n`);
     }
   }
-  const next = { version: 1, ...existing, models };
+  // autoAssigned 镜像 models: resolveSeatThinking 按生效坐标反查, 两段一致才不会出现「models 钉了、档表查不到」。
+  const next = { version: 1, ...existing, models, autoAssigned: { ...models }, autoAssignedThinking: benchSeatThinking() };
   writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`);
   return path;
 }

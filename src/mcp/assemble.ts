@@ -759,7 +759,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     // S-T 座位推理档 (坐标 → 档): auto-assign 把「模型 + 推理档」成对写入磁盘, 执行期按节点已钉的坐标反查。
     // 不在此加缓存 —— 底层 fileConfig 已按 mtime 缓存, 自己再存一层会在 `omd models auto` 重写 config
     // 后拿着旧档不放 (daemon 长活)。config 无该段 → 恒 undefined → 执行器回落原默认, 老 config 零变化。
-    const seatThinking = (coord: string): ThinkingLevel | undefined => resolveSeatThinking(coord);
+    const seatThinking = (coord: string, seat?: string): ThinkingLevel | undefined => resolveSeatThinking(coord, seat ? { seat } : {});
     const defaultConfig: Partial<ExecutorDagConfig> = {
       ...models,
       seatThinking,

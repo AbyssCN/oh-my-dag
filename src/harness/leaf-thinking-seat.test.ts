@@ -53,6 +53,14 @@ describe('引擎 → agent 叶: thinkingLevel 按 node.thinking ?? seatThinking(
     expect(noSeat.thinkingLevel).toBeUndefined();
   });
 
+  test('座位提示: 引擎对 agent 叶传 seat=agent (共坐标下 worker 拿自己的档, 不被 lens 抬高)', async () => {
+    const seen: (string | undefined)[] = [];
+    const input = await run({}, (coord, seat) => { seen.push(seat); return coord === 'l:m' && seat === 'agent' ? 'medium' : 'xhigh'; });
+    // 证伪: engine.ts 派发点去掉第二参 'agent' → seen 里没有 'agent', 且档变 xhigh, 红。
+    expect(seen).toContain('agent');
+    expect(input.thinkingLevel).toBe('medium');
+  });
+
   test('node.thinking 压过座位档', async () => {
     const input = await run({ thinking: 'high' }, () => 'low');
     expect(input.thinkingLevel).toBe('high');
