@@ -12,7 +12,8 @@ const WorkSchema = z
     goal: z.string().min(1),
     brief: z.string().min(40),
     write_set: z.array(z.string()).optional(),
-    /** resume: 复用同一节点 id(引擎按 id 续同一上下文),不是起一个新 worker(见 manual)。 */
+    /** resume: 复用同一节点 id —— 同 id 重派 (fresh context), 上一次同 id 的结果由运行时机械回灌进 goal
+     * (orchestrating-loop.ts `injectPriorResult`, owner 2026-09-02 裁 2-C); 引擎没有按 id 续会话的机制。 */
     resume_of: z.string().min(1).optional(),
     /** review-fix (P2⑤,2026-09-02):true → 只返 manual,不 compile。不是 D-4 的调度字段,
      * 显式声明进 schema 是为了让只认发布的 JSON Schema 说话的调用方也够得到这条路 ——

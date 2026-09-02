@@ -2147,7 +2147,8 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   // 本来就没有机器判据); 加了 rubric 之后错了。判定收敛进 `unprovenMeansFail` 一处表态,
   // 新增分型时那个 switch 漏表态即编译错误 (goal/acceptance-shape.ts + harness/exhaustive.ts)。
   const acceptCheckpointGreen = !unprovenMeansFail(acceptance) ? true : acceptLeaf?.status === 'done';
-  const replanned = exec.verification?.escalated === true || (exec.verification?.attempts ?? 1) > 1;
+  // P3 S6b 跟进 (2026-09-02): 循环路径的「重规划过」= D-14 回灌过 —— 盘在第二跑里可能变过, 复用的绿同样不属于最终这棵树。
+  const replanned = exec.verification?.escalated === true || (exec.verification?.attempts ?? 1) > 1 || reinjected;
   const acceptStale = runnable !== null && acceptCheckpointGreen && acceptLeaf?.skipped === true && replanned;
   // 复验一次。**两个触发条件合并在这一处** —— 分两处写就是两处会漂 (而这条闸的病正是"触发
   // 条件被另一个变量关掉"): ① 原 #165①: accept 压根没跑 (缺席 / 被级联压死), 复验绿只换终态词;
