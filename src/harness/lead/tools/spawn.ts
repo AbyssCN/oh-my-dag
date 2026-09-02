@@ -35,8 +35,7 @@ type SpawnParams = z.infer<typeof SpawnSchema>;
 
 const SHORT =
   'Start N independent workers in parallel. Each task: {goal, brief, write_set?}. Add `decision` when the ' +
-  'tasks must agree on an interface, schema, or naming: one node outputs it first, all tasks depend on it. ' +
-  'Pass help:true for the full manual.';
+  'tasks must agree on an interface, schema, or naming: one node outputs it first, all tasks depend on it. ';
 
 /** 两个及以上 task 声明的 write_set 相交 → 返回撞上的第一个文件;否则 null。声明了才查(缺省=未知,不当场拒)。 */
 function firstOverlap(writeSets: readonly (readonly string[])[]): string | null {

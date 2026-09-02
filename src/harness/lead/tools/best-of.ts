@@ -48,10 +48,7 @@ const BestOfSchema = z
 type BestOfParams = z.infer<typeof BestOfSchema>;
 
 const SHORT =
-  'n sequential attempts on the SAME write_set, chained so they never race. Each attempt after the first ' +
-  'checks the acceptance command BEFORE writing: already passing → make zero changes (a prior attempt won); ' +
-  'still failing → git-checkout the write_set back to a clean slate and try a different approach. Worst case ' +
-  'costs n full loops; a good early attempt makes the rest a cheap no-op check. Pass help:true for the full manual.';
+  'n sequential attempts on the same write_set, chained so they never race. Each later attempt runs the acceptance command first: already passing → zero changes; still failing → git-checkout the write_set and try a different approach. Worst case n full loops.';
 
 export const bestOfTool: LeadTool<BestOfParams> = {
   name: 'best_of',

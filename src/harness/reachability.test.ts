@@ -134,7 +134,7 @@ describe('可达性 — 每个非测试 .ts 都从生产入口 import 得到', (
     // `src/mcp/tools/chat.ts` 接线 `createLeadTools`),契约明写「S1 只造这个模块本身,
     // 不接线进 run-goal / chat(接线是 S6b 的事)」—— 今天只有本模块自带的
     // `lead-tools-*.test.ts` 在用它们,测试刻意不算根,所以是可预期的孤儿而不是死码。
-    // S6b 接上之后这 11 条与本注释一起删。
+    // S6b 接上之后这 12 条与本注释一起删。
     ...Object.fromEntries(
       [
         'src/harness/lead/types.ts',
@@ -148,6 +148,7 @@ describe('可达性 — 每个非测试 .ts 都从生产入口 import 得到', (
         'src/harness/lead/tools/best-of.ts',
         'src/harness/lead/tools/research.ts',
         'src/harness/lead/tools/decompose.ts',
+        'src/harness/lead/lead-prompt.ts', // P3 S5: lead 常驻 prompt, 消费方同上 (S6b)
       ].map((f) => [
         f,
         {

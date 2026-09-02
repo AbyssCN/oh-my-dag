@@ -42,9 +42,7 @@ const ITEM_VAR = 'item';
 const LISTER_ARRAY_KEY = 'items';
 
 const SHORT =
-  'One worker per item of a list that only exists at runtime. list_from is a read-only command; an agent step ' +
-  'runs it and reports one item per output line. per_item is the goal template with {item}. Optional stages ' +
-  'run each item through ordered steps. Pass help:true for the full manual.';
+  'One worker per item of a runtime list. list_from is a read-only command; an agent step runs it and reports one item per line. per_item is the goal template with {item}. Optional stages run each item through ordered steps.';
 
 export const mapTool: LeadTool<MapParams> = {
   name: 'map',

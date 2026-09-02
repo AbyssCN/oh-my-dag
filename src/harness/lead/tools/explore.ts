@@ -38,7 +38,7 @@ const READONLY_SENTINEL = '.omd/lead-explore-readonly-sentinel';
 
 const SHORT =
   'N read-only workers that each answer one question about the repo and return facts with paths. No writes. ' +
-  'Use before briefing when you need facts from many places at once. Pass help:true for the full manual.';
+  'Use before briefing when you need facts from many places at once.';
 
 export const exploreTool: LeadTool<ExploreParams> = {
   name: 'explore',

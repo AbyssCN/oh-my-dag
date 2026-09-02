@@ -35,8 +35,7 @@ function slugId(text: string): string {
 
 const SHORT =
   'Start ONE worker for one bounded change. Default for any task with a single owner of the code. ' +
-  'Params: goal (one sentence), brief (min 40 chars: reproduction output, scope, what not to touch). ' +
-  'Pass help:true for the full manual.';
+  'Params: goal (one sentence), brief (min 40 chars: reproduction output, scope, what not to touch). ';
 
 export const workTool: LeadTool<WorkParams> = {
   name: 'work',

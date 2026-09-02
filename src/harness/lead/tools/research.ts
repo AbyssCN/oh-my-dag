@@ -21,7 +21,7 @@ type ResearchParams = z.infer<typeof ResearchSchema>;
 
 const SHORT =
   'Web research on one question. Only when the run has a search provider. depth:"second-pass" digs only ' +
-  'what the first pass left uncited or unread. Pass help:true for the full manual.';
+  'what the first pass left uncited or unread.';
 
 export const researchTool: LeadTool<ResearchParams> = {
   name: 'research',

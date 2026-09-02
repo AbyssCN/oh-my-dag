@@ -27,7 +27,7 @@ type DecomposeParams = z.infer<typeof DecomposeSchema>;
 
 const SHORT =
   'A stronger model draws a subgraph for a goal you cannot split and one worker cannot finish. Optional hint ' +
-  'names a control-flow: router, loop-until, iterate, escalation, saga, verify. Pass help:true for the full manual.';
+  'names a control-flow: router, loop-until, iterate, escalation, saga, verify.';
 
 export const decomposeTool: LeadTool<DecomposeParams> = {
   name: 'decompose',
