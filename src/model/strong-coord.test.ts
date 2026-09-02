@@ -83,8 +83,12 @@ describe('conductor prompt 2026-07-26 审核 (SOTA-only 口径)', () => {
     expect(lean).not.toContain('Host executor roster');
   });
 
-  test('lean 仍是 full 的真子集式瘦身 (省 >20% 且契约段无损)', () => {
-    expect(lean.length).toBeLessThan(full.length * 0.8);
+  test('lean 仍是 full 的真子集式瘦身 (full-only 段 ≥ 5000 字节被省掉, 且契约段无损)', () => {
+    // 2026-09-02 (N2): 原判据是比率 `lean < full * 0.8`, 实测 24273 / 30342 = 0.79998, 余量不到 1 字节;
+    // 往两档共用段加 200 字节, 比率 (24473/30542) = 0.8013 就红, 而 lean 一个字没少省。
+    // 差值 `full - lean` 才是「full-only 段被省掉了多少」这件事本身 (实测 6069), 共用段加多少它都不动;
+    // 删掉一段 full-only 文本它才动。K = 5000 给 full-only 段留约 1000 字节的措辞余量, 不是上限。
+    expect(full.length - lean.length).toBeGreaterThanOrEqual(5000);
     for (const must of ['Output STRICTLY one JSON object', 'allowed binaries', 'executor:"map"', '"tier"']) {
       expect(lean).toContain(must);
     }
