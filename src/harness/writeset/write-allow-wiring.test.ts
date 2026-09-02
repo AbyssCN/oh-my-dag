@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createOmdAgentTools, type AnyOmdTool } from '../agent-tools';
+import { resolveNodeWriteAllow } from './write-allow';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -89,5 +90,16 @@ describe('写域闸接线 —— write / edit 真的问了写集', () => {
     const root = fixture();
     const t = toolsFor(root, ['src/allowed.ts']);
     expect(run(t.write!, { path: 'src/nope.ts', content: 'x' })).rejects.toThrow(/src\/allowed\.ts/);
+  });
+
+  test('★★ resolveNodeWriteAllow 接进 writeAllow: 绝对 output_path 不再被写域闸误拒 (P2d 子修 2)', async () => {
+    // 怎么让它红: 回退成 `[...new Set([...write_set, ...output_path ? [output_path] : []])]`
+    // (不归一直接并集) → 绝对 output_path 与 root-relative 目标比不上, 这条红。
+    const root = fixture();
+    const outputPath = join(root, 'src', 'new-artifact.ts');
+    const allow = resolveNodeWriteAllow(undefined, outputPath, root);
+    const t = toolsFor(root, allow);
+    await run(t.write!, { path: 'src/new-artifact.ts', content: 'x' });
+    expect(readFileSync(join(root, 'src', 'new-artifact.ts'), 'utf8')).toBe('x');
   });
 });

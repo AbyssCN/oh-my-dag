@@ -246,6 +246,7 @@ const RETRY_INSTRUCTION =
   '但**没被点名的节点请逐字节保持原规格** (goal 文本/依赖/executor 一字不动) —— ' +
   '节点 id 按内容寻址, 规格没变的节点零成本复用上轮产出; 顺手改写无辜节点 = 它整棵子树白烧重跑。';
 import { verifiedShellWriteTargets } from '../writeset/shell-writes';
+import { resolveNodeWriteAllow } from '../writeset/write-allow';
 import { blamePathCandidates, failureExcerpt } from '../failure-trace';
 import { findRedOracles, renderOracleRedVerdict } from './oracle-red';
 import { attributeBlame, renderAttribution } from './blame-attribution';
@@ -4381,7 +4382,15 @@ async function executePlan(
         // `output_path` 并进来: 声明了产物路径却没列进写集是常见写法, 不并会造假 major,
         // 而**假 major 的代价是有人把整条闸关掉**。
         // 没声明 → 不传字段 → 闸缺席放行 (conductor 铺图路径本就没有逐节点写集)。
-        const writeAllow = [...new Set([...(node.write_set ?? []), ...(node.output_path ? [node.output_path] : [])])];
+        // ⚠ P2d 子修 2 (2026-09-02): `output_path` 可能是绝对路径 (contract-drafting 节点,
+        // `config.cwd` 恒绝对, 见 assemble.ts:417), 而写域闸的 `allow` 契约是相对仓根 ——
+        // 不归一会让节点自己声明的产物被自己的写域闸拒。归一用 `writeSetSnapshotRoot`
+        // 这个锚 (同上方 D-3/D-6, 与 leaf 实际写文件的根一致)。
+        const writeAllow = resolveNodeWriteAllow(
+          node.write_set,
+          node.output_path ? String(node.output_path) : undefined,
+          writeSetSnapshotRoot,
+        );
         // SDD D-2 (2026-08-11): 挂 leaf 事件汇 → 转成 DAG progress 事件。只认工具起跑;
         // text_delta 不进 DAG 事件 (D-10: DAG 面板不是 transcript)。回调抛错 fail-open。
         const leafProgress = (e: AgentEvent): void => {

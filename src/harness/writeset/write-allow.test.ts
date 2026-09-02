@@ -18,7 +18,7 @@
  * **假 major 的代价是有人把整条闸关掉**。下面两组用例数量对等。
  */
 import { describe, expect, test } from 'bun:test';
-import { checkWriteAllowed, describeWriteDenied } from './write-allow';
+import { checkWriteAllowed, describeWriteDenied, resolveNodeWriteAllow } from './write-allow';
 
 const ROOT = '/repo';
 const ok = (t: string, allow: string[]) => checkWriteAllowed(t, allow, ROOT).allowed;
@@ -81,5 +81,24 @@ describe('写域闸 —— **放行**的那一侧(假 major 阀门)', () => {
 
   test('matched 留证:凭哪一条放行的要说得出来', () => {
     expect(checkWriteAllowed('src/harness/deep/x.ts', ['docs/**', 'src/**/*.ts'], ROOT).matched).toBe('src/**/*.ts');
+  });
+});
+
+describe('resolveNodeWriteAllow —— output_path 是绝对路径时的归一 (P2d 子修 2)', () => {
+  // 怎么让它红: 把归一那一步删掉、直接把 outputPath 原样塞进并集 → 本组第一条红。
+  test('★★ 绝对 outputPath → 归一成相对 root 的路径, 并出现在结果里', () => {
+    const result = resolveNodeWriteAllow(undefined, '/repo/docs/plan/2026-09-02-goal.md', ROOT);
+    expect(result).toContain('docs/plan/2026-09-02-goal.md');
+    expect(result).not.toContain('/repo/docs/plan/2026-09-02-goal.md');
+  });
+
+  test('★ 相对 outputPath → 原样透传 (既有正确调用方零行为变化)', () => {
+    const result = resolveNodeWriteAllow(['src/a.ts'], 'docs/plan/goal.md', ROOT);
+    expect(result).toContain('src/a.ts');
+    expect(result).toContain('docs/plan/goal.md');
+  });
+
+  test('outputPath 缺席 → 只回 writeSet 原样 (undefined 不当成一条声明)', () => {
+    expect(resolveNodeWriteAllow(['src/a.ts'], undefined, ROOT)).toEqual(['src/a.ts']);
   });
 });

@@ -28,6 +28,28 @@ describe('bench-bootstrap (E1b 容器配置引导)', () => {
     for (const id of ['leaf', 'agent', 'judge', 'gate', 'lens']) expect(m[id]).toBe('bench:MiniMax-M3');
   });
 
+  test('★ 四角色模式 (可选): OMD_BENCH_JUDGE_MODEL 给了 → judge 拿独立坐标, 不给 → 与三角色模式逐字相同', () => {
+    // 反向自检: 把 JUDGE_SEATS 判断删掉/把 j 恒当 undefined → (a) 这条第一断言红。
+    // (a) 四个 env 都给: judge 落到独立第四坐标, 既不等于 verifier 也不等于 leaf(worker)。
+    const withJudge = benchSeatModels({
+      OMD_BENCH_CONDUCTOR_MODEL: 'claude-opus-5',
+      OMD_BENCH_WORKER_MODEL: 'MiniMax-M3',
+      OMD_BENCH_VERIFIER_MODEL: 'gpt-5.6-sol',
+      OMD_BENCH_JUDGE_MODEL: 'deepseek-v4-pro',
+    });
+    expect(withJudge.judge).toBe('bench:deepseek-v4-pro');
+    expect(withJudge.judge).not.toBe(withJudge.verifier);
+    expect(withJudge.judge).not.toBe(withJudge.leaf);
+
+    // (b) 只给原三件套: judge 仍落回 leaf(worker) 坐标 —— 今日行为不变, 与既有「★ 三角色模式」测试逐字一致。
+    const withoutJudge = benchSeatModels({
+      OMD_BENCH_CONDUCTOR_MODEL: 'claude-opus-5',
+      OMD_BENCH_WORKER_MODEL: 'MiniMax-M3',
+      OMD_BENCH_VERIFIER_MODEL: 'gpt-5.6-sol',
+    });
+    expect(withoutJudge.judge).toBe(withoutJudge.leaf);
+  });
+
   test('★ 三角色缺任一 → throw (不写半套)', () => {
     expect(() => benchSeatModels({ OMD_BENCH_CONDUCTOR_MODEL: 'a', OMD_BENCH_WORKER_MODEL: 'b' })).toThrow(/齐给/);
   });

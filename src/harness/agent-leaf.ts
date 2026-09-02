@@ -1825,6 +1825,11 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
   // 丢了哪个键在外面一点痕迹都没有, 而那正是 2026-08-25 台账缺口的形态。
   const agentToolsOpts: OmdAgentToolsOpts = {
     cwd,
+    // 读域闸 (P2d 子修 1, 2026-09-02): DAG leaf 只准读自己被分派到的这份 cwd, 不许绝对路径
+    // 逃出去读引擎自身安装目录之类的邻居 (审计信号: 读命中落在 /opt/omd/pkg 而非任务仓)。
+    // chat.ts / chat-seat.ts 两条对话位路径**不传这个 opt** —— 那两条路"读半区零摩擦"
+    // 是 chat-seat.test.ts:186 钉死的既有行为, 不在本修范围内。
+    confineReadsTo: cwd,
     // 逃生口接到 leaf 这条路 (2026-08-14, 夜跑读数第二层问题): 此前 `.omd/config.json` 的
     // `tui.sandbox.allow/deny` 只对 TUI 生效, DAG leaf 吃 DEFAULT_SANDBOX_CONFIG (allow 恒空) ——
     // 误报没有任何赦免出口, leaf 只能撞墙重试 (S-36 同形: 护栏装在一侧, 同名通道绕过全部)。

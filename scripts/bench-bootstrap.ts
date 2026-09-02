@@ -26,18 +26,34 @@ import { SEATS } from '../src/model/seats';
 /** 三角色座位分组 (镜像生产 config: claude-code 组=指挥, openai-codex 组=审核, 其余=worker)。 */
 const CONDUCTOR_SEATS = new Set(['conductor', 'escalation', 'fusion', 'graft']);
 const VERIFIER_SEATS = new Set(['verifier', 'review', 'review-spec']);
+/**
+ * judge 的独立第四坐标 (P2d 子修 3, 2026-09-02, 可选/加法, 不改三角色模式默认行为)。
+ *
+ * 为什么不把 'judge' 塞进 VERIFIER_SEATS: `src/model/seats.ts` 里 verifier 的
+ * `crossFamily` 是 `'required'` 且注释明写「必须与 conductor/judge 异族」——
+ * 塞进去会让 `models.judge === models.verifier`, 直接违反这条**更强**的约束,
+ * 换来的只是缓解 judge 自己那条更弱的 `'preferred'`。真正两条都不违反的解法
+ * 是给 judge 一个**独立**坐标, 缺省 (不给 `OMD_BENCH_JUDGE_MODEL`) 时行为
+ * 与今天逐字节相同 —— judge 落回 worker (w) 分支, 不强制三角色调用方多传第四个 env。
+ */
+const JUDGE_SEATS = new Set(['judge']);
 
 /**
  * 纯函数: 由 env 算出 config.json 的 models 段 (18 座全钉)。
  * 两种模式, fail-closed 不写半套:
  *  - 三角色 (owner E2 选型): OMD_BENCH_CONDUCTOR_MODEL + OMD_BENCH_WORKER_MODEL +
  *    OMD_BENCH_VERIFIER_MODEL 三者**齐**给 (缺任一 throw), 座位按组分派;
+ *    可选加 OMD_BENCH_JUDGE_MODEL 给 judge 一个独立第四坐标 (P2d 子修 3, 2026-09-02) ——
+ *    不给时 judge 落回 worker 坐标, 与本坐标出现之前逐字节相同 (不强制既有三件套调用方多传)。
  *  - 单模型回退: 只给 OMD_BENCH_MODEL → 18 座全钉一个坐标。
  */
 export function benchSeatModels(env: Record<string, string | undefined>): Record<string, string> {
   const c = env.OMD_BENCH_CONDUCTOR_MODEL?.trim();
   const w = env.OMD_BENCH_WORKER_MODEL?.trim();
   const v = env.OMD_BENCH_VERIFIER_MODEL?.trim();
+  // 可选第四坐标 (P2d 子修 3): 不给 → j 是 undefined, 下面三元表达式的 j 分支永不命中,
+  // judge 落回 w 分支 —— 与本坐标出现之前逐字节相同, 不逼三角色调用方多传一个 env。
+  const j = env.OMD_BENCH_JUDGE_MODEL?.trim();
   const anyRole = Boolean(c || w || v);
   if (anyRole) {
     if (!(c && w && v))
@@ -45,7 +61,7 @@ export function benchSeatModels(env: Record<string, string | undefined>): Record
     return Object.fromEntries(
       SEATS.map((s) => [
         s.id,
-        `bench:${CONDUCTOR_SEATS.has(s.id) ? c : VERIFIER_SEATS.has(s.id) ? v : w}`,
+        `bench:${CONDUCTOR_SEATS.has(s.id) ? c : VERIFIER_SEATS.has(s.id) ? v : j && JUDGE_SEATS.has(s.id) ? j : w}`,
       ]),
     );
   }

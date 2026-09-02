@@ -75,3 +75,23 @@ export function describeWriteDenied(target: string, allow: readonly string[], to
     '要写别的文件, 说明分解表的写集列写漏了 —— 那是契约的问题, 不要绕开它。'
   );
 }
+
+/**
+ * 并 `writeSet` 与 `outputPath` 成一份写域闸能认的 `allow` (P2d 子修 2, 2026-09-02)。
+ *
+ * 补的洞: contract-drafting 节点的 `output_path` 是绝对路径 (`config.cwd` 恒为绝对,
+ * 见 `assemble.ts:417`), 而本闸的 `allow` 契约(上面 `checkWriteAllowed` 的 doc)是
+ * **相对仓根**——绝对声明与相对目标比不上, 造出"明明就是这个节点该产的产物却被拒"的假 major。
+ *
+ * ⚠ 不在 run-goal.ts 的 prompt 字符串上修 (那是模块头「讲道理拦不住」明文点了名的反模式,
+ * 只控制了模型被告知回显什么, 不控制它实际写什么) —— 归一放在这个共用的并集点, 覆盖
+ * 任何未来的绝对 `output_path` 生产者, 不论是不是 conductor 自己编的。
+ */
+export function resolveNodeWriteAllow(
+  writeSet: readonly string[] | undefined,
+  outputPath: string | undefined,
+  root: string,
+): string[] {
+  const normalizedOutput = outputPath ? (isAbsolute(outputPath) ? relative(root, outputPath) : outputPath) : undefined;
+  return [...new Set([...(writeSet ?? []), ...(normalizedOutput ? [normalizedOutput] : [])])];
+}

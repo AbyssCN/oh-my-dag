@@ -73,6 +73,28 @@ describe('凭证文件:只告警不拦 (owner 2026-08-07 裁决「去掉这个�
   });
 });
 
+describe('read 域闸 confineReadsTo (P2d 子修 1: DAG leaf 读域收口, chat/TUI 零摩擦不动)', () => {
+  // 反向自检: 把 read execute 里那段 confineReadsTo 判断删掉 → 本组第一条当场红
+  // (第二条 —— 不给 confineReadsTo 时照旧放行 —— 恒绿, 用来钉「默认零行为变化」)。
+  it('★ 给了 confineReadsTo: 读域外绝对路径 → 拒', async () => {
+    const root = fixture();
+    const outside = mkdtempSync(join(tmpdir(), 'omd-agent-tools-outside-'));
+    writeFileSync(join(outside, 'secret.txt'), 'OUTSIDE-CONTENT');
+    const { read } = Object.fromEntries(
+      createOmdAgentTools({ cwd: root, confineReadsTo: root }).map((t) => [t.name, t]),
+    );
+    await expect(run(read!, { path: join(outside, 'secret.txt') })).rejects.toThrow(/BLOCKED/);
+  });
+
+  it('不给 confineReadsTo: 同一条绝对路径读依旧放行 (今日/chat-seat 行为不变)', async () => {
+    const root = fixture();
+    const outside = mkdtempSync(join(tmpdir(), 'omd-agent-tools-outside-'));
+    writeFileSync(join(outside, 'secret.txt'), 'OUTSIDE-CONTENT');
+    const { read } = toolset(root);
+    expect(text(await run(read!, { path: join(outside, 'secret.txt') }))).toContain('OUTSIDE-CONTENT');
+  });
+});
+
 describe('工具集就是闸 —— 不可逆命令', () => {
   it('★ bash 拒 rm -rf /', async () => {
     const { bash } = toolset(fixture());

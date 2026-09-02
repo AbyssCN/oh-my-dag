@@ -534,6 +534,18 @@ export interface OmdAgentToolsOpts {
   onWriteDenied?: (target: string) => void;
   /** 工作根。相对路径对它解析, bash 在它里面跑。 */
   cwd: string;
+  /**
+   * `read` 的读域收口 (P2d 子修 1, 2026-09-02): 给了一个绝对根, `read` 拒任何解析后
+   * 落在这个根之外的目标 (`BLOCKED 读域越界`)。
+   *
+   * ⚠ 专用新 opt, **不借用 `sandbox`**: `sandbox` 在 chat-seat.ts 里默认就带着
+   * (`sandboxCfg.enabled` 缺省 true), 而非 bwrap 的 DAG-leaf 路径又恰好不设它 ——
+   * 借 `sandbox` 判会把两条路的读行为分反了。scope 只管 `read`, 不管
+   * `ls`/`grep`/`bash`/`view_image` (审计信号只点名了 read, 见 contract out_of_scope)。
+   *
+   * 缺省 = 不设边界 (chat.ts / chat-seat.ts 那条"读半区零摩擦"路, 逐字节零行为变化)。
+   */
+  confineReadsTo?: string;
   /** bash 不可逆命令 fail-closed 闸。默认 true (安全侧); false = 逃生关闸。 */
   dangerousCommandGuard?: boolean;
   /**
@@ -604,6 +616,13 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
   /** 目标在不在可写边界里。无边界 → 恒 true。 */
   const writable = (target: string): boolean =>
     writableRoots === null || writableRoots.some((r) => target === r || target.startsWith(r.endsWith(sep) ? r : r + sep));
+  /** `read` 的读域根 (P2d 子修 1)。省略 `confineReadsTo` → `null` = 不设边界。 */
+  const confineReadsToRoot: string | null = opts.confineReadsTo ? resolve(opts.confineReadsTo) : null;
+  /** 目标在不在读域里。无边界 → 恒 true。 */
+  const readable = (target: string): boolean =>
+    confineReadsToRoot === null ||
+    target === confineReadsToRoot ||
+    target.startsWith(confineReadsToRoot.endsWith(sep) ? confineReadsToRoot : confineReadsToRoot + sep);
   /** 越界即拒 —— 错误里带边界原文, 模型才知道该改去哪写, 而不是反复试同一个路径。 */
   const requireWritable = (target: string, tool: string): void => {
     // ── 写域闸 (2026-08-21): 节点只准写自己声明的写集 ─────────────────────────────
@@ -711,6 +730,13 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
       const { path, offset, limit } = params as Static<typeof READ_SCHEMA>;
       if (secretBasenameOf(path)) warnSecret(path);
       const full = abs(cwd, path);
+      // ── 读域闸 (P2d 子修 1, 2026-09-02): DAG leaf 专用, chat/TUI 缺省不设边界 ──────────
+      if (!readable(full)) {
+        throw new Error(
+          `BLOCKED 读域越界: read 的目标 ${display(cwd, full)} 不在读域根内 (${confineReadsToRoot})。` +
+            '要读工作根外的文件, 说明这个节点的分工写错了 — 别绕开它。',
+        );
+      }
       // ★ D-2: 图片走 UTF-8 解码会得到一坨替换字符乱码喂给模型; 早拒, 指引改用 view_image。
       if (imageMimeFor(full)) {
         throw new Error(
