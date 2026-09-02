@@ -25,6 +25,12 @@ export interface GateEntry {
 /** 判生死的图级闸；一道闸可能在多个出口打印同一条 id 化判词。 */
 export const GATE_REGISTRY: readonly GateEntry[] = [
   {
+    // P3 S3 (2026-09-02): 尾块 vs 引擎记录差集 —— acceptance_ran 谎报 / changed 声称引擎没核实的文件 → 判红。
+    id: 'report-trailer',
+    family: '谎报闸',
+    file: 'src/harness/dag/engine.ts',
+  },
+  {
     id: 'artifact-empty',
     family: '产物闸',
     file: 'src/harness/dag/engine.ts',

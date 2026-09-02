@@ -40,10 +40,10 @@ const SOURCE_BY_FILE: Readonly<Record<string, string>> = {
 // 实扫 — 用于 GWT-1 / GWT-4 / GWT-7 (这些要求「扫真源码」)
 const REAL_VERDICTS = scanGateVerdicts(SOURCE_BY_FILE);
 
-describe('GWT-1 — INV-1: 扫真源 (engine.ts + run-goal.ts) 的 id 集合 ⊇ 表里全部 23 个 id', () => {
-  test('登记的 23 个 id 都被实扫命中', () => {
+describe('GWT-1 — INV-1: 扫真源 (engine.ts + run-goal.ts) 的 id 集合 ⊇ 表里全部 24 个 id', () => {
+  test('登记的 24 个 id 都被实扫命中', () => {
     const registryIds = GATE_REGISTRY.map((e) => e.id);
-    expect(registryIds).toHaveLength(23); // 2026-08-25 #249 fuse-paralysis 入表 (13→14); S2 片 3 spin-rung2-ladder 入表 (14→15); S3 片 5 retry-domain-mask + verifier-ledger + partial-quorum-failure 入表 (15→18); 2026-08-28 G2 contract-gate 入表 (18→19) + ask-owner 入表 (19→20); 2026-08-30 刀① artifact-echo + artifact-drift + artifact-foreign 入表 (20→23)
+    expect(registryIds).toHaveLength(24); // 2026-09-02 P3 S3 report-trailer 入表 (23→24); 2026-08-25 #249 fuse-paralysis 入表 (13→14); S2 片 3 spin-rung2-ladder 入表 (14→15); S3 片 5 retry-domain-mask + verifier-ledger + partial-quorum-failure 入表 (15→18); 2026-08-28 G2 contract-gate 入表 (18→19) + ask-owner 入表 (19→20); 2026-08-30 刀① artifact-echo + artifact-drift + artifact-foreign 入表 (20→23)
     for (const id of registryIds) {
       expect(REAL_VERDICTS.has(id)).toBe(true);
     }

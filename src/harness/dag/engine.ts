@@ -22,6 +22,8 @@
  * - `planner.ts` —— 纯 helper(topoLevels / buildLeafPrompt / addUsage)
  */
 import { randomUUID } from 'node:crypto';
+import { auditTrailer } from '../report/trailer-audit';
+import { stripTrailer } from '../report/trailer';
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
@@ -1219,6 +1221,9 @@ async function executePlan(
   const claimCheckedIds = new Set<string>();
   let flatCheckedNodes = 0;
   let flatFindings = 0;
+  /** P3 S3 尾块差集闸的计数 (两条路合记一格, 判据同一把尺子; 缺席 = 没有节点进过审计)。 */
+  let trailerChecked = 0;
+  let trailerFindings = 0;
   const seenObservations = new Set<string>();
   /** conductor 运行时展开出来的子节点 id —— `detector` 的消费者只在内环里, 别处设了要响亮忽略。 */
   const conductorChildIds = new Set<string>();
@@ -2836,7 +2841,8 @@ async function executePlan(
     // 它求的是差集「产物声称的引擎校验动作 ⊆ 引擎记录的动作」, 不是判断题 —— 引擎精确知道
     // 自己记了什么。判据很窄且**已知会误伤良性语域** (指令句「确保测试通过」、整改回执
     // 「已按 verifier 意见修改」), 所以这一档三条出口一票不铸: 视图 / 账本 / 下一轮 prompt。
-    const claims = findUnsupportedClaims(checkableFromJudgeView(orderedChildren));
+    // P3 S3: 散文正则那道只读散文 —— 尾块另有差集闸审, 机器字段 (`acceptance_exit: 0`) 不该被当成「声称通过」。
+    const claims = findUnsupportedClaims(checkableFromJudgeView(orderedChildren.map((c) => ({ ...c, output: stripTrailer(c.output) }))));
     const claimObs: DagObservation[] = claims.map((f) => ({
       kind: 'unsupported-claim' as const,
       nodes: [f.nodeId],
@@ -2850,6 +2856,30 @@ async function executePlan(
     claimCheckedNodes += orderedChildren.length;
     claimFindings += claims.length;
     for (const c of orderedChildren) claimCheckedIds.add(c.id);
+    // ── P3 S3: 尾块 vs 引擎记录差集 (D-13, **判红闸**; INV-5 缺席不红; D-24 缺格不红) ──────
+    // 散文正则那道 (上面) 原样保留、仍只报; 这道读的是七个字段, 谎报 (acceptance_ran=true 而引擎没记到
+    // run_acceptance 调用 / 声称改了引擎没核实的文件) 判红 → 子节点进本轮毒集。审的是 LeafResult 的
+    // 全文 output, 不是 judge 视图里可能被截过的那份。
+    for (const c of orderedChildren) {
+      const lr = roundResults.get(c.id);
+      if (!lr || lr.kind === 'conductor' || lr.status === 'skipped') continue;
+      const audit = auditTrailer(lr.output ?? '', {
+        ...(lr.acceptance !== undefined
+          ? { acceptance: lr.acceptance === null ? null : { ran: lr.acceptance.ran, exit: lr.acceptance.last?.kind === 'exited' ? lr.acceptance.last.exitCode : null } }
+          : {}),
+        ...(lr.filesTouched ? { changed: lr.filesTouched } : {}),
+      });
+      lr.selfReport = audit.selfReport === 'unparsable' ? null : { ...audit.trailer, self_report: audit.selfReport };
+      trailerChecked++;
+      const notices = audit.verdicts.filter((v) => v.severity === 'notice').map((v) => v.message);
+      if (notices.length) c.facts = [...(c.facts ?? []), ...notices];
+      if (!audit.red) continue;
+      trailerFindings++;
+      const reds = audit.verdicts.filter((v) => v.severity === 'red');
+      logger.warn({ node: c.id, codes: reds.map((v) => v.code) }, '[omd/executor-dag][report-trailer] 尾块与引擎记录不符 → 子节点进本轮毒集 (谎报闸)');
+      if (!detectorVerdict.rejected.includes(c.id)) detectorVerdict.rejected.push(c.id);
+      observe(reds.map((v) => ({ kind: 'unsupported-claim' as const, nodes: [c.id], message: v.message })));
+    }
     return {
       leaf: {
         id,
@@ -6080,7 +6110,8 @@ async function executePlan(
       )
       .map(([id, r]) => ({
         id,
-        output: r!.output ?? '',
+        // P3 S3: 尾块摘掉再喂散文正则 (同内环那处)。
+        output: stripTrailer(r!.output ?? ''),
         facts: engineFacts(r!, { expectExit: plan.nodes[id]?.expect_exit ?? 0, shellCap: SHELL_FACT_CAP }),
       }));
     const found = findUnsupportedClaims(nodes);
@@ -6089,6 +6120,24 @@ async function executePlan(
     observe(
       found.map((f) => ({ kind: 'unsupported-claim' as const, nodes: [f.nodeId], message: renderClaimObservation(f) })),
     );
+    // P3 S3: 平铺路同一道尾块差集 (只报 + 落 selfReport; 平铺没有内环毒集可进, 判红只进账本与观察面)。
+    for (const n of nodes) {
+      const lr = results[n.id];
+      if (!lr) continue;
+      const audit = auditTrailer(lr.output ?? '', {
+        ...(lr.acceptance !== undefined
+          ? { acceptance: lr.acceptance === null ? null : { ran: lr.acceptance.ran, exit: lr.acceptance.last?.kind === 'exited' ? lr.acceptance.last.exitCode : null } }
+          : {}),
+        ...(lr.filesTouched ? { changed: lr.filesTouched } : {}),
+      });
+      lr.selfReport = audit.selfReport === 'unparsable' ? null : { ...audit.trailer, self_report: audit.selfReport };
+      trailerChecked++;
+      if (!audit.red) continue;
+      trailerFindings++;
+      const reds = audit.verdicts.filter((v) => v.severity === 'red');
+      logger.warn({ node: n.id, codes: reds.map((v) => v.code) }, '[omd/executor-dag][report-trailer] 尾块与引擎记录不符 (平铺路: 只报, 进账本与观察面)');
+      observe(reds.map((v) => ({ kind: 'unsupported-claim' as const, nodes: [n.id], message: v.message })));
+    }
   }
 
   // ── 「绿节点配空盘」后果网 (SDD 2026-08-22 · 片 3g 后续网) ───────────────────────
@@ -6136,6 +6185,8 @@ async function executePlan(
     claimCheck: {
       conductor: { rounds: claimCheckRounds, nodes: claimCheckedNodes, findings: claimFindings },
       flat: { nodes: flatCheckedNodes, findings: flatFindings },
+      // P3 S3: 缺席 = 没有节点进过尾块审计 (三态, 不编 {0,0})。
+      ...(trailerChecked > 0 ? { trailer: { nodes: trailerChecked, findings: trailerFindings } } : {}),
     },
     // 同上一条纪律 (2026-08-06): 「产物没变」判据的分母 —— 可比较的跨轮次数, 不是运行次数。
     artifactMove: { transitions: moveTransitions, unobserved: moveUnobserved, findings: moveFindings },

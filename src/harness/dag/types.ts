@@ -1,4 +1,5 @@
 import type { ContentPart, ModelUsage } from '../../model/gateway';
+import type { Trailer } from '../report/trailer';
 import type { AcceptanceOutcome } from '../acceptance-run';
 import type * as Gateway from '../../model/gateway';
 import type { AgentTemplate } from '../agent-templates';
@@ -1112,6 +1113,12 @@ export interface LeafResult {
    */
   acceptance?: { ran: boolean; rounds: number; last: AcceptanceOutcome | null } | null;
   /**
+   * **leaf 末条消息的机器尾块**(P3 S3 / D-12)。三态: 整个字段缺席 = 本节点没过尾块审计(conductor 节点 /
+   * 早于本次改动);`null` = 有 fence 但解析失败(原文在日志);对象 = 引擎采用的尾块, `self_report` 标明
+   * 来源: `'leaf'` 真值 / `'missing'` 缺席时按记录合成。差集判词见 `report/trailer-audit.ts`。
+   */
+  selfReport?: (Trailer & { self_report: 'leaf' | 'missing' }) | null;
+  /**
    * **引擎自己出事导致环提前退出**的原因(2026-07-31)。今天唯一的来源: judge 调不通
    * (`ModelError` —— 传输/配置层的确定性故障, 如 codex 拒 temperature)。
    *
@@ -1308,6 +1315,11 @@ export interface ExecutorDagResult {
   claimCheck?: {
     conductor: { rounds: number; nodes: number; findings: number };
     flat: { nodes: number; findings: number };
+    /**
+     * P3 S3: 尾块差集闸的三态 (与上面两道**分开记**, 尺子不同): 缺席 = 这一跑没有一个节点进过尾块审计;
+     * `findings:0` = 审过零检出; `findings>0` = 检出 (判红)。散文正则那两道原样保留 (只报)。
+     */
+    trailer?: { nodes: number; findings: number };
   };
   /**
    * 「产物没变」判据(`loop-no-artifact-change`)这一跑**有过多少次判得了的机会**(2026-08-06)。

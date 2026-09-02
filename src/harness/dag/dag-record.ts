@@ -12,6 +12,7 @@
  * 读的人只会以为自己漏了什么, 故删。见 `dag/engine.ts` 头注。
  */
 import { Database } from 'bun:sqlite';
+import type { Trailer } from '../report/trailer';
 import type { AcceptanceOutcome } from '../acceptance-run';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -217,6 +218,8 @@ export interface DagRunNode {
    * 逐字同款 (缺席 / null / 对象), record() 靠 `!== undefined` 守。不加列: 节点级字段写在 `nodes` JSON 里。
    */
   acceptance?: { ran: boolean; rounds: number; last: AcceptanceOutcome | null } | null;
+  /** P3 S3: 尾块三态 (缺席 / null=解析失败 / 对象), 真源 `LeafResult.selfReport`, record() 靠 `!== undefined` 守。 */
+  selfReport?: (Trailer & { self_report: 'leaf' | 'missing' }) | null;
   /**
    * 失败输出的指纹 (sha1 前 12 位; 只对**失败的 command 节点**记)。
    *
@@ -359,7 +362,7 @@ export interface DagRunRecord {
    * 与"检查过零检出"逐字相同。按 entry 数约一半流量走这条路 → **活体基率分母会错近一倍**。
    * 三态: 缺席 = 不适用(不进分母)· findings:0 = 检查过零检出 · findings>0 = 检出。
    */
-  claimCheck?: { conductor: { rounds: number; nodes: number; findings: number }; flat: { nodes: number; findings: number } };
+  claimCheck?: { conductor: { rounds: number; nodes: number; findings: number }; flat: { nodes: number; findings: number }; trailer?: { nodes: number; findings: number } };
   /**
    * 「产物没变」判据(`loop-no-artifact-change`)这一跑**判得了多少次**(2026-08-06)。
    *
@@ -927,6 +930,7 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
           ...(r.selfRepair !== undefined ? { selfRepair: r.selfRepair } : {}),
           // P3 S2: 同一条三态纪律。
           ...(r.acceptance !== undefined ? { acceptance: r.acceptance } : {}),
+          ...(r.selfReport !== undefined ? { selfReport: r.selfReport } : {}),
         };
       });
       const usage = {

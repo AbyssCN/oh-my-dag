@@ -325,13 +325,14 @@ describe('★ 平铺图(无 conductor 节点)也要被扫到', () => {
     // 而账本记出来与"查过零检出"逐字相同 —— 按 entry 数它占一半流量。
     const { kinds, claimCheck } = await runFlat('本次已由引擎实测通过全部单元测试');
     expect(kinds).toContain('unsupported-claim');
-    expect(claimCheck).toEqual({ conductor: { rounds: 0, nodes: 0, findings: 0 }, flat: { nodes: 1, findings: 1 } });
+    // P3 S3 (2026-09-02): 第三把尺子 `trailer` 入账 (尾块差集闸); 这条散文没有尾块 → 审过、零检出, 与「够不着」分得开。
+    expect(claimCheck).toEqual({ conductor: { rounds: 0, nodes: 0, findings: 0 }, flat: { nodes: 1, findings: 1 }, trailer: { nodes: 1, findings: 0 } });
   });
 
   test('干净产出 → 记了、零检出(与"够不着"分得开)', async () => {
     const { kinds, claimCheck } = await runFlat('已实现 clamp 并写好测试');
     expect(kinds).not.toContain('unsupported-claim');
-    expect(claimCheck).toEqual({ conductor: { rounds: 0, nodes: 0, findings: 0 }, flat: { nodes: 1, findings: 0 } });
+    expect(claimCheck).toEqual({ conductor: { rounds: 0, nodes: 0, findings: 0 }, flat: { nodes: 1, findings: 0 }, trailer: { nodes: 1, findings: 0 } });
   });
 });
 
