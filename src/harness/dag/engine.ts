@@ -2325,8 +2325,11 @@ async function executePlan(
           '[omd/executor-dag] conductor 展开失败 (可自纠) → 原地重试一次 (不计轮)',
         );
         // 降至 medium (P2a): 这是一次机械式格式纠正, 不是重新决策 —— 不需要首发那份 high 推理。
+        // ⚠ 尊重显式 override: 调用方若钉了 conductorThinkingLevel, 两发都该用它 —— 不然一个
+        // 明确把 conductor 压到 'low' 的调用方, 重试反而比首发想得更用力, 于理不通。只有
+        // "没人管、由 seatThinking/缺省算出来的那份 'high'" 才该被这次机械纠正降级。
         const correction = `\n\n【上一次展开失败, 请修正后重新输出完整合法的 plan】\n${attempt.correction}`;
-        attempt = await attemptExpand(correction, 'medium');
+        attempt = await attemptExpand(correction, config.conductorThinkingLevel ?? 'medium');
         if (!attempt.ok) {
           logger.warn({ node: id, round, err: attempt.correction }, '[omd/executor-dag] conductor 展开失败 → 重试后仍失败');
           return {
