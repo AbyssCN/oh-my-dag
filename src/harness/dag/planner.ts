@@ -177,8 +177,10 @@ export async function vetSelfCheck(
       : async ({ command }: { command: string }) => ({ exitCode: 0 }),
     spec.expect_exit,
   );
-  if (v.status === 'ring') {
-    const why = `self_check 闸拒 (空世界自检 ring): ${v.why}`;
+  // P2b: `invalid` 与 `ring` 同样闸拒 —— 前者是「命令跑不出判词」(bare 整仓 pytest 命中
+  // 2/4/5), 后者是「命令的判词恒真」, 两者若不接住都会让一条判不了事的 self_check 被悄悄留用。
+  if (v.status === 'ring' || v.status === 'invalid') {
+    const why = `self_check 闸拒 (空世界自检 ${v.status === 'ring' ? 'ring' : '判据无效'}): ${v.why}`;
     return { kept: undefined, verdict: v, droppedWhy: why };
   }
   return { kept: spec, verdict: v };

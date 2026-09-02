@@ -369,6 +369,10 @@ export function classifyPrompt(goal: string, probe?: ClassifyPromptProbe): strin
     // 第四行按探测到的语言包条件化 (D-4): 见 testExampleLine 的三分支;
     // null = "都无", 该行整段不出现 (只留 grep / cat 形状)。
     ...(testExampleLine ? [testExampleLine] : []),
+    // P2b (2026-09-02): bare 整仓 `pytest -q` 若在这个仓里撞上一个跟这次改动无关的既存
+    // collection 错误 (2/4/5), 会被空世界自检判定无效 (「测试框架没跑起来」≠「代码被判红」)。
+    // 提前说清楚, 比事后重问一次更省一发。
+    ...(p?.hasPython ? ['⚠ 若 `pytest -q` 在这仓里撞到一个不相关的既存 collection 错误, 会被判定无效 —— 直接指到具体测试文件更稳 (如 `pytest -q tests/test_foo.py::test_bar`)。'] : []),
     // 2026-07-30 第二次 live 冒烟: 模型照上面的形状写了 `grep -q '^hello omd$' notes/hello.md` ——
     // 形状没错, 锚点里的 `$` 撞了元字符闸。一条 `$` 的连锁是: 命令被拒 → 降级探索型 → 任务文本
     // 写上"没有机器判据·别伪造" → judge 把**真做完**的活读成捏造执行确认 → 整个 goal 报 failed。
@@ -489,7 +493,7 @@ export async function classifyGoal(
     return normalizeClassification(JSON.parse(extractJsonObject(text)) as RawClassification, blockOpts);
   };
   /** 过了闸的执行型再过**两道**探针; 任一响 → 降级探索型(理由原样带走)。 */
-  const vet = async (c: GoalClassification): Promise<GoalClassification> => {
+  const vet = async (c: GoalClassification, attempt = 1): Promise<GoalClassification> => {
     if (c.acceptance.kind !== 'executable') return c;
     // 先把 command 抽出来再进闭包: 闭包捕获 c 时 TS 不保留对 c.acceptance.kind 的收窄
     // (TS2339: command 在 exploratory 分支上不存在) —— 抽出 = 窄化, 不是断言。
@@ -510,6 +514,19 @@ export async function classifyGoal(
       ? await probeVacuity(command, runCommand, c.acceptance.expectExit)
       : { status: 'fail_open' }; // 没给 runner = 不自检 (fail-open, 不降级)
     if (v.status === 'ring') return demoteG4(v.why);
+    // P2b: `invalid` (bare 整仓 pytest 命中 2/4/5) 与 `ring` 不同 —— 命令没给出判词, 不是判词恒真,
+    // 所以给模型**一次**改口的机会(换成文件级判据), 而不是当场降级。二答仍无效才走 demoteG4
+    // (镜像 D-I 闸拒重试: 恰一次, 不无限重试)。
+    if (v.status === 'invalid') {
+      if (attempt >= 2) return demoteG4(v.why);
+      logger.info({ command, why: v.why, attempt }, '[omd/goal] 整仓 pytest 判据判定无效');
+      const retried = await ask(
+        `\n\n⚠ 你上一次给的验收命令在空世界自检里判定无效, 原话是:\n  ${v.why}\n` +
+          '换一条指到具体测试文件的 pytest 命令 (如 `pytest -q tests/test_foo.py::test_bar`); ' +
+          '实在写不出就老实选 exploratory —— 别硬凑一条整仓命令。',
+      );
+      return vet(retried, attempt + 1);
+    }
     const d = await probeDiscrimination(command, c.negativeSample, c.acceptance.expectExit, repoRoot ? { repoRoot } : {});
     if (d.status === 'ring') return demoteG4(d.why);
     // 两道都没响 (没有 ring)。**剩下的组合别压成一个 kind** —— 「探针跑不起来」与「分类器没给

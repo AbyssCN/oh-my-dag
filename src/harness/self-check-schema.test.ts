@@ -230,6 +230,19 @@ describe('GWT-1c (反向, 必须能红): 恒真 self_check 被悄悄丢弃, 节�
     expect(r2.kept).toBeDefined();
   });
 
+  /**
+   * P2b: bare 整仓 pytest 自检命中退出码 4 (无 sample, 空世界自检路径) —— `probeVacuity` 新增的
+   * `'invalid'` 状态必须也被 `vetSelfCheck` 接住, 不能只接 `'ring'`。
+   *
+   * 反向自检: 把 planner.ts 里新加的 `|| v.status === 'invalid'` 摘掉 → kept 变回 spec → 这条红。
+   */
+  test('P2b: bare 整仓 pytest 自检命中 2/4/5 (判据无效) → 同 ring 一样闸拒, kept 为 undefined', async () => {
+    const r = await vetSelfCheck({ command: 'pytest -q', expect_exit: 0 }, { runIn: async () => ({ exitCode: 4 }) });
+    expect(r.kept).toBeUndefined();
+    expect(r.droppedWhy).toBeDefined();
+    expect(r.droppedWhy).toContain('判据无效');
+  });
+
   test('闸拒不判节点红: plan 经 vet 后**仍**有效 (只是少了 self_check), 不判 done → failed', async () => {
     // 闸拒的语义是**丢 self_check 退回旁路**, 不是把节点标 failed。漏掉这条就会逼真红为虚红。
     const text = JSON.stringify({
