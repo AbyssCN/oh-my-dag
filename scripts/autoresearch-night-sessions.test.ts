@@ -23,6 +23,7 @@ import {
   curveOf,
   parseSessionsArgs,
   parseSolveResult,
+  solveBranchName,
   readAcceptedCards,
   runCards,
   type CardResult,
@@ -250,6 +251,16 @@ describe('parseSolveResult / readAcceptedCards / parseSessionsArgs', () => {
       outcome: 'not-converged',
       runId: 'e958cbe8-8059-4445-9b68-c9f5ea92bb69',
     });
+  });
+
+  test('头部 criterion / expectExit 两行解析成结构 (晋升闸判据虚探针的输入); 缺一行即缺席', () => {
+    const text = 'outcome: success\nrunId: r1\nacceptance: executable\ncriterion: bun test tests/x.test.ts\nexpectExit: 0\n\ngoal: …';
+    expect(parseSolveResult(text)).toEqual({ outcome: 'success', runId: 'r1', criterion: { command: 'bun test tests/x.test.ts', expectExit: 0 } });
+    expect(parseSolveResult('outcome: success\nrunId: r1\ncriterion: bun test\n').criterion).toBeUndefined();
+  });
+
+  test('Q1④ 分支名从 runId 派生 = 引擎 prepareRunWorktree 的真名, 不再是 night/<cardId>', () => {
+    expect(solveBranchName('e958cbe8')).toBe('omd/run/e958cbe8');
   });
 
   test('认不出 outcome → unclassified (不猜成 success)', () => {

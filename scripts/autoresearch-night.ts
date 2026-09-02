@@ -141,7 +141,7 @@ export function buildNightChain(opts: NightOpts): StageChain {
       command:
         `bun scripts/autoresearch-promote.ts ${d}/results.json --out ${d}/promotion.json ` +
         `--date ${opts.date}`,
-      goal: '晋升闸: held-out 两维不降 ∧ 护栏绿 → promoted; 进 main 仍是人',
+      goal: '晋升闸: S1/S2 held-out 两维不降 ∧ 护栏绿 → promoted; S3 主目标量不出 → 恒 held + 机械审计 (分支真在 / 禁改路径 / 判据虚探针); 进 main 仍是人',
     },
     {
       id: 'verify',

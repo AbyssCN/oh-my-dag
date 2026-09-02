@@ -1324,7 +1324,14 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
               mkdirSync(dirname(resultOut), { recursive: true });
               // acceptance 头是回流侧闸 B 的信号线: 探索型 (无机器判据) 的 not-converged 永远
               // 判不出机器收敛, 自动续跑期望收益为零 —— reflow 读到它直接升人, 不写续跑锚。
-              writeFileSync(resultOut, `outcome: ${r.outcome}\nrunId: ${runId}\nacceptance: ${r.acceptance.kind}\n${autoCommitLine}\n${summarizeGoal(r)}`);
+              // criterion / expectExit 两行 (2026-09-03, 夜链 Q1②): 冻结判据原文给下游机械闸
+              // (autoresearch-promote 的「只贴测试文件也绿 = 判据虚」探针) —— 从散文里 grep 判据是
+              // 在猜, 头部键值不是。只在 executable 分型下出现, 缺席 = 没有可跑的判据。
+              const criterionLines =
+                r.acceptance.kind === 'executable'
+                  ? `criterion: ${r.acceptance.command}\nexpectExit: ${r.acceptance.expectExit}\n`
+                  : '';
+              writeFileSync(resultOut, `outcome: ${r.outcome}\nrunId: ${runId}\nacceptance: ${r.acceptance.kind}\n${criterionLines}${autoCommitLine}\n${summarizeGoal(r)}`);
             } catch (e) {
               logger.warn({ err: (e as Error).message, resultOut }, '[dag_goal] resultOut 写失败 (回流将看不到这跑)');
             }

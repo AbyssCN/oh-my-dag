@@ -14,7 +14,7 @@
  */
 import { z } from 'zod';
 import type { ModelUsage } from '../model/gateway';
-import { parallel, pipeline, loopUntil, adversarialVerify, judgePanel, type Verdict } from './primitives';
+import { parallel, pipeline, loopUntil, adversarialVerifyDetailed, judgePanel, type Verdict } from './primitives';
 import { runDiscoveryLoop } from './plan/discovery';
 import { runFixpoint } from './plan/fixpoint';
 
@@ -264,7 +264,7 @@ const verifyTemplate: PrimitiveTemplate<VerifyParams> = {
     return {
       maxUnits: n,
       run: async () => {
-        const survived = await adversarialVerify(
+        const { survived, verdicts } = await adversarialVerifyDetailed(
           params.claim,
           n,
           (lens) => async () =>
@@ -279,7 +279,8 @@ const verifyTemplate: PrimitiveTemplate<VerifyParams> = {
         if (params.gate && !survived) {
           throw new Error(`verify gate 拒: claim 未存活 — 「${params.claim.slice(0, 80)}」`);
         }
-        return { output: JSON.stringify({ claim: params.claim, survived, verifiers: n }), usage: ctx.usage() };
+        // verdicts = 逐席细账 (Q1③): survived:false 时下游能读到哪一席以什么理由否决, 不再只有一个 bool。
+        return { output: JSON.stringify({ claim: params.claim, survived, verifiers: n, verdicts }), usage: ctx.usage() };
       },
     };
   },

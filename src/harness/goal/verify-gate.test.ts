@@ -81,6 +81,10 @@ describe('GWT-4b INV-4 verify 无 gate + 假 leaf 恒判 refuted → run() 完�
     const { output } = await compiled.invocation.run();
     expect(output).toContain('"survived":false');
     expect(output).toContain(CLAIM);
+    // Q1③ (2026-09-03): 逐席细账随 output 出 —— 否决不再只是一个 bool。
+    const parsed = JSON.parse(output) as { verdicts: { lens: string; verdict: { refuted: boolean } | null }[] };
+    expect(parsed.verdicts.length).toBeGreaterThan(0);
+    expect(parsed.verdicts.every((v) => v.verdict?.refuted === true)).toBe(true);
   });
 
   test('gate 显式 false 行为与缺省相同 (闸向缺省对齐)', async () => {

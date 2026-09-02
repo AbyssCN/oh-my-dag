@@ -9,7 +9,7 @@
 import { describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { AggregatedFitness } from '../src/eval/replay/fitness';
 import type { CardResult, SessionsRunResult } from './autoresearch-night-sessions';
 import {
@@ -20,7 +20,13 @@ import {
   promote,
   type PromoteDeps,
   type PromoteOpts,
+  isForbiddenPath,
+  isTestPath,
+  defaultAuditCode,
+  type CodeAudit,
 } from './autoresearch-promote';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, writeFileSync } from 'node:fs';
 
 const OPTS: PromoteOpts = {
   cwd: '/tmp',
@@ -63,9 +69,15 @@ function codeResult(over: Partial<CardResult> = {}): CardResult {
     winnerIds: [],
     curve: [],
     wallMs: 2000,
-    branch: 'night/card-s3',
+    branch: 'omd/run/1111-2222',
+    criterion: { command: 'bun test src/x.test.ts', expectExit: 0 },
     ...over,
   };
+}
+
+/** 机械审计全绿: 分支在、改了两个文件、无禁改、判据在基线世界红。 */
+function greenAudit(over: Partial<CodeAudit> = {}): CodeAudit {
+  return { branchExists: true, files: ['src/x.ts', 'src/x.test.ts'], forbidden: [], testOnlyGreen: false, notes: ['探针: 退出码 1 (期望 0)'], ...over };
 }
 
 /** 注入: baseline / winner 各给一份读数, 护栏默认绿, artifact 写进 tmpdir。 */
@@ -78,6 +90,7 @@ function deps(
   const dir = mkdtempSync(join(tmpdir(), 'omd-promote-'));
   return {
     artifacts,
+    auditCode: async () => greenAudit(),
     evaluateHeldout: async (variant) => (variant === 'baseline' ? baseline : winner),
     runGuardrails: () => (guardOk ? { ok: true, detail: 'tsc 0' } : { ok: false, detail: 'tsc 退出 2' }),
     writeArtifact: (variant, _o, cardId) => {
@@ -211,23 +224,92 @@ describe('promote 三格判词', () => {
   });
 });
 
-describe('promote S3 卡 (无 held-out 可量, 判 solve 终态)', () => {
-  test('交付词表内 → promoted, artifact = 分支名', async () => {
+describe('promote S3 卡 (Q1 2026-09-03: 主目标量不出 → 永远 held; 机械审计分档给理由)', () => {
+  test('交付词表内 + 审计全绿 → 仍是 held (不是 promoted), artifact = 分支名, 理由说主目标未量', async () => {
     for (const outcome of SOLVE_DELIVERED_OUTCOMES) {
       const v = (await promote({ cards: [codeResult({ stopReason: outcome })] }, OPTS, deps(agg(), agg())))
         .verdicts[0]!;
-      expect(v.verdict).toBe('promoted');
-      expect(v.artifact).toBe('night/card-s3');
+      expect(v.verdict).toBe('held');
+      expect(v.artifact).toBe('omd/run/1111-2222');
       // delivered-with-red 原样带出词, 不抹成 success (红节点要人审)
       expect(v.reason).toContain(outcome);
+      expect(v.reason).toContain('planValidityRate 未量');
+      expect(v.reason).toContain('判据在基线世界红');
+      expect(v.audit?.testOnlyGreen).toBe(false);
     }
   });
 
-  test('not-converged → held (闸不是恒放行)', async () => {
-    const v = (await promote({ cards: [codeResult({ stopReason: 'not-converged' })] }, OPTS, deps(agg(), agg())))
-      .verdicts[0]!;
+  test('not-converged → held, 且不跑审计 (终态先于审计)', async () => {
+    let audited = 0;
+    const d = { ...deps(agg(), agg()), auditCode: async () => { audited += 1; return greenAudit(); } };
+    const v = (await promote({ cards: [codeResult({ stopReason: 'not-converged' })] }, OPTS, d)).verdicts[0]!;
     expect(v.verdict).toBe('held');
     expect(v.reason).toContain('not-converged');
+    expect(audited).toBe(0);
+  });
+
+  test('Q1④ 分支不存在 → held, 理由第一句是分支 (2026-09-02 夜: 记了 night/<id> 却从没建过)', async () => {
+    const d = { ...deps(agg(), agg()), auditCode: async () => greenAudit({ branchExists: false, files: [], notes: ['分支 omd/run/1111-2222 在盘上不存在'] }) };
+    const v = (await promote({ cards: [codeResult()] }, OPTS, d)).verdicts[0]!;
+    expect(v.verdict).toBe('held');
+    expect(v.reason).toMatch(/^分支缺席或不存在/);
+    expect(v.reason).toContain('主工作树');
+  });
+
+  test('results 无 branch (solve 没写 runId) → held, 不编分支名', async () => {
+    const d = { ...deps(agg(), agg()), auditCode: async () => greenAudit({ branchExists: false, notes: ['results.json 无 branch'] }) };
+    const v = (await promote({ cards: [codeResult({ branch: undefined })] }, OPTS, d)).verdicts[0]!;
+    expect(v.verdict).toBe('held');
+    expect(v.artifact).toBeUndefined();
+  });
+
+  test('Q1③ 触碰禁改路径 → held, 理由列出路径', async () => {
+    const d = { ...deps(agg(), agg()), auditCode: async () => greenAudit({ files: ['src/eval/replay/fitness.ts'], forbidden: ['src/eval/replay/fitness.ts'] }) };
+    const v = (await promote({ cards: [codeResult()] }, OPTS, d)).verdicts[0]!;
+    expect(v.verdict).toBe('held');
+    expect(v.reason).toMatch(/^触碰禁改路径/);
+    expect(v.reason).toContain('src/eval/replay/fitness.ts');
+  });
+
+  test('Q1② 判据虚 (只贴测试文件基线世界就绿) → held, 理由第一句是判据虚', async () => {
+    const d = { ...deps(agg(), agg()), auditCode: async () => greenAudit({ testOnlyGreen: true }) };
+    const v = (await promote({ cards: [codeResult()] }, OPTS, d)).verdicts[0]!;
+    expect(v.verdict).toBe('held');
+    expect(v.reason).toMatch(/^判据虚/);
+    expect(v.reason).toContain('bun test src/x.test.ts');
+  });
+
+  test('探针没探成 (null) → 仍 held, 理由带 notes 原文 (缺席 ≠ 绿)', async () => {
+    const d = { ...deps(agg(), agg()), auditCode: async () => greenAudit({ testOnlyGreen: null, notes: ['result-out 无 criterion 头'] }) };
+    const v = (await promote({ cards: [codeResult({ criterion: undefined })] }, OPTS, d)).verdicts[0]!;
+    expect(v.verdict).toBe('held');
+    expect(v.reason).toContain('判据虚探针未探成 (result-out 无 criterion 头)');
+  });
+
+  test('审计自身抛错 → skipped 带错误原文 (永不抛, 不带走整夜报告)', async () => {
+    const d = { ...deps(agg(), agg()), auditCode: async () => { throw new Error('git 炸了'); } };
+    const v = (await promote({ cards: [codeResult()] }, OPTS, d)).verdicts[0]!;
+    expect(v.verdict).toBe('skipped');
+    expect(v.reason).toContain('git 炸了');
+  });
+});
+
+describe('S3 审计的两张判定表 (正反各一)', () => {
+  test('isForbiddenPath: 四类禁改路径命中, 相邻路径不命中', () => {
+    for (const f of ['docs/plan/autoresearch-objective.md', 'src/eval/replay/fitness.ts', 'runs/autoresearch/corpus/x.json', 'scripts/autoresearch-promote.ts']) {
+      expect(isForbiddenPath(f)).toBe(true);
+    }
+    for (const f of ['docs/plan/autoresearch-objective.md.bak', 'src/eval/replay.ts', 'runs/autoresearch/night-2026-09-02/morning.md', 'scripts/speedup-readout.ts']) {
+      expect(isForbiddenPath(f)).toBe(false);
+    }
+  });
+  test('isTestPath: 测试文件命中, 实装不命中', () => {
+    for (const f of ['src/x.test.ts', 'tests/shape_id_propagation.test.ts', 'test/setup/x.ts', 'src/__tests__/a.tsx', 'pkg/test_a.py', 'pkg/a_test.py']) {
+      expect(isTestPath(f)).toBe(true);
+    }
+    for (const f of ['src/x.ts', 'scripts/speedup-readout.ts', 'src/harness/testing-utils.ts', 'docs/tests.md']) {
+      expect(isTestPath(f)).toBe(false);
+    }
   });
 });
 
@@ -240,7 +322,7 @@ describe('promote 批级', () => {
       ],
     };
     const r = await promote(results, OPTS, deps(agg(), agg()));
-    expect(r.verdicts.map((v) => `${v.cardId}:${v.verdict}`)).toEqual(['a:skipped', 'b:promoted']);
+    expect(r.verdicts.map((v) => `${v.cardId}:${v.verdict}`)).toEqual(['a:skipped', 'b:held']);
     expect(r.date).toBe('2026-09-02');
   });
 
@@ -267,3 +349,97 @@ describe('promote 批级', () => {
  * ⚠ 「-Inf 而不是 0」那条用例是**证伪试出来的**, 不是一开始就想到的: 第一版只测 baseline=1.5,
  *   而在那个点上两种投影判词相同, 于是 `return 0` 跑出 0 fail —— 一道当时读不出的假闸。
  */
+
+
+// ── defaultAuditCode 真 git 仓证伪 (新闸必须当场证伪一次) ─────────────────────────────────
+
+/** 临时 git 仓: main 一个提交; 返回 git 助手。 */
+function tmpRepo(): { cwd: string; git: (...a: string[]) => string } {
+  const cwd = mkdtempSync(join(tmpdir(), 'omd-audit-repo-'));
+  const git = (...a: string[]): string => {
+    const r = spawnSync('git', a, { cwd, encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } });
+    if (r.status !== 0) throw new Error(`git ${a.join(' ')}: ${r.stderr}`);
+    return r.stdout;
+  };
+  git('init', '-q', '-b', 'main');
+  mkdirSync(join(cwd, 'src'), { recursive: true });
+  writeFileSync(join(cwd, 'src', 'base.txt'), 'base\n');
+  git('add', '.');
+  git('commit', '-q', '-m', 'base');
+  return { cwd, git };
+}
+
+/** 在分支上加文件并提交, 回到 main。 */
+function branchWith(repo: ReturnType<typeof tmpRepo>, branch: string, files: Record<string, string>): void {
+  repo.git('checkout', '-q', '-b', branch);
+  for (const [f, body] of Object.entries(files)) {
+    mkdirSync(dirname(join(repo.cwd, f)), { recursive: true });
+    writeFileSync(join(repo.cwd, f), body);
+  }
+  repo.git('add', '.');
+  repo.git('commit', '-q', '-m', branch);
+  repo.git('checkout', '-q', 'main');
+}
+
+describe('defaultAuditCode (真 git 仓)', () => {
+  const opts = (cwd: string): PromoteOpts => ({ ...OPTS, cwd });
+
+  test('Q1④ 分支不存在 → branchExists=false, notes 说明', async () => {
+    const repo = tmpRepo();
+    const a = await defaultAuditCode(codeResult({ branch: 'omd/run/nope' }), opts(repo.cwd));
+    expect(a.branchExists).toBe(false);
+    expect(a.notes.join(' ')).toContain('omd/run/nope 在盘上不存在');
+    expect(a.testOnlyGreen).toBeNull();
+  });
+
+  test('Q1② 判据虚: 分支的测试文件不看实装 (2026-09-02 卡 2 同形) → testOnlyGreen=true', async () => {
+    const repo = tmpRepo();
+    branchWith(repo, 'omd/run/vacuous', {
+      'tests/check.sh': 'exit 0\n', // 「测试」恒绿, 与实装无关
+      'src/impl.txt': 'impl\n',
+    });
+    const a = await defaultAuditCode(
+      codeResult({ branch: 'omd/run/vacuous', criterion: { command: 'bash tests/check.sh', expectExit: 0 } }),
+      opts(repo.cwd),
+    );
+    expect(a.branchExists).toBe(true);
+    expect(a.files.sort()).toEqual(['src/impl.txt', 'tests/check.sh']);
+    expect(a.forbidden).toEqual([]);
+    expect(a.testOnlyGreen).toBe(true);
+    // 探针世界已清: 主仓 worktree 列表里没有残留
+    expect(repo.git('worktree', 'list')).not.toContain('omd-promote-probe-');
+  });
+
+  test('判据真: 测试真依赖实装 → 只贴测试文件时红 → testOnlyGreen=false', async () => {
+    const repo = tmpRepo();
+    branchWith(repo, 'omd/run/real', {
+      'tests/check.sh': 'test -f src/impl.txt\n',
+      'src/impl.txt': 'impl\n',
+    });
+    const a = await defaultAuditCode(
+      codeResult({ branch: 'omd/run/real', criterion: { command: 'bash tests/check.sh', expectExit: 0 } }),
+      opts(repo.cwd),
+    );
+    expect(a.testOnlyGreen).toBe(false);
+    expect(a.notes.join(' ')).toContain('退出码 1 (期望 0)');
+  });
+
+  test('分支没改测试文件且判据在基线世界本来就绿 → 同样 testOnlyGreen=true (判据从没红过)', async () => {
+    const repo = tmpRepo();
+    branchWith(repo, 'omd/run/nochange', { 'src/impl.txt': 'impl\n' });
+    const a = await defaultAuditCode(
+      codeResult({ branch: 'omd/run/nochange', criterion: { command: 'test -f src/base.txt', expectExit: 0 } }),
+      opts(repo.cwd),
+    );
+    expect(a.testOnlyGreen).toBe(true);
+    expect(a.notes.join(' ')).toContain('0 个测试文件');
+  });
+
+  test('Q1③ 禁改路径进 forbidden', async () => {
+    const repo = tmpRepo();
+    branchWith(repo, 'omd/run/cheat', { 'src/eval/replay/fitness.ts': 'x', 'src/ok.ts': 'y' });
+    const a = await defaultAuditCode(codeResult({ branch: 'omd/run/cheat', criterion: undefined }), opts(repo.cwd));
+    expect(a.forbidden).toEqual(['src/eval/replay/fitness.ts']);
+    expect(a.testOnlyGreen).toBeNull(); // 无 criterion 头 → 探针不适用, 不编一个绿
+  });
+});

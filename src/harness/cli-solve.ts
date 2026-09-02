@@ -59,6 +59,12 @@ export interface ParsedSolveArgs {
   budgetTokens?: number;
   /** `--tier simple|complex`。 */
   tier?: 'simple' | 'complex';
+  /**
+   * `--branch-strategy branch|head` (2026-09-03, 夜链 Q1④)。此前 CLI 不认这个 flag: 调用方传了
+   * 也被静默丢掉, 写落在主工作树, 而调用方以为在隔离分支上 —— 参数矩阵空格 (与 goal-worker
+   * 2026-08-10 那次同形)。词表与 worker / `solve` MCP 一致; 别的值 (如 `worktree`) 响亮拒。
+   */
+  branchStrategy?: 'branch' | 'head';
   /** usage 错误信息;在场 → INV-4 响亮退出,零 spawn。 */
   usageError?: string;
 }
@@ -98,6 +104,8 @@ export function parseSolveArgs(args: string[], defaultCwd = process.cwd()): Pars
   const resultOut = flagValue(args, '--result-out') ?? join(cwd, '.omd', 'solve-results', `${ts}.md`);
   const tierRaw = flagValue(args, '--tier');
   const tier = tierRaw === 'simple' || tierRaw === 'complex' ? tierRaw : undefined;
+  const branchRaw = flagValue(args, '--branch-strategy');
+  const branchStrategy = branchRaw === 'branch' || branchRaw === 'head' ? branchRaw : undefined;
 
   if (!goal && !sdd) {
     return {
@@ -116,6 +124,15 @@ export function parseSolveArgs(args: string[], defaultCwd = process.cwd()): Pars
       usageError: `--tier 必须是 simple 或 complex,收到: ${tierRaw}`,
     };
   }
+  if (branchRaw !== undefined && !branchStrategy) {
+    return {
+      goal,
+      ...(sdd ? { sdd } : {}),
+      cwd,
+      resultOut,
+      usageError: `--branch-strategy 必须是 branch 或 head,收到: ${branchRaw}`,
+    };
+  }
   return {
     ...(goal ? { goal } : {}),
     ...(sdd ? { sdd } : {}),
@@ -125,6 +142,7 @@ export function parseSolveArgs(args: string[], defaultCwd = process.cwd()): Pars
     ...(intFlag(args, '--budget-minutes') !== undefined ? { budgetMinutes: intFlag(args, '--budget-minutes')! } : {}),
     ...(intFlag(args, '--budget-tokens') !== undefined ? { budgetTokens: intFlag(args, '--budget-tokens')! } : {}),
     ...(tier ? { tier } : {}),
+    ...(branchStrategy ? { branchStrategy } : {}),
   };
 }
 
@@ -215,6 +233,8 @@ export async function runSolveCLI(args: string[], deps: SolveCliDeps = {}): Prom
     ...(parsed.budgetMinutes !== undefined ? ['--budget-minutes', String(parsed.budgetMinutes)] : []),
     '--result-out', parsed.resultOut,
     ...(parsed.sdd ? ['--sdd-path', parsed.sdd] : []),
+    // 不转发这一格 = 调用方以为在分支上而写落主树 (Q1④ 实例: 夜链 2026-09-02 两卡)。
+    ...(parsed.branchStrategy ? ['--branch-strategy', parsed.branchStrategy] : []),
   ];
 
   let handle: SolveSpawnHandle;
@@ -250,5 +270,6 @@ export async function runSolveCLI(args: string[], deps: SolveCliDeps = {}): Prom
 /** USAGE 一行 (cli.ts 内 USAGE 多行的 +1)。刻意保持薄,与 cli.ts 现有 USAGE 风格一致。 */
 export const USAGE = `  omd solve "<goal>" [--sdd <path>] [--cwd <dir>] [--result-out <path>]
                  [--max-rounds N] [--budget-minutes N] [--budget-tokens N] [--tier simple|complex]
+                 [--branch-strategy branch|head]
                  headless autonomous run (bench/CI 入口面);<goal> 与 --sdd 至少其一必填
 `;

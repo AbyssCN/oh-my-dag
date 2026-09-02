@@ -67,8 +67,15 @@ export interface CardResult {
   mainObjective: FitnessField;
   sessionId?: string;
   runId?: string;
-  /** ✎ 同为加项: D-5 要求 S3 晋升「记分支名」, 而分支名只有跑的人知道。 */
+  /**
+   * ✎ 同为加项: D-5 要求 S3 晋升「记分支名」, 而分支名只有跑的人知道。
+   * 2026-09-03 (Q1④): 名字从 solve 的 runId 派生 (`omd/run/<runId>`, 引擎 prepareRunWorktree 的真名),
+   * 不再自己编 `night/<cardId>` —— 那个名字从来没有对应的分支, 晋升闸对着空名判了两夜。
+   * runId 读不到就缺席 (缺席 ≠ 空串: 晋升闸把缺席判 held)。
+   */
   branch?: string;
+  /** solve 冻结的可执行判据 (result-out 头 `criterion:` / `expectExit:`), 晋升闸的判据虚探针要它。 */
+  criterion?: { command: string; expectExit: number };
   stopReason: string;
   winnerIds: string[];
   curve: CurvePoint[];
@@ -205,11 +212,31 @@ async function defaultRunEvolve(
   return evolveResultToCard(card, r);
 }
 
-/** solve 的 result-out 首两行是 `outcome:` / `runId:` (见 runs/autoresearch/*-result.json)。 */
-export function parseSolveResult(text: string): { outcome: string; runId?: string } {
+/**
+ * solve 的 result-out 头是键值行: `outcome:` / `runId:` / `acceptance:` / (executable 时) `criterion:` +
+ * `expectExit:` (见 runs/autoresearch/*-result.json 与 `src/mcp/tools/goal.ts` 的写侧)。
+ */
+export function parseSolveResult(text: string): {
+  outcome: string;
+  runId?: string;
+  criterion?: { command: string; expectExit: number };
+} {
   const outcome = /^outcome:\s*(\S+)/m.exec(text)?.[1] ?? 'unclassified';
   const runId = /^runId:\s*(\S+)/m.exec(text)?.[1];
-  return runId === undefined ? { outcome } : { outcome, runId };
+  const command = /^criterion:\s*(.+)$/m.exec(text)?.[1]?.trim();
+  const expectRaw = /^expectExit:\s*(-?\d+)/m.exec(text)?.[1];
+  const criterion =
+    command && expectRaw !== undefined ? { command, expectExit: Number(expectRaw) } : undefined;
+  return {
+    outcome,
+    ...(runId === undefined ? {} : { runId }),
+    ...(criterion === undefined ? {} : { criterion }),
+  };
+}
+
+/** S3 分支真名 = 引擎 prepareRunWorktree 的命名 (`src/mcp/tools/goal.ts` 回执里的 `omd/run/<runId>`)。 */
+export function solveBranchName(runId: string): string {
+  return `omd/run/${runId}`;
 }
 
 /** S3: 子进程 solve, worktree 分支 (D-4)。 */
@@ -219,7 +246,6 @@ async function defaultRunCode(
 ): Promise<Omit<CardResult, 'wallMs'>> {
   const resultOut = join(opts.nightDir, `${card.id}-result.json`);
   mkdirSync(dirname(resultOut), { recursive: true });
-  const branch = `night/${card.id}`;
   const r = spawnSync(
     'bun',
     [
@@ -231,8 +257,10 @@ async function defaultRunCode(
       String(card.budgetMinutes),
       '--result-out',
       resultOut,
+      // 词表是 branch|head (与 solve MCP 同源); 此前传的 `worktree` 不在词表里, 而旧 CLI 又不认这个
+      // flag, 于是被静默丢掉 → 写落主树 (2026-09-02 夜两卡)。现在 CLI 认 flag 且非法值响亮拒。
       '--branch-strategy',
-      'worktree',
+      'branch',
     ],
     { cwd: opts.cwd, encoding: 'utf8', timeout: card.budgetMinutes * 60_000 },
   );
@@ -245,8 +273,8 @@ async function defaultRunCode(
     stopReason: parsed.outcome,
     winnerIds: [],
     curve: [],
-    branch,
-    ...(parsed.runId ? { runId: parsed.runId } : {}),
+    ...(parsed.runId ? { runId: parsed.runId, branch: solveBranchName(parsed.runId) } : {}),
+    ...(parsed.criterion ? { criterion: parsed.criterion } : {}),
   };
   if (text === '') {
     return { ...base, error: `solve 没写出 result-out (${resultOut}); 退出码 ${r.status ?? 'null'}` };

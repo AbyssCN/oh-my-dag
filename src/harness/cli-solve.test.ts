@@ -122,6 +122,7 @@ describe('cli-solve: INV-2 参数透传保真 (GWT-2)', () => {
       '--budget-minutes', '45',
       '--budget-tokens', '9000',
       '--result-out', resultOut,
+      '--branch-strategy', 'branch',
     ];
     const code = await runSolveCLI(args, { spawn: fake });
     expect(code).toBe(0);
@@ -138,6 +139,8 @@ describe('cli-solve: INV-2 参数透传保真 (GWT-2)', () => {
     expect(map.get('--max-rounds')).toBe('3');
     expect(map.get('--budget-minutes')).toBe('45');
     expect(map.get('--budget-tokens')).toBe('9000');
+    // Q1④ (2026-09-03): 这一格此前不认也不转发 → 调用方以为在分支上而写落主树 (夜链 2026-09-02 两卡)。
+    expect(map.get('--branch-strategy')).toBe('branch');
     expect(map.get('--result-out')).toBe(resultOut);
     expect(map.get('--run-id')).toBeDefined(); // runId 必生成 (UUID)
   });
@@ -202,6 +205,14 @@ describe('cli-solve: INV-4 缺参响亮 (GWT-6)', () => {
     const snap = snapStderr();
     expect(snap).toContain('omd solve:');
     expect(snap).toContain('goal 与 --sdd');
+  });
+
+  test('--branch-strategy 非法值 (如夜链旧写法 worktree) → usage 退出非零 + 零 spawn, 不再静默丢', async () => {
+    const fake = makeFakeSpawn('/tmp/never.md', 'skip');
+    const code = await runSolveCLI(['probe', '--branch-strategy', 'worktree'], { spawn: fake });
+    expect(code).not.toBe(0);
+    expect(fake.capture.calls).toBe(0);
+    expect(snapStderr()).toContain('--branch-strategy 必须是 branch 或 head');
   });
 
   test('--tier 非法值 → usage 退出非零 + 零 spawn', async () => {

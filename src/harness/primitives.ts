@@ -130,14 +130,35 @@ export async function adversarialVerify(
   verify: (lens: string) => LeafFn<Verdict>,
   customLenses?: string[],
 ): Promise<boolean> {
+  return (await adversarialVerifyDetailed(claim, n, verify, customLenses)).survived;
+}
+
+/** 一位 verifier 的细账: 视角 + 判词 (null = 这一位抛错/没回, 计为不支持)。 */
+export interface LensVerdict {
+  lens: string;
+  verdict: Verdict | null;
+}
+
+/**
+ * `adversarialVerify` 的细账版 (2026-09-03, 夜链 Q1③): 只回 boolean 时, 「哪位 verifier 以什么
+ * 理由否决」在出口就丢了 —— 下游 (晨报 / 人审) 拿到 `survived:false` 却无从追账。判词逻辑一字不动:
+ * 未被驳倒的席位 ≥ ⌈n/2⌉ 即存活。
+ */
+export async function adversarialVerifyDetailed(
+  claim: string,
+  n: number,
+  verify: (lens: string) => LeafFn<Verdict>,
+  customLenses?: string[],
+): Promise<{ survived: boolean; verdicts: LensVerdict[] }> {
   if (!claim) throw new Error('adversarialVerify: claim required');
   if (n <= 0) throw new Error('adversarialVerify: n must be >= 1');
   // 显式 lenses(研究侧深化, SDD 0013 S3)优先; 否则轮转内置 DEFAULT_LENSES。
   const pool = customLenses && customLenses.length > 0 ? customLenses : DEFAULT_LENSES;
   const lenses = Array.from({ length: n }, (_, i) => pool[i % pool.length]!);
-  const verdicts = await parallel(lenses.map((lens) => verify(lens)));
-  const notRefuted = verdicts.filter((v): v is Verdict => v !== null && !v.refuted).length;
-  return notRefuted >= Math.ceil(n / 2);
+  const raw = await parallel(lenses.map((lens) => verify(lens)));
+  const verdicts = lenses.map((lens, i) => ({ lens, verdict: raw[i] ?? null }));
+  const notRefuted = raw.filter((v): v is Verdict => v !== null && !v.refuted).length;
+  return { survived: notRefuted >= Math.ceil(n / 2), verdicts };
 }
 
 /**
