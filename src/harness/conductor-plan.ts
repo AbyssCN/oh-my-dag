@@ -172,56 +172,7 @@ const PlanNode = z
     // 'conductor' (P3 D-G′/批次 3) = 运行时**异构**展开: 现场让 conductor 画一张子图再局部调度。
     //   与 map 的分工: map 扇的是**同一件事的 N 份** (模板 + 运行时清单); conductor 展的是
     //   **一件事的若干不同步骤** (各有各的 goal/executor/依赖) —— 那是模板表达不了的形状。
-    executor: z.enum(['agent', 'leaf', 'command', 'map', 'research', 'conductor', 'await']).optional(),
-    /**
-     * executor='conductor' 的子图节点数硬顶 (D-B/D-D 展开闸)。缺省见 DEFAULT_MAX_CHILDREN=64,
-     * 与 map 的 maxItems 同一个数 —— 没有证据支持给它一个不同的值。
-     */
-    max_nodes: z.number().int().min(1).max(64).optional(),
-    /**
-     * executor='conductor' 的**内环轮数上限** (P3 D-A)。缺省 1 = 展开一次就结束, **零回归**。
-     *
-     * >1 时环的语义是**逐轮重展开**, 不是"重跑同一张子图": 每轮把上一轮的失败原因喂回给
-     * conductor, 让它**重新画**。这条区分是环的全部价值所在 —— 重跑同一张图只能把同样的活
-     * 再干一遍, 重新画才能补一个上一轮压根没有的步骤 (D-G′ 说的「补调研」正是这个形状:
-     * 不需要回边, 因为每一轮都是一张全新的无环子图)。
-     *
-     * INV-GOAL-4 有界: 不允许"跑到满意为止"。
-     */
-    max_rounds: z.number().int().min(1).max(4).optional(),
-    /**
-     * executor='conductor' 的**终轮必判** (P3 D-F, 2026-07-30)。缺省 false = 零回归。
-     *
-     * 环内的 judge 本来只为"要不要再画一轮"服务, 所以最后一轮 (含 `max_rounds:1`) 不请它 ——
-     * 判了也没有下一轮可去, 白花一次贵座调用。但**撤掉外层 fixpoint 之后** (D-F), 「整体目标
-     * 成了吗」这个问题就没有别的层来问了: 调用方 (如 goal 引擎决定 `dag_goal` 记 succeed 还是
-     * fail) 拿不到裁决, 只能拿"跑完了"当"成了", 那正是谎报完成最舒服的入口。
-     *
-     * 置 true = 最后一轮也判一次, 裁决经 `LeafResult.converged` 带给调用方。代价是一次 judge
-     * 调用 (~1100 out tok / ~17s 实测)。**刻意不进 conductor 的图式引导** —— 这是程序构造节点
-     * 时用的旋钮 (谁要裁决谁自己开), 不是让规划者随手打开的东西。
-     */
-    judge_final: z.boolean().optional(),
-    /**
-     * **图内 fan-in 检测者** (P3 D-Q, 2026-07-30)。缺省 false = 零回归。
-     *
-     * 置 true = 本节点的输出按**检测者协议**读 (`REJECT: <id>` / `BLOCKED: <原因>`,
-     * 见 plan/detector.ts): 点名的兄弟节点直接进内环毒集, `BLOCKED:` 让环提前退出等外部输入。
-     * 它补的是 D-Q 说的那个洞 —— 普通节点只看得见自己的 depends_on, 而一个 fan-in 节点天然
-     * 看得见一批兄弟的产出, 缺的只是让它的判断**落进环**而不是留成一段没人读的文字。
-     *
-     * 只在 **conductor 节点展开出来的子图里**生效 (环在那儿); 设在别处引擎会 WARN 而不改变执行
-     * (明示即承诺的反面守卫, 同 expect_exit)。首选 `executor:'command'` —— 确定性 oracle 说
-     * "谁坏了"比再请一次 LLM 既便宜又可信; 它点名要用**规划期的可读 id** (命令串写死在规划期,
-     * 那时内容寻址 id 还不存在, 引擎负责翻译 —— 见 plan/detector.ts 的 aliases)。
-     *
-     * ⚠ **进 conductor 的明示形状是被迫的** (2026-07-30 当天推翻了自己前一版的"刻意不明示"):
-     * 它只在 conductor 自己画的子图里有消费者, 而子图只有 conductor 画得出来 —— 不告诉它,
-     * 这个字段就没有任何生产者, 那正是本仓一直在猎杀的空旋钮形态 (要么给生产者, 要么删掉,
-     * 中间态最坏)。代价用 prompt 里**比 when 更长的 whenNot** 压: 能用 command oracle 直接判的
-     * 别用它、只有一个产出节点的别用它、"这东西好不好"是轮末 judge 的活不是它的。
-     */
-    detector: z.boolean().optional(),
+    executor: z.enum(['agent', 'leaf', 'command', 'map', 'research', 'await']).optional(),
     /** executor='command' 时要跑的确定性 CLI (如 'codegraph trace X Y')。经 fail-closed 闸 + 白名单。 */
     command: z.string().optional(),
     /**
@@ -623,14 +574,13 @@ export function bareConductorSystemPrompt(): string {
     '{ "name": string, "description"?: string, "outputs"?: string[],',
     '  "nodes": { "<node_id>": {',
     '    "goal"?: string, "depends_on"?: string[],',
-    '    "executor"?: "leaf"|"agent"|"command"|"map"|"research"|"conductor"|"await",',
+    '    "executor"?: "leaf"|"agent"|"command"|"map"|"research"|"await",',
     '    "command"?: string, "expect_exit"?: number, "expect_output"?: string,',
     '    "output_type"?: "structured"|"file"|"git"|"none", "output_path"?: string,',
     '    "content_bytes"?: number, "requires"?: "all"|"any"|number, "cluster"?: string,',
     '    "tier"?: "strong"|"mid"|"cheap", "attach_media"?: boolean, "creative"?: boolean,',
     '    "persona"?: string, "profile"?: string, "template"?: string, "mcp"?: string[],',
-    '    "max_nodes"?: number, "max_rounds"?: number, "max_retry"?: number,',
-    '    "detector"?: boolean, "judge_final"?: boolean,',
+    '    "max_retry"?: number,',
     '    "self_check"?: { "command": string, "expect_exit"?: number, "expect_output"?: string },',
     '    "kind"?: "primitive",',
     '    "primitive"?: "parallel"|"pipeline"|"loop-until"|"verify"|"judge"|"discovery"|"iterate"|"tournament"|"router"|"race"|"escalation"|"saga"|"escape-hatch",',
@@ -850,19 +800,13 @@ export function conductorSystemPrompt(
     '- "map"  = runtime dynamic fan-out (field "map"): a lister enumerates an array AT RUNTIME, then a',
     '            per-element template spawns one child per item. Use when the work-list is unknown until run',
     '            time (see the "Runtime work-list" section below).',
-    '- "conductor" = runtime HETEROGENEOUS decomposition: when it runs, it plans its own sub-graph and',
-    '            schedules it. Use ONLY when HOW to break this step up depends on what upstream produces',
-    '            ("decide the split after reading the research"). Costs one extra planning call plus a',
-    '            layer of indirection — if you can name the steps NOW, name them now instead. Not for',
-    '            "the same thing N times" (that is "map"). Its children may NOT be map/conductor.',
-    '            See the runtime-decomposition shape below for when NOT to use it.',
     // #2 (2026-08-30): await 此前在默认三档里一个字都没有 (词表 0 + 散文 0) —— 整个产出面缺席。
     // spec 与 executor:'await' **互为 required** (superRefine, :376), 所以词表明示了就必须同时
     // 给出 spec 的形状, 否则模型写出的 await 节点整张 plan 判 INVALID。
     '- "await" = park until ANOTHER run publishes that artifact to the run-board, then git-merge its',
     '            commit (field "await": {"artifact", "fromRun"?, "timeoutMs"?} — REQUIRED with it). Use',
     '            ONLY when a separate run owns the artifact; nothing in THIS graph can unpark it.',
-    'Default to "leaf" unless the node needs tools/CLI/web. Only "map"/"conductor" spawn DAG sub-nodes.',
+    'Default to "leaf" unless the node needs tools/CLI/web. Only "map" spawns DAG sub-nodes.',
     'HARD RULE — file producers MUST be "agent": if a node CREATES or MODIFIES any file (its job is to',
     '  implement/write/生成 a path like src/x.ts), it MUST set executor:"agent" AND output_type:"file"',
     '  (set output_path too). A "leaf" CANNOT touch the filesystem — a leaf told to write a file silently',
@@ -893,7 +837,7 @@ export function conductorSystemPrompt(
     '  "command" node feeding a "leaf" via depends_on — content reaches the leaf prompt at',
     '  one-time cost. Keep "agent" for nodes that must DECIDE what to read next from content, modify',
     '  files, or run verification. Explore-then-hand-off: an agent/lister may LOCATE, but re-reading goes',
-    '  to command+leaf pairs (via executor:"conductor" when the list exists only at run time). Optional',
+    '  to command+leaf pairs (via a "map" node when the list exists only at run time). Optional',
     '  field "content_bytes" (estimated bytes the node must ingest) helps the engine pick the route.',
     '  KEEP PER-SOURCE IDENTITY when reading many files: ONE file per node ("cat <path>", e.g. a map',
     '  template over the list), or if you must bundle, use "tail -v -n +1 <paths>" which prints an',
@@ -972,41 +916,6 @@ export function conductorSystemPrompt(
     '- impl / drafting → senior practitioner + a stance, e.g. "资深 Bun/TS 工程师 (删减优先, 最小接口)".',
     '- mechanical / file / command → OMIT persona (framing adds nothing, just wastes tokens).',
         ]),
-    // D-Q 检测者。**只在 conductor 节点自己画的子图里**有消费者 (环在那儿) —— 顶层图上设了引擎
-    // 会 WARN 并忽略。2026-07-30 撞出来的教训: 一个只有 conductor 能放、却又不告诉 conductor 的
-    // 字段, 就是没有生产者的空旋钮。所以要么明示它, 要么删掉它 —— 中间态最坏。
-    // whenNot 写得比 when 更长是刻意的 (同 runtime-decomposition 图式): 检测者是**额外一个节点**,
-    // 默认不该有; 只在"几段产出必须相互对得上"这个 command oracle 表达不了的形状上才划算。
-    // 2026-07-30 实测 (n=12, scripts/eval-detector-usage.ts): 上一版把这段写成"能力介绍",
-    // 结果是**形状率 92% / 使用率 8%** —— conductor 几乎每次都画了那个交叉检查节点, 却几乎从不
-    // 标那个字段 (缺口 83%)。所以这一版改成**挂在它已经会画的形状上的祈使句**: 先说"你只要画了
-    // 这种节点就必须标", 再说它是干什么的。滥用率上一版是 0%, whenNot 因此收成一行。
-    // 第三版 (2026-07-30 下午): 第二版留下的 20% 缺口**不是"忘了写字段"**, 读原始 plan 看到的是
-    // 三条各不相同的因, 这一版逐条堵:
-    //   ① prompt **自相矛盾**: 「PREFER command 检测者」对上「有 command oracle 就别加 detector」——
-    //      模型自己手写了个 `node -e` 比对命令, 于是判定"我已经有 oracle 了", 不标。那句 whenNot
-    //      本意是"现成的项目检查 (tsc/test)", 却被读成"任何命令"。→ 收窄成 OFF-THE-SHELF, 并正面
-    //      说清: **手写的比对命令本身就是检测者**, 自己写了比较逻辑不替代这个字段, 恰恰需要它。
-    //   ② 「让节点失败 / exit 1」被当成反馈通道 (两个样本都这么写)。→ 明说裁决是**印出来的那一行**,
-    //      不是退出码。(引擎侧同日补了网: 失败检测者印出的裁决不再被吞 —— 但那是兜底, 不是正路。)
-    //   ③ 滥用的唯一形态: **单产出**的"完备性/质量 review"被标 detector (n=15 里 2 次, 两次都只
-    //      依赖 1 个产出节点)。→ ≥2 从"触发条件"提成**硬前提** (NEVER), 与轮末 judge 划清界。
-    'RULE — if you draw a node that depends on ≥2 sibling nodes in order to CHECK WHETHER THEY AGREE',
-    '(consistency / no-conflict / same-assumptions / cross-check), you MUST put "detector": true on it.',
-    'This holds however you implement it: a hand-written `node -e` / grep / diff command that compares the',
-    'siblings IS the detector — writing the comparison yourself does not replace the field, it is what needs it.',
-    'Without that field its findings are just text nobody acts on; with it the engine reads its output as',
-    'a VERDICT and feeds it back into the loop:',
-    '  `REJECT: <sibling node id>`  → that sibling\'s output is not accepted; the loop redoes it next round',
-    '  `BLOCKED: <one-line reason>` → no amount of retrying helps without outside input; the loop stops',
-    'Name siblings by the ids YOU write in this plan (the engine translates them to runtime ids).',
-    'The verdict is what you PRINT, not the exit code — print those lines and exit 0. Failing the node',
-    'on a conflict is not the channel; it just adds a red node the loop then has to explain away.',
-    'PREFER executor:"command" (`echo "REJECT: <that id>"` is deterministic and cheaper than a model call);',
-    'a "leaf" detector works too. It only has an effect inside a conductor node\'s OWN sub-graph.',
-    'NEVER put "detector" on a node with fewer than 2 producing dependencies: a single-producer',
-    '"is it complete / is it good?" review is the ROUND JUDGE\'s job, and marking it just wastes a node.',
-    'Also skip it when an OFF-THE-SHELF project check already decides (tsc / lint / `bun test`).',
     'Keep the graph acyclic.',
     ...roster,
     ...templateSection,
@@ -1049,16 +958,7 @@ export function conductorSystemPrompt(
     // zod 全量枚举对齐。此前默认三档 (full/lean/lean-kb) 的这一行漏了这两个值, 而散文段教了
     // research 13 处、await 0 处 ⇒ 两个 100% 建成的执行器 (engine runResearch / runAwaitNode)
     // 在 114 份存档 plan 里产出 0 次。只补词表, zod 值域 (:156) 本来就收这两个值, 未动。
-    '    "args"?: object, "depends_on"?: string[], "executor"?: "leaf"|"agent"|"command"|"map"|"research"|"conductor"|"await", "command"?: string, "expect_exit"?: number, "expect_output"?: string, "creative"?: boolean,',
-    // detector 进形状 (2026-07-30): 散文里提一嘴不算明示 —— 「明示即承诺」的闸判的就是这份
-    // **conductor 照抄的形状**, 而不在形状里的字段它基本不会写。放在 max_nodes 旁边是因为两者
-    // 同属"子图那一层"的东西 (顶层图上设 detector 引擎会 WARN 并忽略)。
-    // v4 (2026-07-30 第三臂): v3 的三条散文修完, 缺口里 4/6 仍是**手写 node -e 比对 + 冲突退出 1**,
-    // 2/6 是没有裁决通道的文字比对 —— 也就是散文一条都没转化掉。所以把约束挂到它**逐字照抄的
-    // 那一行**上: 模型写每个节点时对着的是这份形状, 不是 40 行以上的字段说明墙。
-    // 刻意不用 `//` 注释: 这份形状里一条注释都没有, 引进注释语法等于邀请它在输出的 JSON 里也写
-    // 注释 (那会直接解析失败)。用括号补语, 与 "requires"?: "all"|"any"|number 同一个 register。
-    '    "max_nodes"?: number, "detector"?: boolean (MUST be true on any node that cross-checks ≥2 siblings),',
+    '    "args"?: object, "depends_on"?: string[], "executor"?: "leaf"|"agent"|"command"|"map"|"research"|"await", "command"?: string, "expect_exit"?: number, "expect_output"?: string, "creative"?: boolean,',
     // #248 (2026-08-24): S1 四字段进 shape (former declaredFields 正则只认 [a-z_]+, 物理不可见
     // camelCase —— D-5 改正则)。oracleKind 枚举措辞与 PlanSchema zod 一致;budgetBasis 字段名
     // 全用 zod 的字面 (不带引号的外键也算 shape 的形状契约)。每字段一行 when/whenNot 短注,

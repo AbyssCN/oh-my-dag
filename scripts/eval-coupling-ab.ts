@@ -61,7 +61,9 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { createAgentLeafRunner } from '../src/harness/agent-leaf';
 import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from '../src/harness/command-leaf';
 import type { ConductorPlan } from '../src/harness/conductor-plan';
-import { runExecutorDagWithPlan, type runExecutorDag } from '../src/harness/dag/engine';
+import { runExecutorDagWithPlan } from '../src/harness/dag/engine';
+// v1 规划式 conductor 已退役 (2026-09-03): 任务入口 = 编排循环, 与 `run` 工具同一入口。
+import { runOrchestratingLoop as runExecutorDag } from '../src/harness/goal/loop-run';
 import type { ExecutorDagResult } from '../src/harness/dag/types';
 import { bootstrapModelRuntime } from '../src/model/bootstrap';
 import { onTruncation } from '../src/model/truncation';

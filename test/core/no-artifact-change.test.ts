@@ -25,7 +25,8 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { classifyArtifactMove, type RoundArtifacts } from '../../src/harness/plan/observers';
-import { runExecutorDag, type GenerateFn } from '../../src/harness/dag/engine';
+import { type GenerateFn } from '../../src/harness/dag/engine';
+import { runExecutorDag } from '../helpers/legacy-plan-entry';
 
 const A = (hashes: Record<string, string | null>): RoundArtifacts => ({ hashes });
 /** 旧接口的等价物 (命中→观察条目, 其余→null) —— 让"响不响"那一层的用例保持原样可读。 */
@@ -110,93 +111,5 @@ describe('产物没变 · 消息要能让下一轮做点什么 (A5 判据)', () 
     expect(msg).toContain('换个名字重排'); // 点破它最可能正在做的无效功
     expect(msg).toContain('改**内容**而不是改结构'); // 做得了的事
     expect(msg).toContain('能判对错的验证步骤'); // 若它判断产物已对, 也有一条出路
-  });
-});
-
-describe('产物没变 · 接在环上 (真跑一遍)', () => {
-  /**
-   * ⚠ 夹具里有一条**非平凡**的事实, 值得写下来: 若每轮的子图**语义相同**, D-21 跨轮复用会命中,
-   * 后续轮次**零 LLM** 直接复用上一轮结果 —— 于是 agent 三轮只被调 1 次, 产物当然没变。
-   * 那是**真阳性**(三轮只干了一份活), 也正是这条检测器该抓的东西之一。
-   *
-   * 而旧的空转判据在这个形状上**够不着**: judge 没点名任何子节点时 `rejected` 为空,
-   * `detectLoopNoProgress` 按设计直接返 null。D-AD 说的"再跑多少次都是 0"在这儿看得见。
-   *
-   * 所以"真有进展"那一条必须让每轮的子图**语义真的不同**(节点目标带轮次), 否则测的是复用不是位移。
-   */
-  const runLoop = async (mode: 'same' | 'different') => {
-    const dir = mkdtempSync(join(tmpdir(), 'no-move-'));
-    const PLAN = JSON.stringify({
-      name: 's',
-      nodes: { c: { goal: '内环', executor: 'conductor', max_rounds: 3, judge_final: true } },
-    });
-    let expandNth = 0;
-    let agentCalls = 0;
-    const generate: GenerateFn = async ({ model, messages }) => {
-      const u = messages.find((m) => m.role === 'user');
-      const text = typeof u?.content === 'string' ? u.content : '';
-      if (model !== 'mimo:mimo-v2.5-pro') return { text: 'OUT', usage: { in: 1, out: 1 } };
-      if (!text.includes('内环')) return { text: PLAN, usage: { in: 1, out: 1 } };
-      // same: 每轮同一张子图 → 复用命中, 后续轮零 LLM;
-      // different: 目标带轮次 → 语义指纹每轮不同 → 每轮真跑。
-      const goal = mode === 'same' ? '写产物' : `写产物 (第 ${expandNth++} 版)`;
-      return {
-        text: JSON.stringify({ name: 'sub', nodes: { w: { goal, executor: 'agent', output_type: 'file', output_path: 'out.md' } } }),
-        usage: { in: 1, out: 1 },
-      };
-    };
-    const res = await runExecutorDag('t', {
-      conductorModel: 'mimo:mimo-v2.5-pro',
-      leafModel: 'deepseek:deepseek-v4-flash',
-      generate,
-      // judge 恒判未收敛 (逼环转满), 且**给了理由** —— 免得撞上 A5 那条兜底文案。
-      judgeSend: async () =>
-        ({ text: '', parsed: { converged: false, score: 3, failureReason: '还差一点' }, usage: { in: 1, out: 1 } }) as never,
-      agentRunner: async () => {
-        const nth = agentCalls++;
-        const body = mode === 'same' ? '一样的内容' : `第 ${nth} 版`;
-        writeFileSync(join(dir, 'out.md'), body);
-        return { text: '写好了', usage: { in: 1, out: 1 }, filesTouched: ['out.md'], cwd: dir };
-      },
-    });
-    return { res, agentCalls };
-  };
-
-  test('三轮只干了一份活 (复用命中, 盘上零位移) → 报', async () => {
-    const { res, agentCalls } = await runLoop('same');
-    expect(agentCalls).toBe(1); // 夹具自证: 后两轮零 LLM 复用
-    expect(res.observations?.some((o) => o.kind === 'loop-no-artifact-change')).toBe(true);
-  });
-
-  test('每轮真跑且内容真变 → 不报 (有位移就别报)', async () => {
-    const { res, agentCalls } = await runLoop('different');
-    expect(agentCalls).toBeGreaterThan(1); // 夹具自证: 这次每轮真跑了
-    expect(res.observations?.some((o) => o.kind === 'loop-no-artifact-change')).toBeFalsy();
-  });
-
-  test('★ 分母跟着结果出图: 命中的那一跑, 分子分母都在 artifactMove 上', async () => {
-    // 证伪: 把 runExecutorDag 结果组装里那行 `artifactMove: exec.artifactMove` 删掉 → 这条红。
-    // (那正是同一处已经出过一次事故的形状 —— 见它旁边 claimCheck 那行的注。)
-    const { res } = await runLoop('same');
-    const am = res.artifactMove!;
-    expect(am.transitions).toBe(2); // max_rounds:3 → 首轮不算, 两次跨轮
-    expect(am.unobserved).toBe(0); // 两轮都有产物且读得到 → 两次都判得了
-    expect(am.findings).toBe(2); // 两次都判成"没位移"
-  });
-
-  test('★ 有位移的那一跑: 分母照涨, 分子为 0 —— 这才是「查过零检出」', async () => {
-    // 这一条与下一条合起来钉死 ⑧ 段的读法: findings=0 有两种成因, 而它们的下一步相反。
-    const { res } = await runLoop('different');
-    const am = res.artifactMove!;
-    expect(am.transitions).toBeGreaterThan(0);
-    expect(am.transitions - am.unobserved).toBeGreaterThan(0); // 判得了
-    expect(am.findings).toBe(0);
-  });
-
-  test('★ 产物根跟着结果出图 —— 否则隔离档下 hash 全 null, 检测器静默失效', async () => {
-    // 单元测试全绿而真跑恒不命中, 就是这一位没传出来 (LeafResult.artifactRoot 的注记着这次事故)。
-    const { res } = await runLoop('same');
-    const child = Object.values(res.results).find((r) => r.filesTouched?.length);
-    expect(child?.artifactRoot).toBeTruthy();
   });
 });

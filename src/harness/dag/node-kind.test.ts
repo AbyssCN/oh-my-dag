@@ -12,10 +12,9 @@ import { runExecutorDagWithPlan } from './engine';
 import { NODE_EXEC_KINDS, nodeExecKind } from './node-kind';
 
 describe('nodeExecKind 判定映射 (忠实原 if-链)', () => {
-  test('七类各归其位', () => {
+  test('六类各归其位', () => {
     expect(nodeExecKind({ kind: 'primitive', primitive: 'parallel' })).toBe('primitive');
     expect(nodeExecKind({ executor: 'map', map: { over: 'x' } })).toBe('map');
-    expect(nodeExecKind({ executor: 'conductor' })).toBe('conductor');
     expect(nodeExecKind({ executor: 'await', await: { artifact: 'a' } })).toBe('await');
     expect(nodeExecKind({ executor: 'command' })).toBe('command');
     expect(nodeExecKind({ executor: 'research' })).toBe('research');
@@ -41,8 +40,10 @@ describe('nodeExecKind 判定映射 (忠实原 if-链)', () => {
     expect(nodeExecKind({ executor: 'AGENT' })).toBeNull();
   });
 
-  test('词表绊线: 恰好 7 员 (加 kind 时同步动 engine 表 + 本字面量)', () => {
-    expect([...NODE_EXEC_KINDS]).toEqual(['primitive', 'map', 'conductor', 'await', 'command', 'research', 'leaf']);
+  test('词表绊线: 恰好 6 员 (加 kind 时同步动 engine 表 + 本字面量; conductor 类随 v1 于 2026-09-03 退役)', () => {
+    expect([...NODE_EXEC_KINDS]).toEqual(['primitive', 'map', 'await', 'command', 'research', 'leaf']);
+    // 证伪: 词表外 executor → null (fail-closed), 退役的 'conductor' 也走这里。
+    expect(nodeExecKind({ executor: 'conductor' })).toBeNull();
   });
 });
 

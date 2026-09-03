@@ -13,7 +13,8 @@
  * `{name, summary}` 注入顶层/运行时 conductor(INV-7);本文件防止单函数绿、真实接线漏的回归。
  */
 import { describe, expect, test } from 'bun:test';
-import { runExecutorDag, runExecutorDagWithPlan } from '../dag/engine';
+import { runExecutorDagWithPlan } from '../dag/engine';
+import { runExecutorDag } from '../../../test/helpers/legacy-plan-entry';
 import type { ExecutorDagConfig, GenerateFn } from '../dag/types';
 import type { AgentLeafRunner } from '../leaf-runners';
 import type { ConductorPlan } from '../conductor-plan';
@@ -188,34 +189,6 @@ describe('G-6: 模型解析精确度序', () => {
 });
 
 // ── INV-7 / SDD-G-6(roster): conductor 名册有界注入, 不带 persona 全文 ─────
-
-describe('INV-7: conductor 名册有界注入(engine 真实调用路径)', () => {
-  test('真图 conductor 调用看到 profile 名册, 且不含 persona 全文', async () => {
-    // engine 装配点必须把 loadProfiles() 结果投影为有界 DTO;formatter 再做单行/≤80 字防线。
-    const known = loadProfiles(process.cwd()).get('design-review');
-    expect(known).toBeDefined();
-
-    let conductorSystemText = '';
-    const generate: GenerateFn = async (req) => {
-      const sys = req.messages.find((m) => m.role === 'system');
-      const sysText = typeof sys?.content === 'string' ? sys.content : '';
-      if (sysText.includes('CONDUCTOR')) {
-        conductorSystemText = sysText;
-        return { text: JSON.stringify({ name: 'p', nodes: { a: { goal: '做这一步' } } }), usage: { in: 1, out: 1 } };
-      }
-      return { text: 'ok', usage: { in: 1, out: 1 } };
-    };
-    const r = await runExecutorDag('走一遍规划', makeConfig(async () => ({ text: 'ok', usage: { in: 1, out: 1 } }), { generate }));
-    expect(r.results.a!.status).toBe('done');
-
-    expect(conductorSystemText).toContain('Leaf profile roster');
-    expect(conductorSystemText).toContain('"design-review"');
-    // persona 全文不得穿透进 conductor prompt(INV-7 的核心约束: 只给 name+摘要)。
-    expect(conductorSystemText).not.toContain(known!.persona);
-  });
-});
-
-// ── INV-2: profile 内容不进 promptVersion(引擎侧不改写 base prompt) ─────
 
 describe('INV-2: profile 不影响 engine 交给 agent-leaf 的 base prompt', () => {
   test('有/无 profile 两个节点, agentRunner 收到的 base prompt 逐字节相同(model 依 G-6 合法分叉, 不比)', async () => {

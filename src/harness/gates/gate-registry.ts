@@ -70,16 +70,6 @@ export const GATE_REGISTRY: readonly GateEntry[] = [
     file: 'src/harness/dag/engine.ts',
   },
   {
-    id: 'fuse-action',
-    family: '空转熔断',
-    file: 'src/harness/dag/engine.ts',
-  },
-  {
-    id: 'fuse-judge',
-    family: '空转熔断',
-    file: 'src/harness/dag/engine.ts',
-  },
-  {
     id: 'fuse-spin',
     family: '空转熔断',
     file: 'src/harness/dag/engine.ts',
@@ -146,11 +136,6 @@ export const GATE_REGISTRY: readonly GateEntry[] = [
     file: 'src/harness/dag/engine.ts',
   },
   {
-    id: 'false-completion',
-    family: '谎报完成',
-    file: 'src/harness/dag/engine.ts',
-  },
-  {
     // O-6 (2026-08-11 二发教训): RED 的前提是切片 verify 在实装前是红的 —— 引用既有绿测试时
     // 结构性不成立。run-goal 的 vacuous 探针: 已绿 = 判据虚 / 活已干完, 都进 v1 回落。
     // 前缀 [run-goal] 而非引擎侧 —— 因为这是 goal 层的判词, 不归 dag.ts 的 12 道闸管。
@@ -158,20 +143,6 @@ export const GATE_REGISTRY: readonly GateEntry[] = [
     family: 'acceptance-oracle',
     file: 'src/harness/goal/run-goal.ts',
     prefix: '[run-goal]',
-  },
-  {
-    // G2 契约闸 (2026-08-28): judge 顺手拿**原题**回查这个节点的 goal, 判 needs_revision/invalid
-    // → 停轮交人改契约 (不重跑: 再转一轮只会照同一份歪契约再干一遍)。
-    id: 'contract-gate',
-    family: '契约反查',
-    file: 'src/harness/dag/engine.ts',
-  },
-  {
-    // ask 出口 (2026-08-28): 连续两轮判官说不准这活对不对 → 停轮问 owner。
-    // 触发权在引擎 (数 streak), judge 只提供问题内容 —— 模型没有"我想停就停"的按钮。
-    id: 'ask-owner',
-    family: '契约反查',
-    file: 'src/harness/dag/engine.ts',
   },
 ];
 
@@ -247,14 +218,11 @@ export function scanGateVerdicts(
 export const COVERAGE_DEBT: Readonly<Record<string, string>> = {
   'artifact-broken': '写后即验只在 leaf 写出语法不合法的文件时触发；现有用例走的是 oracle-red 路径，没捕判词。',
   heartbeat: '心跳闸要一个真停摆的 leaf；现有 17 个文件断言的是 watchdog 字段与节点状态，不是判词。',
-  'fuse-action': '动作级熔断要在环里重复同一动作到阈值；`repeated-action.test.ts` 测的是纯件判据，不起引擎。',
-  'fuse-judge': '闸级熔断要连撞 judge 失败到阈值；现有用例在 conductor 环层，没捕引擎判词。',
   'fuse-spin': '空转熔断要 leaf 在工具循环里空转到阈值；现有用例断言 `spinFused` 字段。',
   'fuse-samecause': 'D-6 同因熔断要连撞同一根因两轮；现有用例断言的是重规划结果，不是判词。',
   'oracle-exit-miss': 'command 节点未命中 expect_exit —— 35 个文件提到 expect_exit，但没有一个捕判词。',
   'oracle-exit-scope': '这一条是 fail-open 提示（非 command 节点忽略 expect_exit），今天连行为面用例都没有。',
   'writescope-drop': '写域外剔除只在 leaf 报写域外绝对路径时触发；`artifact-scope.test.ts` 断言的是 `outOfScope` 字段。',
-  'false-completion': 'D-4 谎报完成闸要「声称完成 ∧ 校验命令实败」同时成立；9 个文件提到它，没有一个捕判词。',
 };
 
 /**

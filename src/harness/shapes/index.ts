@@ -145,7 +145,7 @@ export const GRAPH_SHAPES: readonly GraphShape[] = [
   },
   {
     id: 'runtime-decomposition',
-    what: '一步在规划期**分不出来**, 留一个 executor:"conductor" 节点, 到它跑的时候现场画子图',
+    what: '一步在规划期**分不出来**, 派一张 decompose 卡: escalation 座上再开一层编排循环 (同样七张卡), 到它跑的时候现场拆',
     when:
       '这一步该怎么拆, 取决于上游跑出来的东西 —— "看完调研再决定分几路" / "按契约定下来的接口面拆实装"。' +
       '规划期硬拆只能瞎猜, 猜错的那张图会被照着执行。',
@@ -155,19 +155,19 @@ export const GRAPH_SHAPES: readonly GraphShape[] = [
       '它有模板和 keyBy, 比让 conductor 手写 N 个几乎一样的节点稳且便宜。' +
       'conductor 节点是给**异构**步骤用的 (各有各的 goal/executor/依赖)。',
     steps: [
-      '一个 executor:"conductor" 节点, goal 写清"要达成什么", 不写"分几步"(那正是留给它现场判的)',
-      '它的 depends_on 挂上"决定怎么拆"所需要的上游 —— 展开时那些输出会进它的 prompt',
-      '(可选) max_nodes 钳住子图规模; 缺省 64, 与 map 的 maxItems 同一个数',
-      '子图由它现场画, 子节点走完整的 leaf 全套 (路由/产物闸/checkpoint), 与手写节点无差',
+      'decompose(goal) —— goal 写清"要达成什么", 不写"分几步"(那正是留给它现场判的)',
+      '把"决定怎么拆"所需要的上游事实写进 goal —— 嵌套的 conductor 只看得见这段文字',
+      '嵌套 conductor 坐 escalation 座, 手里同样是 work / spawn / map / explore / best_of / research 六张卡 (没有 decompose)',
+      '它派出的子图走完整的 leaf 全套 (路由/产物闸/checkpoint), 与顶层派发无差; 终审只在顶层 run 打一次',
     ],
     why:
       '把"分不出来的一步"硬拆成静态节点, 得到的是一张**看起来完整但建立在猜测上**的图 —— 而图一旦画出来就会被照着执行, ' +
       '没有任何环节会因为"当初拆错了"变红。留成 conductor 节点是把这个决定推迟到**信息真的到齐**的时刻。' +
       '\n代价要认: conductor 的规划质量成了一个新的单点 (原本静态图至少是人审过的)。' +
-      '所以子图过与外层同一条 pass 管线 (prune→dedup→evidence→stamp), 且禁嵌套 —— 展开只许一层。',
+      '所以嵌套循环派出的子图过与顶层同一条 pass 管线 (prune→dedup→evidence→stamp), 且禁再嵌 —— 展开只许一层。',
     enforced:
-      '展开闸: 子节点禁再用 conductor/map (D-D); 子图有环 / 空 / 不是合法 plan → 整份拒, 一个子节点都不跑; ' +
-      '子节点 id 内容寻址 (D-B), conductor 改名不改内容则 resume 照旧命中',
+      '深度闸: decompose 只展开一层 —— 嵌套循环里再调 decompose 当场拒 (LOOP_MAX_DEPTH=1); ' +
+      '嵌套 conductor 派出的子图与顶层同闸 (有环 / 空 / 不合法 plan → 整份拒), 子节点 id 内容寻址 (D-B), resume 照旧命中',
     // A3 ← run 5d0853b6 「goal-execute」(11 节点, conductor 现场画 9 节点异构子图)
     example: {
       source: '5d0853b6',

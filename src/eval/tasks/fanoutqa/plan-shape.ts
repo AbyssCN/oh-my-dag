@@ -43,7 +43,7 @@ import { dagShape, type DagShape } from './gold-dag';
 export const FANOUT_MIN_WIDTH = 3;
 
 /** 运行时扇出 executor —— 规划期不知道清单时,唯二能表达"跑出来再展开"的两个。 */
-const RUNTIME_FANOUT_EXECUTORS = new Set(['map', 'conductor']);
+const RUNTIME_FANOUT_EXECUTORS = new Set(['map']); // executor:'conductor' 随 v1 于 2026-09-03 退役
 
 /**
  * 一张 plan 对「清单在规划期未知」这件事的**应对方式**。互斥且穷尽。

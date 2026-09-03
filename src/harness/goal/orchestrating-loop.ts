@@ -47,17 +47,20 @@ import { logger } from '../logger';
 import { briefHasRepro, type CriterionFreeze, type ConductorCardLedger, type ConductorCardName } from './loop-ledger';
 
 /** plan 名 —— run-goal 的 `_runDag` 注入口与测试靠它认路径 (与 `goal-execute` / `goal-execute-flat` 同一约定)。 */
-export const ORCHESTRATING_LOOP_PLAN_NAME = 'goal-orchestrating-loop';
-/** conductor 节点 id。`leafFace` 钩子只对它返回值; 回灌锚也只挂它。 */
-export const CONDUCTOR_NODE_ID = 'conductor';
-/** 机械 oracle 节点 id —— 与 v1 路径同名, 让 run-goal 既有的 `exec.results.accept` 消费者零改动。 */
-export const LOOP_ACCEPT_NODE_ID = 'accept';
-/**
- * conductor 的只读哨兵写集 (与 `conductor/tools/explore.ts` 的 READONLY_SENTINEL 同一手法): 声明一条仓内不存在
- * 的路径使 `writeAllow.length > 0`, 写域闸真下发; conductor 面上没有 write/edit, 这条闸对它天然成立 (D-20),
- * bash 重定向写盘会被写集对账 (writeset/write-set.ts) 在收尾抓到。
- */
-export const CONDUCTOR_READONLY_SENTINEL = '.omd/conductor-readonly-sentinel';
+// plan 形状真源挪到 conductor/loop-plan.ts (2026-09-04: decompose 卡也要编它, 留在这里是循环 import); 这里原名再导出。
+export {
+  CONDUCTOR_NODE_ID,
+  CONDUCTOR_READONLY_SENTINEL,
+  LOOP_ACCEPT_NODE_ID,
+  LOOP_MAX_DEPTH,
+  ORCHESTRATING_LOOP_PLAN_NAME,
+  compileOrchestratingLoop,
+  conductorNodeIdOf,
+  isOrchestratingLoopPlan,
+  loopDepthOf,
+  type OrchestratingLoopInput,
+} from '../conductor/loop-plan';
+import { CONDUCTOR_NODE_ID } from '../conductor/loop-plan';
 /** conductor 的只读手 (D-20: 无 write / edit)。bash 的边界 = 危险命令闸 + git 写闸 + 收尾写集对账, 不是首词白名单 (D-7)。 */
 export const CONDUCTOR_HAND_TOOLS = ['read', 'ls', 'grep', 'bash'] as const;
 
@@ -71,44 +74,6 @@ export const CONDUCTOR_INFRA_FAILURE_KINDS: ReadonlySet<string> = new Set(['infr
 
 /** 回灌锚的固定首行 —— 测试与人读日志都靠它认「这一发是回灌」。 */
 export const REINJECT_ANCHOR_HEAD = '[verifier 打回 · 回灌 1 次 (D-14: 之后终态由机械 oracle 定, 终审不复审)]';
-
-export interface OrchestratingLoopInput {
-  goal: string;
-  acceptance?: { command: string; expect_exit: number };
-  ctx: ConductorCtx;
-  /**
-   * 编排节点的座位 (owner 2026-09-03): 它就是 conductor —— 编排 + 对话循环的那个角色, 该坐 conductor 座 (SOTA 档),
-   * 不跟 worker 同座。给了 → 节点 `model` 显式钉死 (TPL-3 最高优先, 引擎 per-node 路由); 缺席 → 落回 agent 叶静态座
-   * (agentLeafModel / leafModel, 即 worker 座) —— 那是 2026-09-03 之前的实况, 也是 code80-p3 两批与 dsw 首批的条件。
-   */
-  conductorModel?: string;
-}
-
-/**
- * 编排循环的 plan: `conductor` (agent, 只读哨兵写集) → `accept` (command, 冻结判据原文; 无判据时缺席)。
- * 只经 `executePlan(applyPlanFilters(…))` 执行 (D-5 / INV-3); 这里不调 parsePlan —— 它是格式闸, 编译产物
- * 恒过它 (测试钉这一点), 运行期再过一遍是冗余。
- */
-export function compileOrchestratingLoop(input: OrchestratingLoopInput): ConductorPlan {
-  const nodes: ConductorPlan['nodes'] = {
-    [CONDUCTOR_NODE_ID]: {
-      executor: 'agent',
-      goal: input.goal,
-      write_set: [CONDUCTOR_READONLY_SENTINEL],
-      ...(input.conductorModel ? { model: input.conductorModel } : {}),
-    },
-  };
-  if (input.acceptance) {
-    nodes[LOOP_ACCEPT_NODE_ID] = {
-      executor: 'command',
-      command: input.acceptance.command,
-      expect_exit: input.acceptance.expect_exit,
-      depends_on: [CONDUCTOR_NODE_ID],
-      goal: '冻结判据 (环外确定性闸)',
-    };
-  }
-  return { name: ORCHESTRATING_LOOP_PLAN_NAME, nodes } as ConductorPlan;
-}
 
 /**
  * D-14 回灌: verifier finding 原文 append 到 **同一 conductor 节点 id** 的 goal 末尾, 其它节点逐字不动。

@@ -39,8 +39,8 @@ describe('fullstack-dag eval spec', () => {
 // "provider 'mimo' not registered" → 整张图级联 skip → 6 次全栈跑全废 (约 30 分钟)。
 // 这条闸让同类错误在 0.1 秒里现形。**源码级断言而非真调用** —— 真调用会把 provider 注册进全局
 // registry, 连累同进程其它测试的回落行为 (第一版这么写, 当场挂了两条 review 测试)。
-test('三个 eval oracle 都在 measure 里 bootstrap provider (inproc leaf 走 callModel 需要 registry)', () => {
-  for (const f of ['fullstack-dag.ts', 'agent-leaf-prompt.ts', 'conductor-modelmix.ts']) {
+test('两个 eval oracle 都在 measure 里 bootstrap provider (inproc leaf 走 callModel 需要 registry)', () => {
+  for (const f of ['fullstack-dag.ts', 'agent-leaf-prompt.ts']) {
     const src = readFileSync(join(import.meta.dir, f), 'utf8');
     expect(src).toContain('bootstrapModelRuntime');
     // 必须在 measure 内, 不能在 spec 构造里

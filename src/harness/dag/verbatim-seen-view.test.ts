@@ -145,7 +145,7 @@ describe('seenUpstreamOutputs —— 引擎接线位引用 (D-3 oracle 锚)', ()
     // (外层 settle + 子节点旁路)。
     const callRe = /=\s*seenUpstreamOutputs\(/g;
     const helperAssigns = src.match(callRe) ?? [];
-    expect(helperAssigns.length).toBeGreaterThanOrEqual(2);
+    expect(helperAssigns.length).toBeGreaterThanOrEqual(1) // 2026-09-04: 内环那处随 v1 退役, 只剩平铺路径一处;
   });
 
   test('detectVerbatimDrop 不会被直接喂手写 depOutputs 链 (反锚: 旧链式不得残留)', async () => {

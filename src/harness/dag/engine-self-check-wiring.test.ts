@@ -52,7 +52,6 @@ const mkCfg = (
   leafModel: 't:leaf',
   agentLeafModel: 't:leaf',
   generate,
-  maxPlanRetries: 0,
   agentRunner: runner,
   ...extra,
 });

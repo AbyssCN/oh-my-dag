@@ -16,7 +16,7 @@
  *
  * ## 家族四件(T2#5, 2026-06-23 由 682 行 god-file 按簇拆开)
  *
- * - `engine.ts`(本文件)—— ExecOnce / planAndExecute / runDag + barrel re-export 公共面
+ * - `engine.ts`(本文件)—— ExecOnce / executePlan / runDag + barrel re-export 公共面 (v1 规划式 conductor 已于 2026-09-03 退役: 引擎只吃预构造图)
  * - `types.ts` —— 契约类型(消费方最多的一个:74 处)
  * - `defaults.ts` —— 默认值与 prompt 常量
  * - `planner.ts` —— 纯 helper(topoLevels / buildLeafPrompt / addUsage)
@@ -83,7 +83,6 @@ import type { ModelUsage } from '../../model/gateway';
 import { escalationProviderReady, type VerifierVerdict } from '../verifier';
 import type { AgentEvent } from '@earendil-works/pi-agent-core';
 import {
-  conductorSystemPrompt,
   conductorPatchSystemPrompt,
   parsePlan,
   mergeMcpAllow,
@@ -99,7 +98,6 @@ import { loadProfiles, resolveProfile, type LeafProfile } from '../profiles/prof
 // D-3 注册 server 集真源 (parsePlan knownServers 必传): 该 run 的 cwd 经 loadMcpClientConfig。
 import { knownMcpServerNames } from '../../mcp/client/config';
 // S3.6 escalation patch 模式: 补丁解析 + 程序化 merge (未补丁节点字节不动 → D-21 复用按构造成立)。
-import { parsePlanPatch, applyPlanPatch, buildPatchRequest } from '../plan/plan-patch';
 import { hashArtifact, hashText, computeDagGeneration } from '../continuity/checkpoint-manager';
 import type { NodeCheckpoint, NodeLoopJournal, RoundVerdict } from '../continuity/types';
 // noun-gate 接缝(INV-X3):宿主注入(上游宿主传 memory-hub checkNouns);包不依赖 memory-hub。
@@ -187,10 +185,7 @@ import {
 } from '../fanin-summary';
 // D-21 escalation 跨轮复用: 语义 Merkle 指纹 + 前驱闭包匹配 (semantic-key 单一真源)。
 import { computeReuse, merkleFingerprints } from '../plan-passes/semantic-key';
-import { researchNodesWithoutRunner, researchUnavailableRemediation } from '../plan/research-availability-gate';
 import { mergeCommandChains } from '../plan-passes/merge-command-chain';
-import { expandConductorNode, subgraphLintView, subgraphWarnings } from '../plan/conductor-expand';
-import { renderRoundForJudge, splitNamedIds, type JudgeChildView } from '../plan/conductor-judge';
 import { collectJudgeArtifacts, DEFAULT_ARTIFACT_BUDGET, type ArtifactBudget } from '../plan/judge-artifacts';
 import { writeSetChangedSinceBaseline } from './writeset-evidence';
 import {
@@ -219,7 +214,6 @@ import {
   renderShellRunFact,
   type UnsupportedClaimFinding,
 } from '../plan/claimed-actions';
-import { gateFalseCompletion, renderFalseCompletionFindings } from '../plan/false-completion';
 
 /**
  * 一个子节点最多往 judge 视图里放几条 bash 命令记录。
@@ -244,11 +238,6 @@ const WARM_GRACE_MS_DEFAULT = 20_000;
  * 交接块之后那句「这一轮该怎么重画」(#226 从内联字符串提出来, 逐字未改)。
  * 提出来只为让 `renderHandoff` 与它各管一件事:前者管**交接怎么渲染**, 这句管**要它做什么**。
  */
-const RETRY_INSTRUCTION =
-  '这一轮请**重新分解**: 该补的步骤补上 (包括上一轮压根没有的那种, 比如先去把某个事实查清楚), ' +
-  '该改的改掉。原样再画一遍上一轮的图只会再失败一次。' +
-  '但**没被点名的节点请逐字节保持原规格** (goal 文本/依赖/executor 一字不动) —— ' +
-  '节点 id 按内容寻址, 规格没变的节点零成本复用上轮产出; 顺手改写无辜节点 = 它整棵子树白烧重跑。';
 import { verifiedShellWriteTargets } from '../writeset/shell-writes';
 import { resolveNodeWriteAllow } from '../writeset/write-allow';
 import { blamePathCandidates, failureExcerpt } from '../failure-trace';
@@ -267,7 +256,6 @@ import {
   detectLoopNoProgress,
   classifyArtifactMove,
   detectRuntimeWriteRace,
-  detectDetectorWrites,
   detectVerbatimDrop,
   gateVerbatimRed,
   extractQuoteSegments,
@@ -276,9 +264,6 @@ import {
   type RoundArtifacts,
   ARTIFACT_ABSENT,
 } from '../plan/observers';
-import { parseDetectorVerdict, DETECTOR_PROTOCOL } from '../plan/detector';
-import { repeatedActionBlock, type ActionAttempt } from '../plan/repeated-action';
-import { makeLlmConvergenceJudge } from '../plan/llm-judge';
 // D-6 启动期孤儿回收 (SDD 2026-08-24): 引擎硬崩溃 (OOM/SIGKILL) 后下次启动回收上个生命周期的
 // 孤儿子进程。reapOrphansOnce 一次性闸, run + solve 经引擎入口只触发一次。INV-5/6/7 已由模块自身保证。
 import { reapOrphansOnce } from '../proc/orphan-reap';
@@ -352,38 +337,6 @@ function isFrozenCriterionInconclusive(command: string | undefined, exitCode: nu
 //
 // 开销: O(复用集 × (子图内前驱数 + 读文件数))。每个 conductor 节点每轮一次, 而那一轮背后是
 //   整张子图的 LLM 调用。噪声。
-const INV_P2_5 = registerInvariant<{
-  parentId: string;
-  /** 本轮判定可复用的子节点 id。 */
-  reused: readonly string[];
-  /** 本轮毒集 (被点名的子节点 id)。 */
-  poisoned: ReadonlySet<string>;
-  /** 毒制品: 被点名子节点上一轮写过的文件。 */
-  poisonedArtifacts: ReadonlySet<string>;
-  /** 上一轮结局 (只用到 status 与 filesRead)。 */
-  prev: ReadonlyMap<string, { status: string; filesRead?: readonly string[] }>;
-  /** 子节点 → 它的**子图内**前驱 (已过滤成 `${parentId}::` 形)。 */
-  innerDeps: ReadonlyMap<string, readonly string[]>;
-}>({
-  id: 'INV-P2-5',
-  module: 'dag/engine',
-  why: '毒绿复用 —— 被拒的、或吃着被拒产物做出来的子节点不重跑, 上一轮的坏产出被原样当成本轮结果, 全程零异常零 failed',
-  check: ({ parentId, reused, poisoned, poisonedArtifacts, prev, innerDeps }) => {
-    const reusedSet = new Set(reused);
-    for (const cid of reused) {
-      if (poisoned.has(cid)) return `${parentId}: 复用了被点名的子节点 ${cid}`;
-      const p = prev.get(cid);
-      if (p === undefined) return `${parentId}: 复用了 ${cid} 而上一轮根本没有它的结果`;
-      if (p.status !== 'done') return `${parentId}: 复用了 ${cid} 而它上一轮 status=${p.status} (非 done)`;
-      const tainted = (p.filesRead ?? []).find((f) => poisonedArtifacts.has(f));
-      if (tainted !== undefined) return `${parentId}: 复用了 ${cid} 而它上一轮读过毒制品 "${tainted}"`;
-      const broken = (innerDeps.get(cid) ?? []).find((d) => !reusedSet.has(d));
-      if (broken !== undefined)
-        return `${parentId}: 复用了 ${cid} 而它的子图内前驱 ${broken} 要重跑 (输入会变, 上轮产出不再对应)`;
-    }
-    return null;
-  },
-});
 
 // ── barrel re-export: 保持 ./executor-dag 公共面稳定 (importer-closure, 消费方零改) ──
 export type { GenerateFn, ExecutorDagConfig, ExecutorDagResult, LeafResult, DagNodeEvent } from './types';
@@ -596,24 +549,7 @@ interface ExecOnce {
   leavesCacheHit: number;
 }
 
-/**
- * **执行段的段名** —— 段的分辨面取 `plan.name`, 与 run-goal 同一条既有口径
- * (`goal-contract` / `goal-execute`, 见 run-goal.ts 的 `_runDag` 注), 不新开旋钮。
- * 直通 v2 的平铺图 (`goal-execute-flat`) 压根没有 conductor 节点, 走不到这条闸, 故不入表。
- */
-const EXECUTE_SEGMENT_PLAN_NAME = 'goal-execute';
 
-/**
- * **执行段禁调研** (owner 2026-08-11 裁; 语义同内环 v2 D-2「不自转, STALLED 开票交人」
- * 与控制面 D-2③)。key = 被禁的 executor, value = 拒绝理由 (原样进错误文本, 给下一轮/复盘的人读)。
- *
- * ⚠ **不能**并进 conductor-expand 的全局禁单: 契约段 (`goal-contract`) 的 conductor **正当需要**
- * research 子节点 —— 它的 goal 里逐字写着「外部调研 (`executor:"research"`)」那一条, 而两段共用
- * 同一个展开器。所以这份禁单按调用传, 只在执行段生效。
- */
-const EXECUTE_SEGMENT_FORBIDDEN_EXECUTORS: ReadonlyMap<string, string> = new Map([
-  ['research', '执行段禁调研 —— 已结晶 SDD 的 research 已付费, 缺信息走 STALLED 开票交人, 不自开调研'],
-]);
 
 /**
  * D-3 注册表根: parsePlan 的 knownServers 从**该 run 的 cwd** 取 (与 :3256 loadAgentTemplates 同一个根,
@@ -624,241 +560,7 @@ function mcpRegistryRoot(config: ExecutorDagConfig): string {
 }
 
 /** INV-7: conductor 只见 name + 一行能力摘要, 不让整份 ProfileSpec/persona 穿透。 */
-function profileRoster(config: ExecutorDagConfig): ConductorProfileRosterEntry[] {
-  return [...loadProfiles(mcpRegistryRoot(config)).values()].map((profile) => ({
-    name: profile.name,
-    summary: profile.skills?.length
-      ? `skills=${profile.skills.join(',')}; output=${profile.outputSchema ?? 'unspecified'}`
-      : profile.outputSchema
-        ? `output=${profile.outputSchema}`
-        : 'specialist profile',
-  }));
-}
 
-/**
- * 单轮: conductor 规划 (显式 conductorModel) → 现场 fan-out leaves → results。
- * 升级时本函数被重复调用 (换 conductorModel + 注入失败原因的 task)。
- */
-async function planAndExecute(
-  task: string,
-  config: ExecutorDagConfig,
-  conductorModel: string,
-  generate: GenerateFn,
-  maxPlanRetries: number,
-  templates: ReadonlyMap<string, AgentTemplate>,
-  prior?: PriorExec,
-  /** D-3 反馈锚定 (SDD 2026-08-10-blame-scoped-node-retry): 闭包节点 id → 追加到其 goal 的 verifier 意见。非闭包节点不碰 (G-2)。 */
-  blameAnchor?: ReadonlyMap<string, string>,
-  warnedUnknownProfiles: Set<string> = new Set(),
-  /**
-   * 观测名前缀 (#144 洞 1)。升级重规划轮坐的是 `conductorEscalationModel`, 但此前 traceName 仍打
-   * `conductor:*` —— 于是 escalation 座的钱**结构上算在 conductor 头上**。这不是缺数是**错归**,
-   * 而错归比缺数难发现: 账上有一个看起来很正常的 conductor 数字, 没人会去怀疑它。
-   */
-  seatLabel: 'conductor' | 'escalation' = 'conductor',
-): Promise<ExecOnce> {
-  // ── 1. conductor: 单结构化调用规划 (显式可换) ──────────────────────────────
-  // 模板注册表进规划 prompt (每卡一行 description); parsePlan 校验 template 引用 (TPL-2 规划层拒)。
-  // prompt 档位: config > env OMD_CONDUCTOR_PROMPT > 'full' (弱 conductor 教练全量; 'lean' 给顶级模型)。
-  const promptProfile = config.conductorPromptProfile ?? conductorPromptProfileFromEnv();
-  const sys = conductorSystemPrompt({
-    agents: config.agents,
-    templates: templateRoster(templates),
-    profiles: profileRoster(config),
-    profile: promptProfile,
-    researchAvailable: Boolean(config.researchRunner),
-  });
-  let plan: ConductorPlan | null = null;
-  let conductorUsage: ModelUsage = { in: 0, out: 0 };
-  let lastErr = '';
-  let correction = '';
-  // g1 leaf 档位闸 (图 #9): parse 重试与闸拒回**分开记账** —— 闸拒回是"计划合法但档位派错",
-  // 吃 parse 预算会让一次违规偷走真正的格式重试。有界重问, 用尽 fail-open 放行 + 响亮留证
-  // (仓规: fail-open 可以吞异常, 不许吞证据)。patch 重规划轮 (tryPatchReplan) 不过闸:
-  // 补丁只改局部字段, 首轮整图已闸过。
-  const LEAF_TIER_MAX_REJECTS = 2;
-  // E-T2 research 可用性闸: 与 leaf 档位闸同形 (有界拒回 → fail-open 留证), 各记各的账。
-  const RESEARCH_GATE_MAX_REJECTS = 2;
-  // #247 (2026-08-24, 片 2): plan-critic 进活环, 只收「无外部输入」子集 —— 字段存在性/枚举/形状 (零外部状态)。
-  // PP-T*/PP-S* 需 inventory/skill 装配 (S2 债), 空 working-set 下 enforce = 教模型删 toolRefs, 反教化。
-  // 具名常数让 S2 扩集只改一处。
-  const INLOOP_ENFORCED_CODES: ReadonlySet<DiagnosticCode> = new Set([
-    'PP-I01', 'PP-I02', 'PP-O01', 'PP-O02', 'PP-V01', 'INV-12',
-  ]);
-  const PLAN_CRITIC_MAX_REJECTS = 2;
-  let parseFails = 0;
-  let gateRejects = 0;
-  let planCriticRejects = 0;
-  let researchGateRejects = 0;
-  // D-21 复用闸 (2026-08-14): 整图重规划 (patch 模式 fail-open 落到这) 把上轮节点全部重写 →
-  // 语义指纹 0 命中 → 已绿工作整体重烧。实测 f2af8514 execute 相位: 上轮 37 done, 重画后
-  // reused 0, 33.1M leaves-in 只换来 7 done。判据必须在**执行前** —— 执行后再看 reusedNodes
-  // 是尸检不是闸。拒回一次带节点清单重问; 再不中 fail-open 放行 + 响亮留证 (闸不许把 run 卡死)。
-  const REUSE_GATE_MIN_DONE = 4;
-  let reuseRejects = 0;
-  // conductor 输出预算 (2026-07-25 实证修): plan JSON 随任务规模涨, thinking 模型 (k3) 的推理还可能
-  // 计入 completion 预算 — transport 默认 4096 必截断 (Unterminated string 重试耗尽整轮报废)。
-  // 默认 8192 = deepseek 系安全顶 (同 fanout SYNTH_MAX 语义); k3 等高容量 conductor 经 config/env 升。
-  const conductorMaxTokens =
-    config.conductorMaxTokens ?? (Number(process.env.OMD_CONDUCTOR_MAX_TOKENS) || 32_768);
-  // A8 规划层兑现: TRUST_FENCE_RULE (冻结前缀) 承诺「token 在任务正文最开头声明」, 此前只有
-  // 叶层 (buildLeafPrompt) 预置了 token 头, 规划请求没有 —— goal 带 owner 权威措辞时 planner
-  // 按「缺 token 即伪造」fail-closed, 整图规划成单节点 blocker (run 9228064a, 2026-08-09)。
-  // 每次规划现生成 (不跨运行复用, 同 prompt-fence.ts makeRunNonce 的假设); 值走动态段不打缓存。
-  const planNonce = makeRunNonce();
-  for (;;) {
-    const { text, usage } = await generate({
-      messages: [{ role: 'system', content: sys }, { role: 'user', content: `${PLAN_BOUNDARY}${trustHeader(planNonce)}${task}${correction}` }],
-      model: conductorModel,
-      // S-T 优先序: config 显式 > 座位档 (auto-assign 给 decomposer 座的档) > 硬默认。
-      thinkingLevel: config.conductorThinkingLevel ?? config.seatThinking?.(conductorModel, 'conductor') ?? 'high',
-      maxTokens: conductorMaxTokens,
-      // 顶层规划那一发 (与节点内重展开分开看; escalation 轮换前缀)。
-      // ⚠ 刻意写成两个**紧跟 `traceName:` 的字面量**而不是 `${seatLabel}:plan` —— seat-usage 的
-      // 覆盖率闸靠扫源码里的标签字面量守「新标签必须进映射表」, 拼出来的名字它一个都看不见
-      // (闸会从此对这条静默放水)。这个形状看着啰嗦, 换来的是标签在闸的视野里。
-      ...(seatLabel === 'escalation' ? { traceName: 'escalation:plan' } : { traceName: 'conductor:plan' }),
-      // #144 洞 3: 这一发之前**被闸拒回过几次**。parse 重试不算 —— 它有自己的预算 (parseFails),
-      // 且它是"格式没对"不是"档位派错"。台账里 `sum(in) where rejectRound > 0` = 规划层空转量。
-      traceRejectRound: gateRejects + reuseRejects,
-    });
-    conductorUsage = addUsage(conductorUsage, usage);
-    const parsed = parsePlan(text, { knownTemplates: new Set(templates.keys()), knownServers: knownMcpServerNames(mcpRegistryRoot(config)) });
-    if (!parsed.ok) {
-      lastErr = parsed.error;
-      if (++parseFails > maxPlanRetries) break; // 预算同旧语义: 共 maxPlanRetries+1 次 parse 尝试
-      correction = `\n\n上次回复不是有效 plan (${lastErr})。只回 JSON 对象, 别的不要。`;
-      continue;
-    }
-    // 本轮候选图。g1 闸可能**程序化改写**它 (下面), 之后的 D-21 预览与最终 plan 都以它为准 ——
-    // 拿改写前的图去预览复用, 预览的就不是真要执行的那张图。
-    let candidate = parsed.plan;
-    // E-T2 (2026-08-28) research 可用性闸: researchRunner 缺席时 research 节点执行期必败
-    // (missing-capability) 占位耗轮 (bench 单批实测 124 次) —— 规划期确定性拒回重画。
-    // 有界; 预算尽 fail-open 放行 + 响亮留证, 执行期硬闸 (executor:research 分支) 兜底。
-    if (!config.researchRunner) {
-      const researchHits = researchNodesWithoutRunner(candidate, false);
-      if (researchHits.length > 0 && researchGateRejects < RESEARCH_GATE_MAX_REJECTS) {
-        researchGateRejects++;
-        logger.info(
-          { nodes: researchHits, rejects: researchGateRejects },
-          '[omd/executor-dag] research 可用性闸拒回 plan → 带 remediation 重问 (E-T2)',
-        );
-        correction = `\n\n上一版 plan 被 research 可用性闸拒回 (可修, 不是格式问题):\n- ${researchUnavailableRemediation(researchHits)}\n改完只回完整 plan JSON 对象, 别的不要。`;
-        continue;
-      }
-      if (researchHits.length > 0) {
-        logger.warn(
-          { nodes: researchHits },
-          '[omd/executor-dag] research 可用性闸重问预算用尽仍有 research 节点 → fail-open 放行 (执行期 missing-capability 兜底)',
-        );
-      }
-    }
-    if (config.leafTierGate) {
-      // #144 提议 3 / #145 提议 3: 闸自己动手。判据命中且改写是确定性的 (静态节点 + 塞得下) →
-      // 引擎直接把 `agent` 换成 `command`+`leaf` 对, **零规划发**; 改不动的残余才拒回问模型。
-      // 此前这里一律拒回, 而 conductor prompt 里早就写着同一条规则 —— 规则在、模型不听、闸抓住、
-      // 然后再花一发最贵的座位让它照着改。
-      const rw = autoRewriteLeafTier(parsed.plan, {
-        ...(config.leafTierThresholdBytes !== undefined ? { thresholdBytes: config.leafTierThresholdBytes } : {}),
-      });
-      candidate = rw.plan;
-      // 静默改图与静默违规一样坏 —— 每一次改写都留证 (同写竞争硬闸那条)。
-      for (const r of rw.rewritten) {
-        logger.warn(
-          { node: r.node, readNode: r.readNode, command: r.command, bytes: r.totalBytes },
-          '[omd/executor-dag] leaf 档位闸**自动改写**: agent 读确定路径 → command+leaf 对 (零规划发, g1 图#9)',
-        );
-      }
-      const findings = rw.residual;
-      if (findings.length > 0 && gateRejects < LEAF_TIER_MAX_REJECTS) {
-        gateRejects++;
-        logger.info(
-          { nodes: findings.flatMap((f) => f.nodes), rejects: gateRejects, autoRewritten: rw.rewritten.length },
-          '[omd/executor-dag] leaf 档位闸拒回 plan → 带改写建议重问 (g1 图#9; 改不动的那部分)',
-        );
-        correction = `\n\n上一版 plan 被 leaf 档位闸拒回 (可修, 不是格式问题):\n${findings.map((f) => `- ${f.message}`).join('\n')}\n按建议改写后只回完整 plan JSON 对象, 别的不要。`;
-        continue;
-      }
-      if (findings.length > 0) {
-        logger.warn(
-          { rejects: gateRejects, findings: findings.map((f) => f.message) },
-          '[omd/executor-dag] leaf 档位闸重问预算用尽仍违规 → fail-open 放行 (证据在此, g1)',
-        );
-      }
-    }
-    // #247 (2026-08-24, 片 2): plan-critic 静态闸进活规划环。位置: parsePlan 成功后 · leafTierGate
-    // 之后 · D-21 复用闸之前 (与 leaf-tier-gate 同形)。判定 = critique() + 过滤到 INLOOP_ENFORCED_CODES;
-    // 有界拒回 = `PLAN_CRITIC_MAX_REJECTS` 次 (与 parseFails/gateRejects/reuseRejects **各记各的账**)。
-    // 预算尽 → fail-open 放行 + logger.warn (留证 + 残余码进 gate_hit_distribution 供 SDD §10 消费),
-    // 不 escalate 不停 run (D-3, 采纳期;硬闸化以 S2 读数为闸,见 debt_ledger:plan_critic_inloop_fail_open)。
-    if (config.planCriticGate) {
-      const allDiags: readonly Diagnostic[] = critique({
-        plan: candidate,
-        round: parseFails + gateRejects + reuseRejects + planCriticRejects + 1,
-        workingSet: [],
-        skills: [],
-        runId: config.sessionId ?? config.continuity?.runId ?? 'unknown',
-      });
-      const inloop = allDiags.filter((d) => INLOOP_ENFORCED_CODES.has(d.code));
-      if (inloop.length > 0) {
-        if (planCriticRejects < PLAN_CRITIC_MAX_REJECTS) {
-          planCriticRejects++;
-          logger.info(
-            { rejects: planCriticRejects, codes: inloop.map((d) => d.code), nodes: [...new Set(inloop.map((d) => d.node_id))] },
-            '[omd/executor-dag] plan-critic 闸拒回 plan → 带 remediation 重问 (#247)',
-          );
-          correction = `\n\n上一版 plan 被 plan-critic 闸拒回 (可修, 不是格式问题):\n${inloop.map((d) => `- ${d.code} ${d.node_id}: ${d.remediation}`).join('\n')}\n按建议改写后只回完整 plan JSON 对象, 别的不要。`;
-          continue;
-        }
-        // 预算尽 → fail-open 放行 (D-3)。**留证** (仓规: 可以吞, 不许吞证据) + 入 gate_hit_distribution。
-        logger.warn(
-          { rejects: planCriticRejects, residual: inloop.map((d) => ({ code: d.code, node_id: d.node_id, evidence: d.evidence, remediation: d.remediation })) },
-          '[omd/executor-dag] plan-critic 闸重问预算用尽仍违规 → fail-open 放行 (#247; debt:plan_critic_inloop_fail_open)',
-        );
-      }
-    }
-    // D-21 复用闸: 上轮有可复用的 done 节点 (未中毒), 新图却一个都对不上 → conductor 把
-    // 「未点名节点逐字保留」的指令整个无视了。预览用与 executePlan 同一条 computeReuse
-    // (filters 先过, 与真执行同输入; blame append 只碰闭包节点, 而闭包已在毒集, 不影响预览)。
-    if (prior) {
-      const priorFps = merkleFingerprints(prior.plan);
-      const eligibleDone = Object.entries(prior.results).filter(
-        ([id, r]) => r.status === 'done' && !prior.poisoned?.has(priorFps.get(id) ?? ''),
-      ).length;
-      if (eligibleDone >= REUSE_GATE_MIN_DONE) {
-        const preview = computeReuse(applyPlanFilters(candidate, config), prior, prior.poisoned);
-        if (preview.size === 0 && reuseRejects < 1) {
-          reuseRejects++;
-          const keepIds = Object.keys(prior.plan.nodes).slice(0, 40).join(', ');
-          logger.info(
-            { eligibleDone, priorNodes: Object.keys(prior.plan.nodes).length },
-            '[omd/executor-dag] D-21 复用闸拒回 plan → 带上轮节点清单重问 (整图重写 = 已绿工作重烧)',
-          );
-          correction =
-            `\n\n上一版 plan 与上轮分解**零复用**: 上轮已有 ${eligibleDone} 个完成且未被点名有问题的节点, ` +
-            `而你把所有节点都重写了 —— 引擎按语义指纹复用未变节点, id/goal/字段/依赖边任何措辞变化都会白白重算。` +
-            `未被点名的节点**逐字保留**, 只改被点名有问题的。上轮节点 id: ${keepIds}。只回完整 plan JSON 对象。`;
-          continue;
-        }
-        if (preview.size === 0) {
-          // 重问预算用尽仍零复用 → fail-open 放行 + 响亮留证 (仓规: 可以吞, 不许吞证据)。
-          logger.warn(
-            { eligibleDone, rejects: reuseRejects },
-            '[omd/executor-dag] D-21 复用闸重问后仍零复用 → fail-open 放行 (已绿工作将整体重烧, 证据在此)',
-          );
-        }
-      }
-    }
-    plan = candidate;
-    break;
-  }
-  if (!plan) throw new Error(`executor-dag: conductor (${conductorModel}) 未产出有效 plan: ${lastErr}`);
-
-  // pass 管线 (SDD v2): oracle 过滤 + planFilters (prune→dedup→stamp, 接线层组装)。
-  // conductor 之后, 下游执行机器与 plan 来源无关 → 交 executePlan (D-7 预构造入口共用同一机器)。
-  return executePlan(applyPlanFilters(plan, config), task, config, generate, conductorUsage, templates, prior, blameAnchor, warnedUnknownProfiles);
-}
 
 /**
  * SDD v2 pass 管线: oracle 等价节点过滤 → config.planFilters 依序应用 (prune → dedup → stamp,
@@ -947,118 +649,6 @@ function applyPlanFilters(plan: ConductorPlan, config: ExecutorDagConfig): Condu
   return serialized.plan;
 }
 
-/**
- * S3.6 escalation patch 模式 (D-21/G-21 强化, 信任反转): 重规划 conductor 只输出节点补丁 JSON
- * ({改哪些节点: 新字段}), 引擎程序化 merge 到上轮 plan — 未补丁节点**字节不动** → 语义指纹复用
- * 按构造成立, 不再指望 LLM「逐字保留」(S3.5 实证跨轮重措辞, 4 采样 1 中)。
- * 补丁解析/校验失败 → exec:null, 调用方回退现行整图重规划 (SDD 钉死 fail-open);
- * usage 始终返回 (补丁尝试烧掉的 conductor token 不丢账 — 成功时已折进 exec.conductorUsage)。
- *
- * D-1/D-2 (SDD 2026-08-11-l2-diff-replan) 请求侧差量: 有 closure (blame 解析成功) → user 消息
- * 换成 buildPatchRequest 的差量体 (闭包节点全文 + 闭包外 `id: goal首行` 单行清单), 且
- * applyPlanPatch 收 allowedIds=closure (越界机器闸, G-2)。closure 缺省/null (blame 解析失败,
- * fail-open) → 现行整图请求, 不设 allowedIds — 行为与今天逐字节相同 (INV-1)。
- */
-async function tryPatchReplan(
-  task: string,
-  reason: string,
-  prior: PriorExec,
-  config: ExecutorDagConfig,
-  conductorModel: string,
-  generate: GenerateFn,
-  maxPlanRetries: number,
-  templates: ReadonlyMap<string, AgentTemplate>,
-  /** D-3 反馈锚定: 同 planAndExecute (补丁路径同样在 executePlan 入口落 append)。 */
-  blameAnchor?: ReadonlyMap<string, string>,
-  /** D-1/D-2: blame 闭包 (invalidationClosure 结果)。null/undefined = blame 解析失败 → 整图请求, 无越界闸。 */
-  closure?: ReadonlySet<string> | null,
-  warnedUnknownProfiles: Set<string> = new Set(),
-): Promise<{ exec: ExecOnce | null; usage: ModelUsage }> {
-  const sys = conductorPatchSystemPrompt();
-  const requestBody = closure
-    ? buildPatchRequest(prior.plan, closure)
-    : JSON.stringify(
-        {
-          name: prior.plan.name,
-          ...(prior.plan.description ? { description: prior.plan.description } : {}),
-          nodes: prior.plan.nodes,
-          ...(prior.plan.outputs?.length ? { outputs: prior.plan.outputs } : {}),
-        },
-        null,
-        1,
-      );
-  const known = new Set(templates.keys());
-  let usage: ModelUsage = { in: 0, out: 0 };
-  let lastErr = '';
-  // #144 洞 3: 与 `attempt` 分开数 —— attempt 同时被 parse 失败与闸拒推进, 混在一起就答不了
-  // 「多少发烧在闸拒回上」。run A 的 7 行日志里 escalation 补丁连拒 3 次, 而账上一个字都没有。
-  let patchGateRejects = 0;
-  for (let attempt = 1; attempt <= maxPlanRetries + 1; attempt++) {
-    const correction = attempt === 1 ? '' : `\n\n上次回复不是有效补丁 (${lastErr})。只回 {"patch": {...}} JSON 对象, 别的不要。`;
-    const { text, usage: u } = await generate({
-      messages: [
-        { role: 'system', content: sys },
-        { role: 'user', content: `${PLAN_BOUNDARY}${requestBody}\n\n[verification failure] ${reason}${correction}` },
-      ],
-      model: conductorModel,
-      // 补丁轮只在 verifier 未过之后跑, 且坐的是 escalation 模型 → 前缀是 escalation 不是 conductor。
-      traceName: 'escalation:repair', // 校验失败后的补丁重试 —— 与首次规划分开看 (它的贵是有原因的)
-      traceRejectRound: patchGateRejects,
-      thinkingLevel: config.conductorThinkingLevel ?? config.seatThinking?.(conductorModel, 'conductor') ?? 'high',
-      maxTokens: config.conductorMaxTokens ?? (Number(process.env.OMD_CONDUCTOR_MAX_TOKENS) || 32_768),
-    });
-    usage = addUsage(usage, u);
-    const parsed = parsePlanPatch(text);
-    if (!parsed.ok) {
-      lastErr = parsed.error;
-      continue;
-    }
-    const applied = applyPlanPatch(prior.plan, parsed.patch, { knownTemplates: known, ...(closure ? { allowedIds: closure } : {}) });
-    if (!applied.ok) {
-      lastErr = applied.error;
-      continue;
-    }
-    // g1 闸对补丁轮同样生效 (2026-08-04 当天实测堵洞): 首版设计只闸首轮, 结果 f2 复测 pair1 的
-    // escalation 补丁把被拒的 agent 读盘模板**原样带了回来** (run 6d3f9e9b, 每篇又烧 19-141s)。
-    // 违规补丁按无效补丁处理 → 重试带建议; 用尽 → exec:null 回落整图重规划 (那条路有闸)。
-    let patched = applied.applied.plan;
-    if (config.leafTierGate) {
-      // 同首轮: 能确定性改的直接改 (零规划发), 改不动的才按无效补丁重试。
-      // 这条路上"再问一次"尤其贵 —— 补丁轮坐的是 escalation 座, 而 run A 就是在这里连拒 3 次
-      // 之后放弃补丁模式、退回整图重画、再被 D-21 拒一次。
-      const rw = autoRewriteLeafTier(patched, {
-        ...(config.leafTierThresholdBytes !== undefined ? { thresholdBytes: config.leafTierThresholdBytes } : {}),
-      });
-      patched = rw.plan;
-      for (const r of rw.rewritten) {
-        logger.warn(
-          { node: r.node, readNode: r.readNode, command: r.command, bytes: r.totalBytes },
-          '[omd/executor-dag] escalation 补丁被 leaf 档位闸**自动改写** → 无需重试 (g1 图#9)',
-        );
-      }
-      const gateFindings = rw.residual;
-      if (gateFindings.length > 0) {
-        patchGateRejects++;
-        lastErr = `leaf 档位闸拒 (大内容进 prompt 不进工具环): ${gateFindings.map((f) => f.message).join(' | ')}`;
-        logger.info(
-          { nodes: gateFindings.flatMap((f) => f.nodes), autoRewritten: rw.rewritten.length },
-          '[omd/executor-dag] escalation 补丁被 leaf 档位闸拒 → 带建议重试 (g1 图#9; 改不动的那部分)',
-        );
-        continue;
-      }
-    }
-    const { changed, removed, added } = applied.applied;
-    const plan = patched;
-    logger.info(
-      { changed, removed, added, total: Object.keys(plan.nodes).length },
-      '[omd/executor-dag] escalation 补丁采纳 → 程序化 merge (S3.6; 未补丁节点按构造复用)',
-    );
-    const exec = await executePlan(applyPlanFilters(plan, config), task, config, generate, usage, templates, prior, blameAnchor, warnedUnknownProfiles);
-    return { exec, usage };
-  }
-  logger.warn({ err: lastErr }, '[omd/executor-dag] escalation 补丁模式未产出有效补丁 → 回退整图重规划 (S3.6 fail-open)');
-  return { exec: null, usage };
-}
 
 /**
  * 执行一张**已定** plan (conductor 路径 ∨ D-7 预构造入口共用): topo 分层 → ready-set 现场 fan-out
@@ -1079,8 +669,7 @@ async function executePlan(
   warnedUnknownProfiles: Set<string> = new Set(),
 ): Promise<ExecOnce> {
   let conductorUsage = initialConductorUsage;
-  // C-1 (2026-08-19): 引擎外层轮 ++。每次 executePlan 入口 = 新一轮; planAndExecute 走主路径,
-  // tryPatchReplan 走补丁路径 (两者最终都进 executePlan, 单点 ++ 即可覆盖), 预构造入口也走这里。
+  // C-1 (2026-08-19): 引擎外层轮 ++。每次 executePlan 入口 = 新一轮 (首轮与升级重跑轮都进这里, 单点 ++ 即可覆盖)。
   // 跨 run 不重置 —— 不同 run 在 db 靠 runId 区分。
   const currentEngineRound = ++_engineRound;
   // D-3 反馈锚定 (SDD 2026-08-10-blame-scoped-node-retry): verifier 意见只 append 到被责备
@@ -1226,8 +815,6 @@ async function executePlan(
   let trailerChecked = 0;
   let trailerFindings = 0;
   const seenObservations = new Set<string>();
-  /** conductor 运行时展开出来的子节点 id —— `detector` 的消费者只在内环里, 别处设了要响亮忽略。 */
-  const conductorChildIds = new Set<string>();
   /**
    * 运行期内容寻址 id → **规划期的可读名** (2026-07-30 live 挖出来的)。
    *
@@ -1293,42 +880,6 @@ async function executePlan(
     } catch {
       return null;
     }
-  };
-  /**
-   * 一轮内环在盘上留下的产物指纹 (G5 正解的输入)。
-   *
-   * ⚠ 读不到就记 `null`, **不跳过** —— 跳过等于把"量不到"悄悄当成"这个文件不存在于本轮",
-   * 而下游判据一比就成了"路径集变了 → 有位移"。那是**拿缺失冒充证据**, 方向还正好反了。
-   * 记 null 之后, 检测器见到任一 null 就整轮不判 (fail-open, 倾向不报)。
-   */
-  const collectRoundArtifacts = (roundResults: ReadonlyMap<string, LeafResult>): RoundArtifacts => {
-    const hashes: Record<string, string | null> = {};
-    for (const r of roundResults.values()) {
-      // **用这个节点自己的根**, 不是引擎进程的 cwd —— R2 隔离档下 leaf 跑在另一棵 worktree 里。
-      // 拿错根去找文件会全部 hash 成 null, 于是检测器在最该用它的配置里静默失效 (端到端用例抓住的)。
-      const root = r.artifactRoot ?? continuity?.repoRoot ?? process.cwd();
-      // S50 收敛: 路径解析走 `resolveArtifactPath` (INV-6 · detector population 不再恒 null
-      // —— 主干绝对前缀的产物落在 worktree 时, 这条把锚回补上)。
-      const repoRoot = continuity?.repoRoot ?? process.cwd();
-      for (const p of r.filesTouched ?? []) {
-        hashes[p] = hashArtifact(resolveArtifactPath(p, { root, repoRoot }));
-      }
-      // ── N7 (2026-07-31): **声明了产物却没写出来** 的那一格 ──────────────────────
-      //
-      // 产物闸判 empty-artifact 的节点恰好没有 filesTouched, 于是它对 population 的贡献是 0;
-      // 一轮里若这类占满, population 归零 → 「产物没变」检测器**静默不判**。
-      // 2026-07-31 两跑 live 的第二个 0 就是这么来的 —— 不是没卡住, 是这条瞎了。
-      //
-      // 用**计划里声明的** output_path 补进 population: 文件真不在 → ARTIFACT_ABSENT
-      // (确定性事实, 可跨轮比较); 在 → 照常 hash (它可能只是没记 filesTouched)。
-      const declared = (plan?.nodes[r.id] as { output_path?: string } | undefined)?.output_path;
-      if (declared && !(declared in hashes)) {
-        // S50: 同 helper (INV-8 · 相对路径行为一字不变)。
-        const abs = resolveArtifactPath(declared, { root, repoRoot });
-        hashes[declared] = existsSync(abs) ? hashArtifact(abs) : ARTIFACT_ABSENT;
-      }
-    }
-    return { hashes };
   };
 
   /** 跑一次制品边 lint (D-12/INV-P2-4) → 新发现的观察条目。零模型调用, 只报告不拦截。 */
@@ -1744,13 +1295,6 @@ async function executePlan(
    * 不挂空标题、不写「(无)」—— 仓规坑①: 「没有」与「有但是空」在读者那里是两件事。
    */
   const PRIOR_ROUNDS_CAP_CHARS = 1200;
-  /**
-   * ask 出口的触发轮数 (2026-08-28): **连续**几轮契约 unknown 才停轮问人。
-   *
-   * 2 而不是 1: 第 1 轮材料本来就少, unknown 很常见, 探索一轮多半就清楚了。
-   * 2 而不是 3: 默认 `max_rounds` 是 1–2, 定 3 就是一条永远够不着的闸 (仓规: 永远绿的闸不是闸)。
-   */
-  const ASK_UNKNOWN_STREAK = 2;
   /** 单轮摘要里判词部分的额度 —— 一轮吃满整块预算会把其余轮全挤掉。 */
   const PRIOR_ROUND_REASON_CAP = 240;
   const renderPriorRounds = (verdicts: readonly RoundVerdict[], currentRound: number): string => {
@@ -1982,931 +1526,7 @@ async function executePlan(
     }
   };
 
-  // ── P3 批次 3 第一次加厚: `executor:'conductor'` 运行时**异构**展开 (D-B/D-C/D-D) ───────
-  //
-  // 与 map 的分工: map 扇的是「同一件事的 N 份」(模板 + 运行时清单); conductor 展的是
-  // 「一件事的若干不同步骤」(各有各的 goal/executor/依赖) —— 模板表达不了的形状。
-  //
-  // **本次不带环** (刻意): 第一次加厚只做「展开 + 局部调度」, 跑通为先。环 (D-A: 把外层 fixpoint
-  // 搬进节点内) 留给第二次加厚 —— P1 的 double-loop 教训是两层 verify 必须二选一, 在环搬进来
-  // **之前**先把外层撤掉是错的顺序, 会有一段时间两层都不在。
-  /**
-   * 内环 judge (D-E): 判的是**这个节点的 goal 达成没有**, 不另加一层全局验收
-   * (加了就要回边, 破坏无环)。形状承 D-4: 除了收敛与否, 还要它**点名**哪些子节点的产出不作数
-   * —— 点名才铸得出票, 铸不出票就只能整轮重来。
-   *
-   * fail-closed: 解析不出结论 → 判未收敛并说明, 不当作收敛 (谎报收敛比多跑一轮贵得多)。
-   */
-  const judgeConductorRound = async (
-    id: string,
-    goal: string,
-    leaf: LeafResult,
-    round: number,
-    children: readonly JudgeChildView[],
-    /**
-     * 「声称的引擎动作 ⊄ 引擎记录」本轮的确定性检出 (2026-08-05, report-only)。
-     * 由 {@link runConductorRound} 从**同一个** children 数组算出来后传进来 —— 在这里重算会
-     * 多一份可漂的输入面 (那正是 `orderedChildren` 逐字重建踩过的坑)。
-     */
-    claims: readonly UnsupportedClaimFinding[],
-  ): Promise<{
-    converged: boolean;
-    reason: string;
-    rejected: string[];
-    usage: ModelUsage;
-    /** judge **调不通**时的错误原文 (确定性故障: config / transport / 非 provider-fault 的 http); 瞬时故障 (parse/validation/truncation/429/5xx) → null。 */
-    unreachable: string | null;
-    /**
-     * judge 这一发**瞬时**失败时的逐字身份 (`kind|status|message`); 没失败或已判确定性 → null。
-     * 闸级熔断的比对键 —— 逐字相同连续 K 轮 = 这一格零位移 (§8.4 的「相同」而不是「重复」)。
-     */
-    faultKey: string | null;
-    /**
-     * 这份判词是**确定性闸合成的**, 不是 LLM judge 投的票 (#148, 2026-08-17)。
-     * 有值 → judge 没被问过 —— 「没投票」≠「投了反对票」(仓规坑 1): 合成票不得写进
-     * `LeafResult.judgeConverged` (那一位按契约只装 judge 自己的票), journal 里记 `gate-rejected`。
-     */
-    synthetic?: 'round-failed' | 'false-completion';
-    /**
-     * G2: judge 顺手判的契约结论。缺席 = **没被问过** (闸合成 / 调不通 / 模型没答), 不是 aligned。
-     */
-    contractVerdict?: 'aligned' | 'unknown' | 'needs_revision' | 'invalid';
-    /** G2: `contractVerdict !== 'aligned'` 时, 原题的哪一条被写歪了 (逐字)。 */
-    contractIssue?: string;
-    /** ask 出口: `contractVerdict='unknown'` 时 judge 说该问人的那一个问题 (只是内容, 不是触发器)。 */
-    askOwner?: string;
-    /**
-     * judge 给的**下一步** (#228, 2026-08-23) —— 只有 LLM judge 真答了才有值。
-     *
-     * 与 `synthetic` / `unreachable` 互斥: 那两条出口 judge 没被问过, 合成一条"下一步"
-     * 就是拿闸的回声冒充 judge 的动作建议。缺席合法, 由 `renderHandoff` 决定不挂这一块。
-     */
-    nextSteps?: string;
-  }> => {
-    const childIds = children.map((c) => c.id);
-    // 整轮就没跑成 → 直接未收敛, 省一次 judge 调用 (同 llm-judge 的 status==='failed' 短路)。
-    if (leaf.status === 'failed') {
-      // D-3 (2026-08-11): 判决升级为事件 (整轮没跑成 = 确定性短路, 仍给一条 judge 判词)。
-      emitNodeEvent({ type: 'verdict', id, gate: 'judge', verdict: 'fail', round, reason: `整轮失败: ${leaf.output.slice(0, 300)}` });
-      return { converged: false, reason: `整轮失败: ${leaf.output.slice(0, 300)}`, rejected: [], usage: { in: 0, out: 0 }, unreachable: null, faultKey: null, synthetic: 'round-failed' as const };
-    }
-    // ── D-4 谎报完成闸 (2026-08-10, SDD 切片 4) ─────────────────────────────────
-    // 确定性先行: 节点声称完成 ∧ 引擎证据**实败** (校验命令正非零退出码 / 状态 failed)
-    // = 硬矛盾, 当场判未收敛, **不烧一次贵座 judge 调用** (同冻结判据的顺序纪律)。
-    // 判据在 plan/false-completion.ts; 词表蒸自本仓 gate 历史误放样本 (INV-2 反向自检
-    // 见 false-completion.test.ts)。lexiconHits = O-2 假阳率读数面, 只记不拦。
-    const fc = gateFalseCompletion(checkableFromJudgeView(children));
-    if (fc.findings.length) {
-      logger.warn(
-        { node: id, round, hits: fc.lexiconHits, nodes: fc.findings.map((f) => f.nodeId) },
-        '[omd/executor-dag][false-completion] D-4 谎报完成闸: 声称完成而验收命令实败 → 判未收敛',
-      );
-      // D-3 (2026-08-11): 确定性闸的判决独立成 gate:'gate' 词表 (与 LLM judge 分开, D-9 同一读法)。
-      emitNodeEvent({ type: 'verdict', id, gate: 'gate', verdict: 'fail', round, reason: renderFalseCompletionFindings(fc.findings) });
-      return {
-        converged: false,
-        reason: renderFalseCompletionFindings(fc.findings),
-        rejected: fc.findings.map((f) => f.nodeId),
-        usage: { in: 0, out: 0 },
-        unreachable: null,
-        faultKey: null,
-        synthetic: 'false-completion' as const,
-      };
-    }
-    const judgeCoord = config.judgeModel ?? config.conductorModel;
-    try {
-      // **复用外层那份判词** (D-E, 2026-07-29 实测后改): 我原先另写的一份在 `fabricated` 段
-      // 30 次里 9 次谎报完成, 而外层那份 100% —— 差的是它判词里那条「捏造 → converged=false」
-      // 与「先抽出所有明确要求再逐条对照」。详见 plan/conductor-judge.ts 的模块注。
-      // 顺带白拿 responseSchema 强制结构化 (裸 JSON 手抠时 flash 档实测出过解析失败与空裁决)。
-      let usage: ModelUsage = { in: 0, out: 0 };
-      const judge = makeLlmConvergenceJudge<null>({
-        judgeModel: judgeCoord,
-        task: goal,
-        // G2 (2026-08-28): 原题原文。`task` 是**这个节点的 goal**, 而 goal 是从原题派生的 ——
-        // 派生这一跳没有任何人回头查过。给了它, judge 才判得了「goal 相对原题写歪没有」。
-        // 不新加一层验收环 (那条早被拒过, 理由是回边破坏无环): 同一个判官多答一位控制头,
-        // 零额外调用、控制流形状不变。
-        rootTask: task,
-        // judge 看的是**专门渲染的视图**, 不是节点对下游的 output —— 后者带"N/M 成功"的开场白
-        // (对 judge 是"都好着呢"的暗示) 且只有可读名没有可点名的 id。
-        // 确定性差集当**显式证据**接在视图后面 (2026-08-05)。judge 对"产物断言了一件引擎没做过
-        // 的事"基线召回 0/64, 而把这条差集**显式说给它听**之后 3/4 类伪装升到 94~100% ——
-        // 也就是说那不是"模型不行", 是**证据没进视图** (与 S1 产物内容、`[引擎实测]` 那行同源)。
-        // 拼法逐字沿用 eval 的 `--claim-check` 臂 (appendClaimEvidence), 生产与读数同形状。
-        // ⚠ 它**只是证据**: 判还是 judge 判, 引擎这一档一票不铸 (report-only)。
-        extract: () => ({ status: 'done', summary: appendClaimEvidence(renderRoundForJudge(children), claims) }),
-        callModelFn: async (req) => {
-          // 观测面接线 (2026-07-31)。此前这一发**不带 meta** —— 而 `send()` 的口径是
-          // `traceId = meta?.sessionId ?? 自生成`、`name = meta?.role ?? 'model-call'`,
-          // 于是内环 judge 每一发都落进**自己的一条孤立 trace**、名字是通用的 `model-call`。
-          //
-          // 这不是"少了个标签"。2026-07-31 实测: judge 座位在 codex 上恒抛
-          // `Unsupported parameter: temperature`, 环每轮拿不到裁决 → 空转 65 分钟,
-          // 而那条 ERROR **不在这次 run 的 trace 里** —— 是靠全库按名字捞才找到的。
-          // 判词是环的承重决定, 它必须在图的那条 trace 上, 且叫得出自己是谁。
-          const r = await (config.judgeSend ?? send)({
-            ...req,
-            meta: { ...req.meta, sessionId: obsTraceId, role: `judge:${id}`, nodeId: id },
-          });
-          usage = addUsage(usage, r.usage ?? { in: 0, out: 0 });
-          return r;
-        },
-      });
-      const v = await judge(null, round);
-      const { rejected, ghosts } = splitNamedIds(v.rejectedNodes, childIds);
-      if (ghosts.length) {
-        logger.warn({ node: id, round, ghosts }, '[omd/executor-dag] 内环 judge 点名了子图中不存在的 id → 丢弃');
-      }
-      // A5: 空理由的兜底在**源头** (`llm-judge` 的 failureReason ??) 补, 不在这里补第二遍 ——
-      // 同一件事两处兜底就是两处会漂。这里若拿到空串, 那是绑定层的缺陷, 不该被静默糊上。
-      if (!v.converged && !v.failureReason) {
-        logger.warn({ node: id, round }, '[omd/executor-dag] 内环 judge 判未收敛却零理由 → 下一轮反馈为空 (A5, 应由 llm-judge 兜住)');
-      }
-      emitNodeEvent({ type: 'verdict', id, gate: 'judge', verdict: v.converged ? 'pass' : 'fail', round, ...(v.failureReason ? { reason: v.failureReason } : {}) });
-      // #228: `nextSteps` 只在 judge 真答了这条路径上带出去。上面 false-completion 的 synthetic
-      // 出口与下面 catch 的 unreachable 出口都**不带** —— 那两处 judge 没被问过, 合成一条
-      // "下一步"就是拿闸的回声冒充 judge 的动作建议 (与 `judgeConverged` 同一条纪律)。
-      // G2: 契约结论只在 judge 真被问过这条路上带出去 —— 同 `nextSteps` 的纪律。
-      return {
-        converged: v.converged,
-        reason: v.failureReason ?? '',
-        nextSteps: v.nextSteps,
-        rejected,
-        usage,
-        unreachable: null as string | null,
-        faultKey: null as string | null,
-        ...(v.contractVerdict ? { contractVerdict: v.contractVerdict } : {}),
-        ...(v.contractIssue ? { contractIssue: v.contractIssue } : {}),
-        ...(v.askOwner ? { askOwner: v.askOwner } : {}),
-      };
-    } catch (err) {
-      // fail-closed: 判不出来就当没达成。judge 挂掉不该变成"那就算过了吧"。
-      logger.warn({ node: id, round, err: String(err) }, '[omd/executor-dag] 内环 judge 无结论 → 判未收敛 (fail-closed)');
-      // **「调不通」与「判词解析不了」不是一回事** (2026-07-31 实测那 65 分钟): 前者是
-      // 传输/配置层的确定性故障 (codex 拒 temperature → 每一轮同样抛), 再转多少轮都一样;
-      // 后者是模型这一发没说清楚, 下一轮可能就好了。此前两者都落"未收敛"、都继续转 ——
-      // 于是一个改配置一分钟能修的事, 烧掉了全部轮数, 而症状看起来像"任务太难"。
-      // 判据**不靠猜错误文本**, 取 model 层已有的可重试性分类 (`isTransientModelFault`,
-      // 内里复用熔断那份 `isProviderFault` —— 一套分类两处用, 不新造第二份会漂的表)。
-      //
-      // ⚠ 2026-08-16 订正: 此前判据是裸的 `err instanceof ModelError`, 而 ModelError 的 kind
-      //   有六个 —— `parse` (invalid JSON) 与 `validation` (schema 不合) 正是上面说"下一轮可能
-      //   就好"的那类, 却被归进了"再转多少轮都一样"。**注释写对了, 判据写反了。**
-      //   它一直没被发现, 是因为 gate 坐在 flash 上时这一格 0/120 从没亮过; 换 M3 后 1/60
-      //   (`.omd/eval/gate-m3`) —— 一次 parse 抖动就白白终止整个内环。
-      const unreachable =
-        err instanceof ModelError && !isTransientModelFault(err) ? String((err as Error).message ?? err) : null;
-      // 闸级熔断的比对键: 只在**判成瞬时**的那支产出 —— 已判确定性的走上面那条, 不用再量。
-      // `kind|status|message` 逐字, 与 §8.4 的「失败输出逐字相同」同一个键法。
-      const faultKey =
-        unreachable === null && err instanceof ModelError
-          ? `${err.kind}|${err.status ?? ''}|${String(err.message)}`
-          : null;
-      // A5: 这句话的读者是**下一轮重画的 conductor**。旧文案 (`judge 无可解析结论 (fail-closed)`)
-      // 报得对, 但它是**引擎侧的事故**, 而读者会把出现在「上一轮未通过」里的任何东西当成对自己
-      // 方案的评价 —— 于是它会为了迎合一句根本不存在的判词去改图。所以第一句先把这件事撇清。
-      emitNodeEvent({ type: 'verdict', id, gate: 'judge', verdict: 'fail', round, reason: '【引擎侧事故】judge 调用失败或结论无法解析 → 判未收敛 (fail-closed)' });
-      return {
-        converged: false,
-        unreachable,
-        reason:
-          '【引擎侧事故, 不是对上一轮方案的评价】judge 这一轮没能给出任何裁决 (调用失败或结论无法解析)。' +
-          '也就是说: **上一轮的方案没有被判过**, 没有任何证据说它坏。' +
-          '不要为了迎合一句不存在的判词去改图 —— 若上一轮的产出看起来是完整的, 原样再交一次即可。',
-        rejected: [],
-        usage: { in: 0, out: 0 },
-        faultKey,
-      };
-    }
-  };
 
-  /** 一轮内环: 展开 → 闸 → 局部调度 → 汇总。环由 {@link runConductorNode} 在外面绕。 */
-  const runConductorRound = async (
-    id: string,
-    round: number,
-    prevReason: string,
-    /**
-     * 上一轮 judge 给的「下一步」(#228) —— 与 `prevReason` **分两个参数**, 不并串。
-     * 缺席 (judge 没被问过 / 没答) → undefined, `renderHandoff` 据此不挂这一块。
-     */
-    prevNextSteps: string | undefined,
-    /**
-     * #245: 上一轮冻结判据红的失败明细 —— 与 `prevNextSteps` 同款 (独立参数 / 不并串 / 缺席
-     * 时 `renderHandoff` 不挂这一块 / 一轮一鲜)。判据绿 / 闸拒 / 赦免 / 未配 → undefined。
-     */
-    prevCriterionFailDetail: string | undefined,
-    /**
-     * G1 (2026-08-28): **本节点到目前为止每一轮的判词**(`RoundVerdict[]`, resume 时含跨进程的
-     * 那几轮)。`renderPriorRounds` 只渲染 `round < 当前轮 - 1` 的那些 —— 上一轮已由 `prevReason`
-     * 整段带出去。空数组 / 只有上一轮 → 渲染出空串, 一个字不挂 (INV: 缺席零字节)。
-     */
-    priorVerdicts: readonly RoundVerdict[],
-    poisoned: ReadonlySet<string>,
-    /** 上一轮的子节点结果 (D-21 内环版: 跨轮复用的匹配源, 键 = 内容寻址 id)。 */
-    prevResults: ReadonlyMap<string, LeafResult>,
-  ): Promise<{
-    leaf: LeafResult;
-    children: JudgeChildView[];
-    usage: ModelUsage;
-    results: Map<string, LeafResult>;
-    /** D-Q 图内检测者本轮的裁决 (与 judge 的票并进同一个毒集)。 */
-    detector: { rejected: string[]; blocked?: string };
-    /** D-12 制品边 lint 本轮**新**发现的观察条目 (去重后; 进下一轮失败原因)。 */
-    lint: DagObservation[];
-    /**
-     * 「声称的引擎动作 ⊄ 引擎记录」本轮的确定性检出 (2026-08-05, report-only)。
-     * 判官视图那一路由 {@link judgeConductorRound} 消费; 这里返出来是给账本与下一轮 prompt。
-     */
-    claims: UnsupportedClaimFinding[];
-    /**
-     * 上面那批压成的观察条目 —— **本轮全量, 不是增量**。
-     *
-     * ⚠ 与 `lint` 那条 (只回 observe 判新的) 刻意不同: journal **每轮覆写**, 而
-     * 「上一轮未通过」是本轮快照不是增量。只在首次出现那轮进 prevReason 的话, 盘上留下的最后
-     * 一轮就**没有它** —— 而 report-only 的全部价值正是事后能拿原句人工核对误伤。
-     * 账本那一侧照旧去重 (observe 内部按 kind|nodes|message)。
-     */
-    claimObs: DagObservation[];
-    /** 本轮展开出的子节点 id (D-Q 空转检测的比对面)。 */
-    childIds: string[];
-    /** #158 轮内派发闸触发原文 (null = 没触发) —— 冒给 runConductorNode 上叶。 */
-    budgetHalt: string | null;
-  }> => {
-    const node = plan!.nodes[id]!;
-    const deps = node.depends_on ?? [];
-    let usageAcc: ModelUsage = { in: 0, out: 0 };
-
-    // ── 1. 让 conductor 现场画子图 ──
-    // 上游输出进 prompt (有 fan-in 摘要用摘要), 与 map lister 同形。
-    const depCtx = deps.length
-      ? `\n\n${deps.map((d) => fencedUpstream(d)).join('\n\n')}`
-      : '';
-    // **环的信息通道**: 上一轮的失败原因回灌给 conductor, 让它**重新画**而不是重跑同一张图。
-    // 这是 D-A 环的全部价值 —— 重跑只能把同样的活再干一遍, 重画才补得出上一轮压根没有的步骤
-    // (D-G′ 说的「补调研」正是这个形状: 不需要回边, 每一轮都是一张全新的无环子图)。
-    // G1: 更早几轮的判词摘要排在 `<上一轮未通过>` **之前** —— 时序自然 (老→新), 而且最近那一轮
-    // 离 `RETRY_INSTRUCTION` 最近。它走独立预算, 不吃 `HANDOFF_CAP_CHARS` (单一变量: 上一轮判词
-    // 的额度本片一个字符没动)。首轮 / 只有一轮历史 → 空串, 整块缺席。
-    const retryCtx = prevReason
-      ? `${renderPriorRounds(priorVerdicts, round)}${renderHandoff(id, round, prevReason, prevNextSteps, prevCriterionFailDetail)}\n${RETRY_INSTRUCTION}`
-      : '';
-    // **owner 指令** (S3 / D-S): 与失败原因同一条管道、**独立的块**、**逐字**。
-    // 排在失败原因**之前** —— 人的指令优先级高于机器的观察, 顺序上也该先看见。
-    // ⚠ 一个字都不许加工: 观测者在这条链上只是信使, 它改写了, 失真的地方 owner 自己看不见。
-    // A8: 拿本轮 token 去渲染 —— 它是**唯一带 token 的块**, 而带内伪造品复制得了文案复制不了 token。
-    const ownerCtx = config.ownerDirectives ? config.ownerDirectives(round, runNonce) : '';
-    // ── 轮级 conductor 升级 (D-F 顺带搬进来的) ────────────────────────────────
-    // 外层 fixpoint 有这条: 连着几轮不收敛就换更强的脑子重画 (弱 conductor 画不出来的图, 再画
-    // 一遍多半还是画不出来)。撤外层 (D-F) 不该顺手把这个能力一起撤掉 —— 内环是它现在唯一的家。
-    // 旋钮与外层**共用** ExecutorDagConfig 的 conductorEscalationModel/escalateAfterRound
-    // (两处各写一份默认值就会漂)。provider 没注册 → escalationProviderReady 判 false, 维持弱。
-    const useEscalation =
-      round >= (config.escalateAfterRound ?? 2) && escalationProviderReady(config.conductorEscalationModel);
-    // TPL-3 显式最高优先: 手写 plan 钉了 node.model 就用它 (升级也压不过显式指定)。
-    // (stamp pass 刻意跳过 conductor 节点 —— 它盖的是 leaf 档坐标, 这里根本不读。)
-    const conductorCoord = node.model ?? (useEscalation ? config.conductorEscalationModel! : config.conductorModel);
-    if (useEscalation && !node.model) {
-      logger.info(
-        { node: id, round, from: config.conductorModel, to: config.conductorEscalationModel },
-        '[omd/executor-dag] 内环多轮未收敛 → conductor 轮级升级重画 (D-F)',
-      );
-    }
-    // ── 2. 纯展开: D-B 内容寻址 id + D-D 禁嵌套 + 环检测 + 硬顶 ──
-    // 执行段的附加禁单 (research) 按调用传 —— 契约段不传, 它的 research 子节点是正当的。
-    // E-T2: researchRunner 缺席时契约段也禁 —— 这不是政策收紧, 是能力缺席 (子节点执行期必败)。
-    // (forbidExecutors 提到 attemptExpand 之前算, 与展开尝试次数无关。)
-    const forbidBase =
-      plan!.name === EXECUTE_SEGMENT_PLAN_NAME ? EXECUTE_SEGMENT_FORBIDDEN_EXECUTORS : undefined;
-    const forbidExecutors = config.researchRunner
-      ? forbidBase
-      : new Map<string, string>([
-          ...(forbidBase ?? []),
-          ['research', '本部署无 search provider — research 子节点执行期必败 (E-T2), 用本地材料的 agent/leaf 完成'],
-        ]);
-    // P2a (2026-09-02): generate() 成功之后的 parsePlan 格式类拒绝 / applyPlanFilters 管线抛错 /
-    // expandConductorNode 子图被拒, 三者都是"模型这一发画错了, 换句话再问一次多半就好"的自纠类错误,
-    // 与 generate() 自身抛错 (transport/quota/config —— 换个说法问也不会变, 立即重试只是白烧一次
-    // 配额) 完全不同类。所以 generate() 故意留在 attemptExpand **调用方**看不到 try/catch 里的位置
-    // (它自己不 catch), 一旦抛错就直接冒到下面的外层 catch —— 与 planAndExecute/tryPatchReplan
-    // 两处兄弟调用点的自纠重试同款套路, 唯独这里此前一直缺席。
-    const attemptExpand = async (
-      extra: string,
-      thinking: 'off' | 'low' | 'medium' | 'high' | 'xhigh' | undefined,
-    ): Promise<
-      | { ok: true; sub: ConductorPlan; expand: ReturnType<typeof expandConductorNode> }
-      | { ok: false; correction: string }
-    > => {
-      const sys = conductorSystemPrompt({
-        ...(config.agents ? { agents: config.agents } : {}),
-        templates: templateRoster(templates),
-        profiles: profileRoster(config),
-        profile: config.conductorPromptProfile ?? conductorPromptProfileFromEnv(),
-        researchAvailable: Boolean(config.researchRunner),
-      });
-      const userMsg =
-        // A8: token 声明必须排在**任何**不可信内容之前 —— 读者先拿到判据, 再看材料。
-        `${PLAN_BOUNDARY}${trustHeader(runNonce)}${node.goal ?? id}${depCtx}${ownerCtx}${retryCtx}\n\n` +
-        // D-D 写进 prompt 而不只靠事后拒: 让它知道边界, 比让它撞上去便宜。
-        '注意: 本次分解出的节点**不得**再用 executor:"conductor" 或 executor:"map" —— ' +
-        '你现在就是运行时展开, 已经知道清单了, 直接把步骤列出来即可。' +
-        extra;
-      // **prompt 观测面** (2026-07-31)。走 `logger.debug` 而不是新加旋钮/读 env:
-      // 默认 logger 的 debug 是空函数 → 生产零成本; 想看的人 (冒烟脚本 / 排障) 用
-      // `setCoreLogger` 注入一个会记的实现即可 —— 现成的接缝, 不新开一个。
-      //
-      // 为什么值得有: 本轮四条缺陷 (A5 三条 + A8 一条) **全部**是靠抓 prompt 抓出来的,
-      // 而 live 上我们对这一面**完全瞎** —— 盘上留下了 plan、结果、checkpoint、journal,
-      // 唯独没留下"模型到底看见了什么"。那恰恰是最能解释它为什么那么画的那一份。
-      logger.debug({ node: id, round, phase: 'conductor', model: conductorCoord, system: sys, prompt: userMsg }, '[omd/prompt] conductor');
-      const { text, usage } = await generate({
-        messages: [
-          { role: 'system', content: sys },
-          { role: 'user', content: userMsg },
-        ],
-        // 坐标 (含轮级升级) 在上面算好, 见 conductorCoord。
-        model: conductorCoord,
-        // 节点内重展开 —— 观测上要认得出是哪个 conductor 节点的第几轮; 原地重试再挂 `:retry`
-        // 后缀 (成本账与首发分开, 便于事后从 langfuse/usage 账本核对重试没有偷偷计进轮预算)。
-        traceName: extra ? `conductor:${id}:retry` : `conductor:${id}`,
-        traceNodeId: id,
-        thinkingLevel: thinking,
-        maxTokens: config.conductorMaxTokens ?? (Number(process.env.OMD_CONDUCTOR_MAX_TOKENS) || 32_768),
-      });
-      usageAcc = addUsage(usageAcc, usage);
-      let sub: ConductorPlan;
-      try {
-        const parsed = parsePlan(text, { knownTemplates: new Set(templates.keys()), knownServers: knownMcpServerNames(mcpRegistryRoot(config)) });
-        if (!parsed.ok) throw new Error(`子图不是有效 plan: ${parsed.error}`);
-        // ── D-N 展开闸 (前半): 子图过**与外层同一条** pass 管线 (oracle 过滤 → prune → dedup →
-        // evidence → stamp)。此前子图一条 pass 都不过, 后果不是"少了点优化"而是两个实打实的洞:
-        //   ① `tier` 在子节点上是**哑弹** —— stamp 才是把档位翻译成坐标的那一步, 不过它就全部
-        //      掉到静态 leafModel, conductor 写 tier:'strong' 白写。
-        //   ② evidence pass 的硬闸 (UI 交付物必须挂确定性截图闸) 对子图不生效。
-        // 管线抛错 = fail-closed 拒整份子图, 与外层 plan 撞上坏 pass 时同一语义。
-        sub = applyPlanFilters(parsed.plan, config);
-      } catch (err) {
-        return { ok: false, correction: err instanceof Error ? err.message : String(err) };
-      }
-      const expand = expandConductorNode(id, sub, {
-        ...(node.max_nodes ? { maxNodes: node.max_nodes } : {}),
-        ...(forbidExecutors ? { forbidExecutors } : {}),
-      });
-      if (expand.status !== 'ok') {
-        // 'empty' 也走这条: 与 map 的「空清单 = 成功 0 子」**刻意不同**。map 的空是 lister 如实报告
-        // "没有东西要处理", 是一条真实且常见的信息; conductor 的空是**它没能把这件事分解出来** ——
-        // 这里根本到不了 (PlanSchema 要求 ≥1 节点, 空的在 parsePlan 就被拒了), 但万一到了,
-        // 判成 done 就是给"没做任何事"发一张成功票, 那是 empty-done 的同一种坏。
-        return {
-          ok: false,
-          correction: `子图被拒 (${expand.status}): ${expand.error ?? '空子图 — conductor 没能分解出任何步骤'}`,
-        };
-      }
-      return { ok: true, sub, expand };
-    };
-
-    let expand: ReturnType<typeof expandConductorNode>;
-    try {
-      const defaultThinking = config.conductorThinkingLevel ?? config.seatThinking?.(conductorCoord, 'conductor') ?? 'high';
-      let attempt = await attemptExpand('', defaultThinking);
-      if (!attempt.ok) {
-        logger.warn(
-          { node: id, round, err: attempt.correction },
-          '[omd/executor-dag] conductor 展开失败 (可自纠) → 原地重试一次 (不计轮)',
-        );
-        // 降至 medium (P2a): 这是一次机械式格式纠正, 不是重新决策 —— 不需要首发那份 high 推理。
-        // ⚠ 尊重显式 override: 调用方若钉了 conductorThinkingLevel, 两发都该用它 —— 不然一个
-        // 明确把 conductor 压到 'low' 的调用方, 重试反而比首发想得更用力, 于理不通。只有
-        // "没人管、由 seatThinking/缺省算出来的那份 'high'" 才该被这次机械纠正降级。
-        const correction = `\n\n【上一次展开失败, 请修正后重新输出完整合法的 plan】\n${attempt.correction}`;
-        attempt = await attemptExpand(correction, config.conductorThinkingLevel ?? 'medium');
-        if (!attempt.ok) {
-          logger.warn({ node: id, round, err: attempt.correction }, '[omd/executor-dag] conductor 展开失败 → 重试后仍失败');
-          return {
-            leaf: {
-              id, status: 'failed', failureKind: 'infra-error', kind: 'conductor',
-              output: `[conductor 展开失败: ${attempt.correction}] (重试后仍失败)`,
-              deps, usage: usageAcc,
-            },
-            children: [], usage: usageAcc, results: new Map(), detector: { rejected: [] }, lint: [], claims: [], claimObs: [], childIds: [],
-            budgetHalt: null,
-          };
-        }
-      }
-      expand = attempt.expand;
-    } catch (err) {
-      // generate() 自身抛错 (transport/quota/config 类) —— 不重试: 无 backoff 的立即重试对
-      // 429/配额只是把同一发再打一次, 没有任何自纠机会, 只会加倍花钱 (与 D-D 边界"拒了不许重试"
-      // 同一纪律的另一种形状)。
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn({ node: id, round, err: msg }, '[omd/executor-dag] conductor 节点展开失败 → failed');
-      return {
-        leaf: { id, status: 'failed', failureKind: 'infra-error', kind: 'conductor', output: `[conductor 展开失败: ${msg}]`, deps, usage: usageAcc },
-        children: [], usage: usageAcc, results: new Map(), detector: { rejected: [] }, lint: [], claims: [], claimObs: [], childIds: [],
-        budgetHalt: null,
-      };
-    }
-    if (expand.truncated > 0) {
-      logger.warn({ node: id, truncated: expand.truncated }, '[omd/executor-dag] conductor 子图截断 (no-silent-caps)');
-    }
-    // ── D-N 展开闸 (后半): 结构体检。**刻意只 warn 不拒** —— 这两条都有正当反例
-    // (真的只有一步 / 交付物是文档而非可跑的东西), 没有证据支持一个硬阈值, 就别假装有。
-    // 硬拒的三条 (禁嵌套 / 环 / 非法 plan) 在上面, 那些没有正当反例。
-    for (const w of subgraphWarnings(expand.children)) {
-      logger.warn({ node: id, check: w.check }, `[omd/executor-dag] conductor 子图体检: ${w.message}`);
-    }
-
-    // ── A4 跑前静态闸 (2026-07-31, 补 Fowler 2×2 里最空的那格 computational feedforward) ──
-    // 写竞争与缺输入**在跑之前就算得出来**, 而今天要烧一整轮 agent 调用才发现 —— 写竞争甚至
-    // 根本不报错, 只是"有时候产物不对" (谁最后写谁赢, 赢家由调度顺序定)。
-    // 用**规划期可读名**建一张临时 plan 来查: 判据要说给下一轮的 conductor 听, 而它只认自己起的名字
-    // (2026-07-30 那条"建议拿运行期 id 对下一轮说话"的事故买来的纪律)。
-    // 出口与制品 lint 同款: **只报不拦**, 发现进下一轮重展开的 prompt。
-    //
-    // ⚠ 2026-08-14 修 (issue #25 分支, 一次对照实验当场抓到): 这张临时 plan 此前**键与边不同体系**
-    // —— 键取 `originalId` (可读名), 而 `c.node.depends_on` 已被展开器重写成内容寻址 id。于是子图里
-    // 每一条内部边在这张 plan 上都指向一个不存在的 id, `ancestors()` 的闭包恒为空 → 「有依赖 = 有序 =
-    // 不是竞争」这条豁免**从来没生效过**: 一条 a→b 的链上两个节点写同一个文件, 会被报成写竞争。
-    // 实测对照: 同一张子图直接 lint 得 0 条, 经展开后按老口径 lint 得 `write-race[b,a]`。
-    // 修法 = 把边翻回可读名 (与键同一个体系), 而不是把键换成运行期 id —— 判词的读者是下一轮
-    // conductor, 它只认自己起的名字 (上面那条 2026-07-30 的纪律)。视图本身是纯函数 (可反向自检)。
-    const staticPlan = subgraphLintView(expand.children);
-    const staticFindings = staticLintPlan(staticPlan, {
-      fileExists: (rel) => {
-        try {
-          return existsSync(rel.startsWith('/') ? rel : join(artifactLintRoot, rel));
-        } catch {
-          return true; // 探不到就当它在 —— 不猜, 免得把所有 plan 报红
-        }
-      },
-      // 翻不回可读名的引用 = 指向子图**之外** —— 子节点引用父节点的外层上游是设计允许的
-      // (conductor-expand 的 dep 重写注), 那不是手误, 不报。
-      knownExternal: new Set(Object.keys(plan!.nodes)),
-      // 被截断的兄弟由展开器自报 → 报成 truncated-dependency 而非 dangling-dependency
-      // (owner 判据③: 刻意的悬空与手误的悬空不许混进同一个计数)。
-      truncatedIds: new Set(expand.truncatedNames),
-    });
-    if (staticFindings.length) {
-      observe(staticFindings.map((f) => ({ kind: f.kind, nodes: f.nodes, message: f.message })));
-    }
-    // 「要改的文件里哪些会被自动执行」—— 确定性、零 LLM、只报不拦。进环是因为下一轮 conductor
-    // 判"这一步的后果可不可逆"时缺的正是这条事实 (三臂 eval: 漏标 25–33% → 0%)。
-    const scheduled = scheduledArtifactFindings(staticPlan, artifactLintRoot);
-    if (scheduled.length) observe(scheduled);
-
-    // ── 3. 子节点挂进 plan.nodes → 复用 runNode 全套 (路由/产物闸/checkpoint/resume) ──
-    // 依赖 = 子图内依赖 (已重写成内容寻址 id) **并上父节点的外层上游** —— 后者保证子节点看得见
-    // conductor 节点本该看见的东西 (同 map 子节点接 `depends_on: deps`)。
-    for (const child of expand.children) {
-      const inner = (child.node.depends_on ?? []) as string[];
-      plan!.nodes[child.id] = { ...child.node, depends_on: [...new Set([...inner, ...deps])] };
-      // D-Q: 记下"这是 conductor 展开出来的子节点" —— detector 只在环里有消费者, 别处设了要 WARN。
-      conductorChildIds.add(child.id);
-      // 可读名留档: 图外观察者的建议要用它渲染, 否则那句话的读者 (下一轮 conductor) 认不出。
-      runtimeNodeNames.set(child.id, child.originalId);
-    }
-    // 观察面: 图上多了这些点 (活体事件 + `_dag.json` 的 runtimeNodes 留痕)。
-    recordRuntimeExpansion(id, expand.children.map((c) => c.id));
-    // **本节点自己的毒集**落到 resume 面 (D-A: 毒集的新家是节点级 journal, 见 NodeLoopJournal)。
-    // 上一轮被内环 judge 点名的子节点, 崩溃重来时不许靠 checkpoint 当绿跳过 —— 与外层
-    // `dropPoisonedGreens` 同一条纪律, 只是键是**内容寻址的子节点 id** (见 NodeLoopJournal 的注:
-    // 子图指纹与整图指纹不相等, 而 id 一把钥匙同时开两把锁)。
-    for (const child of expand.children) {
-      if (poisoned.has(child.id) && resumeGreens.delete(child.id)) {
-        logger.info({ node: id, child: child.id }, '[omd/executor-dag] 内环毒集命中 → 该子节点强制重跑 (D-A)');
-        // 刀①-1: 盘上那份也归档, 否则产物闸第二支照样读得到被否决的子节点 checkpoint。
-        archivePoisoned([child.id]);
-      }
-    }
-
-    // ── D-21 的内环版: **跨轮复用** ────────────────────────────────────────────
-    // 环搬进节点之后一度把这条丢了 —— 外层 fixpoint 有 `computeReuse`, 语义没变的节点零 LLM 注入
-    // 上轮输出; 内环第 2 轮却把**每个**子节点重跑一遍 (实测 3 个子节点 → 6 次调用)。修复轮的图与
-    // 上一轮大半同构, 全重跑就是把环的成本翻倍。
-    //
-    // 匹配免费: 子节点 id 是内容寻址的, "同 id" ≡ "同规格 + 同祖先规格"。只需再要一条 ——
-    // **前驱也得可复用**: 上游若要重跑, 本节点吃到的输入就变了 (与 computeReuse 的 `deps.every` 同理)。
-    const reuseLocal = new Map<string, LeafResult>();
-    if (prevResults.size > 0) {
-      // ── INV-P2-5 制品级毒**作用在消费方** (D-12, 2026-07-30) ──────────────────
-      // 被拒子节点写过的文件 = 可疑制品。上一轮**读过**这些文件的兄弟节点, 哪怕自己没被点名、
-      // id 也没变, 一样不能复用 —— 它的产出是**吃着一份已被判为坏的输入**做出来的。
-      // 为什么这条不能靠现有的前驱闭包兜: 闭包顺的是**图上的边**, 而这条读根本没有边
-      // (有边的话它就是普通下游, 早被闭包扫掉了)。图外读正是 D-12 让它可见的那条通道。
-      const poisonedArtifacts = new Set<string>();
-      for (const pid of poisoned) {
-        for (const f of prevResults.get(pid)?.filesTouched ?? []) poisonedArtifacts.add(f);
-      }
-      const readsPoisoned = (prev: LeafResult): string | null => {
-        if (poisonedArtifacts.size === 0) return null;
-        return (prev.filesRead ?? []).find((f) => poisonedArtifacts.has(f)) ?? null;
-      };
-      const memo = new Map<string, boolean>();
-      const canReuse = (cid: string): boolean => {
-        const m = memo.get(cid);
-        if (m !== undefined) return m;
-        memo.set(cid, false); // 环/自引用下界 (展开期已查过环, 这里是纯函数自保)
-        const prev = prevResults.get(cid);
-        const tainted = prev ? readsPoisoned(prev) : null;
-        if (tainted) {
-          logger.info(
-            { node: id, child: cid, artifact: tainted },
-            '[omd/executor-dag] 制品级毒命中消费方 → 该子节点不复用 (INV-P2-5: 它读过被拒节点写的文件)',
-          );
-        }
-        const inner = ((plan!.nodes[cid]?.depends_on ?? []) as string[]).filter((d) => d.startsWith(`${id}::`));
-        const ok = !!prev && prev.status === 'done' && !poisoned.has(cid) && !tainted && inner.every(canReuse);
-        memo.set(cid, ok);
-        if (ok && prev) reuseLocal.set(cid, prev);
-        return ok;
-      };
-      for (const c of expand.children) canReuse(c.id);
-      // INV-P2-5 的运行期闸: 复用集刚定、还没被任何人读过的这一格 —— 再晚一格
-      // (`innerReused` 已收下 / 子节点已按"绿"跳过) 就只剩事后取证了。
-      INV_P2_5.assert({
-        parentId: id,
-        reused: [...reuseLocal.keys()],
-        poisoned,
-        poisonedArtifacts,
-        prev: prevResults,
-        innerDeps: new Map(
-          [...reuseLocal.keys()].map((cid) => [
-            cid,
-            ((plan!.nodes[cid]?.depends_on ?? []) as string[]).filter((d) => d.startsWith(`${id}::`)),
-          ]),
-        ),
-      });
-      for (const cid of reuseLocal.keys()) innerReused.add(cid);
-      if (reuseLocal.size > 0) {
-        logger.info(
-          { node: id, round, reused: reuseLocal.size, total: expand.children.length },
-          '[omd/executor-dag] 内环跨轮复用 → 语义没变的子节点零 LLM 注入上轮输出',
-        );
-      }
-    }
-    logger.info(
-      { node: id, children: expand.children.length, ids: expand.children.map((c) => `${c.originalId}→${c.fingerprint}`) },
-      '[omd/executor-dag] conductor 子图展开 (D-B 内容寻址)',
-    );
-
-    // ── 4. D-C 局部拓扑调度 ──
-    // **不复用外层 ready-set**: 外层的 idSet/indeg/dependents 在 run 开始就算死了, 运行期新增的
-    // 子节点进不去。也**不能用 map 那种扁平队列**: map 的子节点互相无边, conductor 的子节点有边。
-    // 故在子图内自己算一次 ready-set (只认子图内的边; 指向外层的 dep 由外层调度保证已完成)。
-    const childIds = expand.children.map((c) => c.id);
-    const childSet = new Set(childIds);
-    const indegLocal = new Map<string, number>();
-    const dependentsLocal = new Map<string, string[]>();
-    for (const cid of childIds) {
-      const inner = ((plan!.nodes[cid]!.depends_on ?? []) as string[]).filter((d) => childSet.has(d));
-      indegLocal.set(cid, inner.length);
-      for (const d of inner) dependentsLocal.set(d, [...(dependentsLocal.get(d) ?? []), cid]);
-    }
-    const readyLocal = childIds.filter((c) => (indegLocal.get(c) ?? 0) === 0);
-    // judge 视图的顺序 = 子图内**拓扑序** (上游在前), 在 pump 把 indeg 改掉之前先算出来。
-    // 为什么不用现成的两个顺序: 结清序取决于并发时序 (同一张图两次跑给出两个不同的 prompt);
-    // 展开序是**按指纹字典序**排的 (conductor-expand 为了同指纹消歧确定性), 那是哈希顺序,
-    // 谁在前面纯属偶然。拓扑序两条都占: 确定, 且是读一张子图最自然的顺序。
-    const topoOrder = ((): string[] => {
-      const indeg = new Map(indegLocal);
-      const queue = childIds.filter((c) => (indeg.get(c) ?? 0) === 0);
-      const out: string[] = [];
-      while (queue.length) {
-        const c = queue.shift()!;
-        out.push(c);
-        for (const d of dependentsLocal.get(c) ?? []) {
-          const n = (indeg.get(d) ?? 1) - 1;
-          indeg.set(d, n);
-          if (n === 0) queue.push(d);
-        }
-      }
-      return out.length === childIds.length ? out : childIds; // 有环 (展开期已拒) 时的纯函数兜底
-    })();
-    const capLocal = Math.max(1, config.maxFanout && config.maxFanout > 0 ? config.maxFanout : childIds.length);
-    let runningLocal = 0;
-    let settledLocal = 0;
-    let failedLocal = 0;
-    // 类型写全 (含 S1 的 artifacts): 写窄了, 下面 `orderedChildren` 那次逐字重建就漏字段而 tsc 不响。
-    const childOut: JudgeChildView[] = [];
-    // 子树碰过的文件要**冒泡到父节点**: 对外层来说 conductor 节点是一个会产出东西的节点, 而产物
-    // 全落在它内部的子节点上 —— 不冒泡, 父节点的 filesTouched 恒空, 调用方 (如 goal 引擎要找
-    // 子树写的 spec 文件) 与外层的产物观察面就都看不见这棵子树干了什么。同 map 的收集语义。
-    const touchedAll = new Set<string>();
-    const roundResults = new Map<string, LeafResult>();
-    const byId = new Map(expand.children.map((c) => [c.id, c]));
-    /** #158 轮内派发闸触发原文 (null = 没触发)。冒到轮结果上, 让终态词说得出"是预算停的"。 */
-    let budgetHalt: string | null = null;
-
-    await new Promise<void>((resolve) => {
-      const pump = (): void => {
-        if (settledLocal === childIds.length) {
-          resolve();
-          return;
-        }
-        // D-P 取消接缝②: 不再派新子节点。在飞的跑完 (它们的产物/checkpoint 一样不少),
-        // 全部结清后由下面那条"无就绪且无在飞"的路提前 resolve。
-        if (isCancelled() && runningLocal === 0) {
-          logger.warn(
-            { node: id, round, settled: settledLocal, total: childIds.length },
-            '[omd/executor-dag] 已取消 → 内环停止派新子节点 (D-P 协作式)',
-          );
-          resolve();
-          return;
-        }
-        // #158 预算派发闸 (与 D-P 取消缝同形: 不打断在飞, 只不再派新的)。这里管**单轮内**的
-        // 超跑 —— d39b559e 第 2 轮单轮跑 44min 越过 90min 上限, 轮边界与环入口都量不到轮中。
-        const budgetHitNow = dispatchBudgetHit();
-        if (budgetHitNow && runningLocal === 0) {
-          budgetHalt = `${budgetHitNow} (轮内派发闸, 已派 ${settledLocal}/${childIds.length})`;
-          logger.warn(
-            { node: id, round, settled: settledLocal, total: childIds.length },
-            `[omd/executor-dag] ${budgetHitNow} → 内环停止派新子节点 (#158)`,
-          );
-          resolve();
-          return;
-        }
-        if (budgetHitNow) budgetHalt = `${budgetHitNow} (轮内派发闸, 已派 ${settledLocal}/${childIds.length})`;
-        while (!isCancelled() && !budgetHitNow && runningLocal < capLocal && readyLocal.length > 0) {
-          const cid = readyLocal.shift()!;
-          runningLocal++;
-          // ── 运行时写竞争: **子图这一层也要进重叠集** (2026-08-06 补) ────────────────
-          // 首版只在外层 pump 上记 `liveNow`, 于是 ⑧.6 只看得见**顶层调度的节点**;
-          // 而 conductor 扇出正是并发的主要来源 —— 两个真并发的兄弟撞同一个文件时
-          // `overlaps` 照样是 0。那个 0 意思是"没往那儿看", 不是"没发生"。
-          // ⚠ 父节点 (这个 conductor) 此刻也在外层的 `liveNow` 里, 于是会配出
-          //   `C × C::child` 这种父子对 —— 判据层有守卫把它跳掉 (父的 filesTouched 是子树并集)。
-          for (const y of liveNow) {
-            if (y === cid) continue;
-            const [p1, p2] = [cid, y].sort() as [string, string];
-            overlapPairs.set(`${p1}\u0000${p2}`, [p1, p2]);
-          }
-          liveNow.add(cid);
-          roundOfNode.set(cid, round); // 这一次是第几轮 —— 见 NodeCheckpoint.round
-          const hit = reuseLocal.get(cid);
-          void (hit
-            ? // 复用命中: 注入上轮输出, 零 LLM 零工具 (id/deps 归本轮, skipped 同 resume 语义)。
-              Promise.resolve({ ...hit, id: cid, deps: (plan!.nodes[cid]!.depends_on ?? []) as string[], usage: { in: 0, out: 0 }, skipped: true } as LeafResult)
-            : runNode(cid)
-          )
-            .catch((e): LeafResult => ({
-              id: cid, status: 'failed', failureKind: 'infra-error', kind: 'inproc',
-              output: `[failed] ${e instanceof Error ? e.message : String(e)}`,
-              deps: (plan!.nodes[cid]!.depends_on ?? []) as string[], usage: { in: 0, out: 0 },
-            }))
-            .then(async (r) => {
-              liveNow.delete(cid); // 写窗口到此为止 (同外层那条: 不含之后的摘要/记账)
-              // 摘要在飞、dependents 不在摘要就绪前释放)。fail-open, 永不抛; view 只喂 faninView,
-              // 全文账 (results/roundResults/depOutputs/checkpoint/usage) 一律走 settledR。
-              // consumers 传 `dependentsLocal`(子图内边, 见上方 D-C 局部拓扑调度那段) —— 顶层
-              // `sched` 看不见这些运行时子节点, 传了才有真实扇出数 (2026-08-14 修, 见 maybeFaninView 注)。
-              const { r: settledR, view } = await maybeFaninView(cid, r, dependentsLocal.get(cid) ?? []);
-              if (view) faninView[cid] = view;
-              results[cid] = settledR;
-              // 子图节点也发 span (2026-07-31)。此前**只有外层 settle 循环调 recordSpan**, 而
-              // 运行时展开出来的子节点走的是这条内环 —— 于是它们在观测面上只有 generation、没有 span,
-              // 而 generation 又按 nodeId 挂在那个不存在的 span 上 → **全成孤儿**。
-              // 这不是个别情况: 一次 goal 的绝大多数节点正是子图节点。实测那一跑 13 条 observation
-              // 里 10 条孤儿、只有 1 个 span, 「一条 trace 打开是整张图的形状」对 goal 路径基本不成立。
-              // 用同一个 recordSpan 而不是在这儿另拼一份 —— 父子关系仍由 `父::子` 的 id 解出。
-              recordSpan({
-                traceId: obsTraceId,
-                nodeId: cid,
-                kind: settledR.kind,
-                status: settledR.status,
-                startTime: new Date(nodeStartedAt.get(cid) ?? Date.now()),
-                endTime: new Date(),
-                ...(settledR.failureKind ? { failureKind: settledR.failureKind } : {}),
-              });
-              roundResults.set(cid, settledR);
-              // G4: 子叶 usage 不再向 conductor 节点 usageAcc 折; 见上面那块。
-              depOutputs[cid] = settledR.output;
-              // #153 D-7: 子节点绕过外层 settle → 逐字保真探针在这里同样点一次 (同一个
-              // detectVerbatimDrop 调用, 不是第二判据)。观察条目两条路都照常进账本 (INV-6),
-              // 差别只在升闸谓词命中时把 id 收进 verbatimReds → 判前并进本轮毒集。
-              //
-              // D-3 (2026-08-25): 上游输入 = 节点在 prompt 里真实看到的视图 (`seenUpstreamOutputs`),
-              // 不是原始 `depOutputs[d]` —— 摘要脱引文后, 节点从未见过的原文不再被冤枉。
-              // 切片 1 (D-2) 让 faninView 自带逐字引文附录, 本切片让观察者判真实所见。
-              if (settledR.status === 'done') {
-                const upsCid = seenUpstreamOutputs(cid, plan!, depOutputs, faninView, capFanin);
-                const vdCid = detectVerbatimDrop(cid, upsCid, settledR.output ?? '');
-                if (vdCid) {
-                  observe([vdCid]);
-                  if (gateVerbatimRed(vdCid, plan!.nodes[cid]?.goal ?? '')) verbatimReds.add(cid);
-                }
-              }
-              // G4 (2026-08-31): 子叶份额**不进** conductor 节点自身的 usageAcc —— 子叶有
-              // 各自一行 (nodes 账 `tokensIn`/`tokensOut`), 不许被父节点再折一次 (历史那把
-              // 3.3× 差就是这么来的)。子叶不走外层 settle (runtime id `父::子` 不在
-              // plan.nodes), 所以此处直接把 usage 灌进 run 级 leaves 三位累加器
-              // (闭包内, 见 `runExecutorDagWithPlan` 的 `let leavesIn = 0` 那块)。
-              leavesIn += settledR.usage.in;
-              leavesOut += settledR.usage.out;
-              leavesCacheHit += settledR.usage.cacheHit ?? 0;
-              if (settledR.status === 'failed') failedLocal++;
-              // 失败子节点**带上败因** (截断防爆), 不是一个光秃秃的 `[failed]`。
-              // 2026-07-30 live 冒烟实证: 一个写文件的子节点被产物闸拒 (`filesTouched 空 — leaf
-              // 自报完成但未做任何文件写操作`), 而环里看到的只有 `[failed]` —— judge 于是自己编了
-              // 一套猜测 (「可能是 mkdir 没权限」), 下一轮的 conductor 也就照着那个猜测重画。
-              // 环的全部信息通道就是"上一轮为什么没过", 把最确切的那句话挡在通道外, 等于让它盲跑。
-              // **引擎实测到的事实**与 leaf 的自述分开带给 judge (2026-07-30 第三次 live 冒烟):
-              // 此前视图里只有 leaf 自己写的那句话, 于是反捏造判词打在了真做完的活上
-              // (子图 2/2 成功、文件真在盘上, judge 判"捏造执行确认" —— 它没冤枉谁, 证据确实没进视图)。
-              // 只放引擎观测到的: filesTouched 经产物闸核过存在性; command 节点 done ≡ 退出码符合 expect_exit。
-              // 引擎记录的那几行 —— **构造器与整图那道扫描共用一份** (见 engineFacts 的注:
-              // 两处各写一份的话, 同一个节点在两条路上会得到不同的"引擎记录", 而差异是静默的)。
-              const facts = engineFacts(settledR, {
-                expectExit: plan!.nodes[cid]?.expect_exit ?? 0,
-                shellCap: SHELL_FACT_CAP,
-              });
-              // S1: 上面那三条只回答"文件在不在 / 命令过没过", 而验收在**内容**上的目标问的是
-              // "文件里写了什么" —— judge 看不见它就只能 fail-closed, 于是交付物全对也判未收敛
-              // (2026-07-30 两次带种 live 都是这个形状)。产物内容由**引擎读盘**补进来:
-              // 让 leaf 自己把内容复述进 output 就又回到自证, 而自证正是反捏造判词要杀的东西。
-              const artifacts = judgeArtifactBudget
-                ? collectJudgeArtifacts(settledR.filesTouched ?? [], artifactReader, judgeArtifactBudget)
-                : [];
-              childOut.push({
-                id: cid,
-                originalId: byId.get(cid)?.originalId ?? cid,
-                status: settledR.status,
-                output: settledR.status === 'failed' ? `[failed] ${(settledR.output || '(无输出)').slice(0, 600)}` : settledR.output,
-                ...(facts.length ? { facts } : {}),
-                ...(artifacts.length ? { artifacts } : {}),
-              });
-              for (const f of settledR.filesTouched ?? []) touchedAll.add(f);
-              // 子节点绕过外层 settle() → 补发事件 (同 map 子节点)。
-              emitNodeEvent(settleEvent(cid, settledR));
-              // 释放子图内下游。失败也释放 —— 是否执行由下游自己的 requires quorum 判 (D-7v2),
-              // 不在这里替它决定 (与外层 settle 同语义)。
-              for (const dep of dependentsLocal.get(cid) ?? []) {
-                const n = (indegLocal.get(dep) ?? 1) - 1;
-                indegLocal.set(dep, n);
-                if (n === 0) readyLocal.push(dep);
-              }
-              runningLocal--;
-              settledLocal++;
-              pump();
-            });
-        }
-        // 无就绪且无在飞而仍未结清 = 子图内有环 (展开期已查过, 这里是防御性兜底, 不许静默挂起)。
-        if (runningLocal === 0 && readyLocal.length === 0 && settledLocal < childIds.length) {
-          logger.warn({ node: id, settled: settledLocal, total: childIds.length }, '[omd/executor-dag] conductor 局部调度死锁 → 提前结清 (防挂起)');
-          resolve();
-        }
-      };
-      pump();
-    });
-
-    // ── 4.5 检测者 (D-Q 图内 fan-in) + 制品边 lint (D-12 图外观察者) ────────────
-    //
-    // 两件事都在**判之前**做完: 检测者的票要和 judge 的票并到同一个毒集里 (它俩说的是同一件事
-    // ——"这一段产出不作数"), 而 lint 的发现要能进这一轮的失败原因, 否则下一轮 conductor 看不到
-    // "你少画了一条边"这句话, 就会一直少画。
-    const detectorVerdict: { rejected: string[]; blocked?: string } = { rejected: [] };
-    for (const cid of childIds) {
-      if (plan!.nodes[cid]?.detector !== true) continue;
-      const r = roundResults.get(cid);
-      // ⚠ **失败的检测者仍然要读** (2026-07-30 eval 挖出的静默失效): 前一版这里是
-      // `r.status === 'failed' → continue`, 而 conductor 自发画检查节点时最常见的写法恰恰是
-      // 「发现冲突就 exit 1 / 让节点失败」—— 它把"失败"当成了反馈通道。于是那种节点**印出了**
-      // `REJECT: <兄弟>` 却被这一行整个吞掉: 票没进毒集, 环下一轮不知道该拒谁。
-      //
-      // 读失败节点的输出是安全的, 因为解析本身已经是 fail-closed 的反面 —— **没有协议行 = 没有
-      // 裁决** (parseDetectorVerdict 的语义)。一个真崩了的检测者 (命令语法错/API 报错) 吐的是
-      // 堆栈或空串, 行首不会出现 `REJECT:`/`BLOCKED:`, 解析出来仍是空 verdict。
-      // 只有 `!r` (根本没跑, 级联 skip 前就没有结果) 才是真的"它没说过话"。
-      if (!r) continue;
-      // 别名映射 (可读 id → 内容寻址 id): 命令检测者按构造只知道规划期那个可读名 —— 不给它
-      // 这条翻译, `REJECT:` 这一半协议对 command 节点等于不存在。
-      const aliasToId = new Map(expand.children.map((c) => [c.originalId, c.id]));
-      const v = parseDetectorVerdict(r.output, childIds, aliasToId);
-      if (v.ghosts.length) {
-        logger.warn({ node: id, detector: cid, ghosts: v.ghosts }, '[omd/executor-dag] 检测者点名了子图中不存在的 id → 丢弃 (D-Q)');
-      }
-      for (const rid of v.rejected) if (!detectorVerdict.rejected.includes(rid)) detectorVerdict.rejected.push(rid);
-      if (v.blocked !== undefined && detectorVerdict.blocked === undefined) detectorVerdict.blocked = `[检测者 ${cid}] ${v.blocked}`;
-      if (v.rejected.length || v.blocked) {
-        // 分开记"检测者自己失败了但仍有裁决": 这正是上面那条修复救回来的那一类, 不留痕的话
-        // 它与普通路径在日志上长得一模一样 —— 而"从不发生"和"没这个功能"读数相同 (交接文的坑)。
-        logger.info(
-          { node: id, detector: cid, rejected: v.rejected, blocked: v.blocked, detectorFailed: r.status === 'failed' },
-          r.status === 'failed'
-            ? '[omd/executor-dag] 检测者自身 failed 但印出了裁决 → 仍落进环 (D-Q)'
-            : '[omd/executor-dag] 检测者裁决落进环 (D-Q)',
-        );
-      }
-    }
-    // #153 D-7 升闸消费点: 逐字保真升闸的红并进**检测者同一个毒集** —— 它说的是同一件事
-    // ("这一段产出不作数"), 另开一条平行通道就会出现两套毒集语义各自漂移。取出即删: 这一轮
-    // 的红只毒这一轮, 下一轮要红得由下一轮的探针重新点火。
-    for (const cid of childIds) {
-      if (!verbatimReds.delete(cid)) continue;
-      if (!detectorVerdict.rejected.includes(cid)) detectorVerdict.rejected.push(cid);
-      logger.info({ node: id, child: cid }, '[omd/executor-dag] 逐字保真升闸 → 子节点进本轮毒集 (#153 D-7)');
-    }
-    const lintFindings = runArtifactLint();
-
-    // ── 5. 汇总 (INV-U7 同款: 子节点部分失败 = 部分成功; 全失败才算 conductor 节点失败) ──
-    //
-    // ⚠ `[...childOut]` 那个拷贝不是洁癖: `sort` **原地改数组**, 而下面 judge 视图用的是同一个
-    // childOut。原先两处共用一份被就地排过序的数组 —— 于是 judge 看到的顺序悄悄变成了"按内容
-    // 寻址 id 的字典序", 也就是**按哈希值排**, 谁在前面纯属偶然 (2026-07-30 给指纹加一个字段就
-    // 让顺序翻了个个儿, 一条按下标点名的测试因此变红)。两个视图的顺序从此各自独立且确定:
-    // 人看的摘要按 id 排 (稳定), judge 看的按**子图拓扑序** (见 topoOrder 那段注)。
-    const ok = childOut.filter((c) => c.status !== 'failed').length;
-    const summary = [...childOut]
-      .sort((a, b) => (a.id < b.id ? -1 : 1))
-      .map((c) => `[${c.originalId}] ${c.status}\n${c.output}`)
-      .join('\n\n');
-    const settled = new Map(childOut.map((c) => [c.id, c]));
-    // ⚠ 这里**逐字重建**而不是原样传, 于是每加一个视图字段都要在这一行补一次 —— 漏了就是
-    //   "生产者有、消费者拿不到", 而症状是沉默的 (视图里少一段, 读上去像这个改动没用)。
-    //   S1 的 `artifacts` 第一次跑就栽在这儿, 靠 judge-artifacts-wiring 那条网抓出来。
-    const orderedChildren = topoOrder.flatMap((cid) => {
-      const c = settled.get(cid);
-      return c
-        ? [{
-            id: c.id,
-            originalId: c.originalId,
-            status: c.status,
-            output: c.output,
-            ...(c.facts?.length ? { facts: c.facts } : {}),
-            ...(c.artifacts?.length ? { artifacts: c.artifacts } : {}),
-          }]
-        : [];
-    });
-    // ── 4.6 「声称的引擎动作 vs 引擎记录」确定性核对 (2026-08-05, **只报不拦**) ──────
-    //
-    // 算在 `orderedChildren` 上而不是 childOut: 判官看的就是这个数组, 两者取不同的输入面
-    // 就会出现"报的和判的不是同一批产出" (逐字重建那道坑的下一种形态)。
-    //
-    // 它求的是差集「产物声称的引擎校验动作 ⊆ 引擎记录的动作」, 不是判断题 —— 引擎精确知道
-    // 自己记了什么。判据很窄且**已知会误伤良性语域** (指令句「确保测试通过」、整改回执
-    // 「已按 verifier 意见修改」), 所以这一档三条出口一票不铸: 视图 / 账本 / 下一轮 prompt。
-    // P3 S3: 散文正则那道只读散文 —— 尾块另有差集闸审, 机器字段 (`acceptance_exit: 0`) 不该被当成「声称通过」。
-    const claims = findUnsupportedClaims(checkableFromJudgeView(orderedChildren.map((c) => ({ ...c, output: stripTrailer(c.output) }))));
-    const claimObs: DagObservation[] = claims.map((f) => ({
-      kind: 'unsupported-claim' as const,
-      nodes: [f.nodeId],
-      message: renderClaimObservation(f),
-    }));
-    // 账本这一侧走 observe (按内容去重 + 出声): 活体基率数的是**不同的发现**, 同一条重复几轮
-    // 不该被数成几次。进 prompt 的那一侧用全量, 见返回类型上 claimObs 的注。
-    observe(claimObs);
-    // 「检出器到底跑没跑过」的三态计数 —— 见 claimCheckRounds 的声明处。
-    claimCheckRounds++;
-    claimCheckedNodes += orderedChildren.length;
-    claimFindings += claims.length;
-    for (const c of orderedChildren) claimCheckedIds.add(c.id);
-    // ── P3 S3: 尾块 vs 引擎记录差集 (D-13, **判红闸**; INV-5 缺席不红; D-24 缺格不红) ──────
-    // 散文正则那道 (上面) 原样保留、仍只报; 这道读的是七个字段, 谎报 (acceptance_ran=true 而引擎没记到
-    // run_acceptance 调用 / 声称改了引擎没核实的文件) 判红 → 子节点进本轮毒集。审的是 LeafResult 的
-    // 全文 output, 不是 judge 视图里可能被截过的那份。
-    for (const c of orderedChildren) {
-      const lr = roundResults.get(c.id);
-      if (!lr || lr.kind === 'conductor' || lr.status === 'skipped') continue;
-      const audit = auditTrailer(lr.output ?? '', {
-        ...(lr.acceptance !== undefined
-          ? { acceptance: lr.acceptance === null ? null : { ran: lr.acceptance.ran, exit: lr.acceptance.last?.kind === 'exited' ? lr.acceptance.last.exitCode : null } }
-          : {}),
-        ...(lr.filesTouched ? { changed: lr.filesTouched } : {}),
-      });
-      lr.selfReport = audit.selfReport === 'unparsable' ? null : { ...audit.trailer, self_report: audit.selfReport };
-      trailerChecked++;
-      const notices = audit.verdicts.filter((v) => v.severity === 'notice').map((v) => v.message);
-      if (notices.length) c.facts = [...(c.facts ?? []), ...notices];
-      if (!audit.red) continue;
-      trailerFindings++;
-      const reds = audit.verdicts.filter((v) => v.severity === 'red');
-      logger.warn({ node: c.id, codes: reds.map((v) => v.code) }, '[omd/executor-dag][report-trailer] 尾块与引擎记录不符 → 子节点进本轮毒集 (谎报闸)');
-      if (!detectorVerdict.rejected.includes(c.id)) detectorVerdict.rejected.push(c.id);
-      observe(reds.map((v) => ({ kind: 'unsupported-claim' as const, nodes: [c.id], message: v.message })));
-    }
-    return {
-      leaf: {
-        id,
-        status: ok > 0 ? 'done' : 'failed',
-        // 子图全灭 ≠ 这个节点自己坏了 —— 成因在子节点上, 而它们各自已经归好类。
-        // (这一格是 2026-07-31 live 的读数板点名出来的: 它当时落进 unclassified。)
-        ...(ok > 0 ? {} : { failureKind: 'subgraph-failed' as const }),
-        kind: 'conductor',
-        output: `[conductor 子图: ${ok}/${childIds.length} 成功${expand.truncated ? `, 截断 ${expand.truncated}` : ''}${failedLocal ? `, 失败 ${failedLocal}` : ''}]\n\n${summary}`,
-        deps,
-        usage: usageAcc,
-        ...(touchedAll.size ? { filesTouched: [...touchedAll] } : {}),
-      },
-      children: orderedChildren,
-      usage: usageAcc,
-      results: roundResults,
-      detector: detectorVerdict,
-      lint: lintFindings,
-      claims,
-      claimObs,
-      childIds,
-      budgetHalt,
-    };
-  };
 
   /**
    * **D-A: 环封在 conductor 节点内** (P3 批次 3 第二次加厚, 2026-07-29)。
@@ -2979,747 +1599,6 @@ async function executePlan(
     };
   };
   // ── conductor 内环展开 ────────────────────────────────────────────────────
-  const runConductorNode = async (id: string): Promise<LeafResult> => {
-    const node = plan!.nodes[id]!;
-    const deps = node.depends_on ?? [];
-    const maxRounds = node.max_rounds ?? 1;
-    const judgeFinal = node.judge_final === true;
-    const cm = continuity?.manager;
-
-    // F1 (片 2, INV-8): 内环节点级事件发射器 —— emitRunEvent 在 runDagInternal 闭包里,
-    // runConductorNode 拿不到 (跨函数闭包); 这里直接调 config.onNodeEvent, 它的消费方
-    // (dag-tools.ts:430) 已自带 try/catch + fail-open (观察者不许扰动被观察者)。
-    const emitRunEventLocal = (e: DagNodeEvent): void => { config.onNodeEvent?.(e); };
-
-    // resume: 接回上次的轮次/毒集/上轮原因 (INV-P2-6 同款, 只是键降到了节点级)。
-    const journal = cm && continuity?.resume ? cm.loadNodeLoopJournal(continuity.runId, id) : null;
-    if (journal?.converged) {
-      logger.info({ node: id, rounds: journal.completedRounds }, '[omd/executor-dag] 内环已收敛 (journal) → 直接返上次结论');
-      // #148 尾巴 (2026-08-17): judge 自己那一票从 verdicts 尾巴**还原**, 不另存一位 ——
-      // 同一件事两处声明就是漂移源 (S-39), 停轮的 verdict 就是最后一条。还原规则与 live 路径
-      // 逐位相同: 只有「判据绿停 ∧ judge 真投过票」才有这一位 (判据 'green' ∧ judge
-      // 'converged'/'rejected'); 'gate-rejected'/'unreachable' = 没投票 → 缺席; 判据不绿时的
-      // 停轮 (judge 收敛停 / 轮尽) live 侧本就不写它 → 缺席。丢了这一位不翻终态 (裁决位是
-      // converged), 丢的是判据轴: resume 后一次真实的 judge 异议会被读成「judge 也说绿」。
-      const lastVerdict = journal.verdicts?.at(-1);
-      const restoredJudge =
-        lastVerdict?.criterion === 'green' && (lastVerdict.judge === 'converged' || lastVerdict.judge === 'rejected')
-          ? lastVerdict.judge === 'converged'
-          : undefined;
-      return {
-        id, status: 'done', kind: 'conductor', output: journal.lastOutput ?? '[内环已收敛]', deps,
-        usage: { in: 0, out: 0 }, skipped: true, rounds: journal.completedRounds, converged: true,
-        ...(restoredJudge === undefined ? {} : { judgeConverged: restoredJudge }),
-      };
-    }
-    const poisoned = new Set(journal?.poisoned ?? []);
-    let prevReason = journal?.prevReason ?? '';
-    // #228: 「下一步」不另开 journal 字段 —— 它已经随 `RoundVerdict` 写入磁盘 (见 types.ts),
-    // resume 时从**最后一条 verdict** 还原即可。同一件事两处声明就是漂移源 (S-39, 与上面
-    // `restoredJudge` 同一条纪律)。缺席 = 那一轮 judge 没被问过 / 没答 → 下一轮不挂这一块。
-    let prevNextSteps: string | undefined = journal?.verdicts?.at(-1)?.nextSteps;
-    // #245 (INV-9): 冻结判据失败明细 = **瞬态**单轮线程, 不入 journal —— 一轮一鲜, 不粘滞。
-    // 跨 resume 复用 = 上轮 freeze 红的明细混进新一轮 prompt = 错误的现场。第 N+1 轮 freeze 绿
-    // → 第 N+2 轮自然缺席 (闭包里重新计算, 不持久)。
-    let prevCriterionFailDetail: string | undefined;
-    // r1 片3/4 (INV-R1-4 + C2): 各轮发现文本→累计簇数; resume 接回旧序列 (journal 持久)。
-    const noveltyTexts: string[] = journal?.noveltyTexts ? [...journal.noveltyTexts] : [];
-    const noveltySeq: number[] = journal?.noveltySeq ? [...journal.noveltySeq] : [];
-    const startRound = (journal?.completedRounds ?? 0) + 1;
-    if (journal) {
-      // **内环重入探针** (2026-08-06): 盘上实测同一个 run 的同一个节点被重入 16 次, 其中 9 次
-      // 0ms 死在下面那条 `startRound > maxRounds` 上 —— 而**每次 0ms 死亡都紧挨着一次成功执行**
-      // (`__r9` 0ms → 22 秒后 `__r10` done)。那个机制这批数据**答不了**: 判它需要的
-      // `{startRound, maxRounds, resume, journal 何时写的}` 四位当时一位都没记。
-      // 这一行就是补那四位。**纯留痕, 不改任何行为** —— 先让那个数有人写, 再判要不要改。
-      logger.info(
-        {
-          node: id, startRound, maxRounds, poisoned: poisoned.size,
-          resume: continuity?.resume === true,
-          journalUpdatedAt: journal.updatedAt,
-          journalStop: journal.stop?.kind,
-          exhausted: startRound > maxRounds,
-        },
-        '[omd/executor-dag] 内环恢复: 接回轮次/毒集 (D-A)',
-      );
-    }
-
-    let usageAcc: ModelUsage = { in: 0, out: 0 };
-    let last: LeafResult | null = null;
-    // 上一轮的子节点结果 —— 跨轮复用的匹配源 (进程内; 崩溃后由各子节点自己的 checkpoint 兜)。
-    let prevResults = new Map<string, LeafResult>();
-
-    /**
-     * 节点定局的**唯一出口**: 盖轮数/裁决 + 落审计 checkpoint。
-     *
-     * 审计 checkpoint (交接文 2026-07-30 的 filesTouched 下一档): `outputPaths` = 子树并集,
-     * `artifactHashes` 照算。此前这份并集只活在内存里, 崩了就没 —— 而"这棵子树到底动过哪些文件"
-     * 是事后审计唯一的锚。**永不用于 resume-skip**: runNode 在 conductor 分支就 return 了,
-     * 结构上走不到那条 resume 判定 (纪律由结构保证而不靠自觉; 有测试钉住)。
-     */
-    const settle = (leaf: LeafResult, rounds: number, converged?: boolean): LeafResult => {
-      const out: LeafResult = { ...leaf, rounds, ...(converged === undefined ? {} : { converged }) };
-      // 切片 1 (C-1 INV-3): 内环收尾 —— 环定局这一刻, 留总墙钟。埋这里是因为环的三条 return
-      // (收敛 / 轮数用尽 / 空转 BLOCKED) 都过 settle, 写在外面会被 return 跳过。
-      logger.info(
-        { node: id, rounds, at: roundStampNow(), loopMs: Date.now() - loopStartedAt },
-        '[omd/executor-dag] 内环收尾',
-      );
-      if (out.status === 'done') {
-        saveDoneCheckpoint({
-          id,
-          kind: 'conductor',
-          text: out.output,
-          usage: out.usage,
-          filesTouched: out.filesTouched ?? [],
-          deps,
-          t0: nodeStartedAt.get(id) ?? Date.now(),
-        });
-      }
-      // **预算轴留痕 (报不拦, 2026-08-12 S1 埋点)**: 上面的预算轴 (round > startRound 处) 只在
-      // **轮边界**查, 于是"这一轮自己就跑穿预算、当轮就收敛/定局退出"这一路 (settle 从任何非
-      // 预算出口被叫到) 此前一条记录都不留 —— 实测 d39b559e 内环跑 131.3min / 预算 90min,
-      // budget-exhausted 计数 0。判定逻辑一字不改: 不提前 break, 不改 cap/阈值, settle 本身就是
-      // "环已经定局"这一刻, 只在这一刻对一次账。`!budgetStopped` 避免与「开轮前拦下」重复记
-      // (那条已经在轮边界写过 journal 了) —— 这里补的是它**没**触发、但定局时账已经超了的那格。
-      if (!budgetStopped) {
-        const postSpentTokens = usageAcc.in + usageAcc.out;
-        const postSpentMs = Date.now() - loopStartedAt;
-        const postTokenCap = config.loopBudget?.tokens;
-        const postMsCap = config.loopBudget?.ms;
-        let postLoopBudgetExceeded: string | undefined;
-        if (postTokenCap !== undefined && postSpentTokens >= postTokenCap) {
-          postLoopBudgetExceeded = `token 预算跑穿 (轮跑完才发现): 已花 ${postSpentTokens} / 上限 ${postTokenCap}`;
-        } else if (postMsCap !== undefined && postSpentMs >= postMsCap) {
-          postLoopBudgetExceeded = `时间预算跑穿 (轮跑完才发现): 已用 ${Math.round(postSpentMs / 1000)}s / 上限 ${Math.round(postMsCap / 1000)}s`;
-        }
-        if (postLoopBudgetExceeded) {
-          logger.warn(
-            { node: id, rounds, postSpentTokens, postSpentMs },
-            `[omd/executor-dag] ${postLoopBudgetExceeded} → 内环已定局, 只报不拦`,
-          );
-          writeLoopJournal(rounds, poisoned, prevReason, false, out.output, {
-            kind: 'budget-exhausted',
-            evidence: postLoopBudgetExceeded,
-            atRound: rounds,
-          });
-        }
-      }
-      return out;
-    };
-
-    /**
-     * 节点级环 journal 写入磁盘 —— **每轮判完就写**, 不是节点结束时写 (崩在这之后 resume 接得回来)。
-     * 三个调用点共用: 正常轮末 / 检测者 BLOCKED / 空转 BLOCKED。三处各写一份就会漂。
-     */
-    /**
-     * 逐轮两道闸的裁决(2026-08-06)。resume 时接回旧的 —— 断在第 2 轮再续跑,
-     * 第 1 轮那条不能凭空消失(整段的价值就在于"这个环历史上有没有出现过某个组合")。
-     */
-    const roundVerdicts: RoundVerdict[] = journal?.verdicts ? [...journal.verdicts] : [];
-    const writeLoopJournal = (
-      round: number,
-      poisonedNow: ReadonlySet<string>,
-      reason: string,
-      converged: boolean,
-      lastOutput: string,
-      /** N6: 这一轮是不是**停在这儿**, 以及凭什么 (原文证据)。不停就省略。 */
-      stop?: NodeLoopJournal['stop'],
-    ): void => {
-      if (!cm || !continuity) return;
-      cm.writeNodeLoopJournal(continuity.runId, {
-        runId: continuity.runId,
-        nodeId: id,
-        completedRounds: round,
-        poisoned: [...poisonedNow],
-        ...(reason ? { prevReason: reason } : {}),
-        ...(noveltyTexts.length ? { noveltyTexts: [...noveltyTexts], noveltySeq: [...noveltySeq] } : {}),
-        // 逐轮两道闸的裁决 —— 解锁 D-I 那条"判据红 ∧ judge 说收敛才补守卫"的预设判据 (只记不判)。
-        ...(roundVerdicts.length ? { verdicts: [...roundVerdicts] } : {}),
-        ...(converged ? { converged: true, lastOutput } : {}),
-        ...(stop ? { stop } : {}),
-        updatedAt: new Date().toISOString(),
-        schemaVersion: 1,
-      });
-    };
-
-    // D-Q 空转检测的比对面 (上一轮的子节点 id 集 + 被拒集)。
-    let prevShape: RoundShape | null = null;
-    /** 上一轮盘上的产物指纹 (G5 正解的比对源)。 */
-    let prevArtifacts: RoundArtifacts | null = null;
-    /**
-     * 「盘上没位移」**连续**命中几轮。今天只用来出读数 —— 它就是将来把这条从**报**升成
-     * **BLOCKED** 时, K 该取几的那份依据。0 读数时先定 K 等于凭感觉定闸。
-     */
-    let noArtifactChangeRounds = 0;
-    /** 闸级熔断的累积面: 上一轮 judge 瞬时失败的逐字身份 + 它已经连续几轮逐字相同。 */
-    let lastJudgeFaultKey: string | null = null;
-    let judgeFaultStreak = 0;
-    /** 设 0 或 1 = 关闭本闸 (阈值 1 等于一失败就熔断, 那不是熔断 —— 同 repeatedActionThreshold 的口径)。 */
-    const judgeFaultThreshold = config.judgeFailureThreshold ?? 2;
-    /** 真正跑完的轮次 (取消收尾时要如实报, 不能拿 maxRounds 顶)。 */
-    let doneRounds = startRound - 1;
-
-    /** 内环起跑时刻 (预算轴的时间那半)。 */
-    const loopStartedAt = Date.now();
-    /** 环因预算停下的原因 (未超 = undefined)。 */
-    let budgetStopped: string | undefined;
-    /** #F1 片 2 / INV-8: 预算过半通知的 per-axis 幂等标志 —— 本内环实例局部, 不跨进程去重。 */
-    const budgetHalfFired: { tokens: boolean; ms: boolean } = { tokens: false, ms: false };
-    /**
-     * §8.4 动作级熔断的累积面: 本内环里**失败过的 command 节点** (跨轮累积)。
-     * 轮级空转判据看的是"整轮原地踏步"; 这一条看的是"整轮在变, 但**某一条命令**始终以逐字
-     * 相同的方式失败" —— 粒度差一个量级, 前者看不见后者。
-     */
-    const failedActions: ActionAttempt[] = [];
-
-    // #158 环入口预算检查: 前面的相位/节点把钱烧光 → 本环一轮不开。此前唯一判点在轮边界
-    // 且带 `round > startRound` 首轮豁免 —— 跨相位烧穿后本环照样满额起跑。
-    const preloopHit = dispatchBudgetHit();
-    if (preloopHit) {
-      const msg = `${preloopHit} → 内环一轮不开 (#158)`;
-      logger.warn({ node: id, startRound }, `[omd/executor-dag] ${msg}`);
-      writeLoopJournal(doneRounds, poisoned, prevReason, false, '', {
-        kind: 'budget-exhausted',
-        evidence: msg,
-        atRound: startRound,
-      });
-      return (
-        // resume 场景 last 缺席 → 合成失败叶; 语义词全在 budgetStopped 上 (outcome 阶梯读它)。
-        { id, status: 'failed', kind: 'conductor', output: `[${msg}]`, deps, usage: usageAcc, budgetStopped: msg }
-      );
-    }
-
-    for (let round = startRound; round <= maxRounds; round++) {
-      // D-P 取消接缝③: 不开新一轮。已判完的轮次全在 journal 里, resume 从下一轮接着跑。
-      if (isCancelled()) {
-        logger.warn({ node: id, round }, '[omd/executor-dag] 已取消 → 内环不开新一轮 (D-P 协作式)');
-        break;
-      }
-      // **预算轴** (2026-07-31, Loop Engineering 四条停止轴里我们唯一缺的那条): 与取消同一个接缝 ——
-      // 只在轮边界查, 不打断在飞的一轮 (半轮的钱已经花了, 打断只是把产出也扔掉)。
-      // 软停不是硬杀: 已跑完的全保留, resume 时给个更大的预算就接着跑。
-      if (round > startRound) {
-        const spentTokens = usageAcc.in + usageAcc.out;
-        const spentMs = Date.now() - loopStartedAt;
-        const tokenCap = config.loopBudget?.tokens;
-        const msCap = config.loopBudget?.ms;
-        // #F1 (片 2, INV-8): 预算过半通知 —— additive 事件, 不挡在飞的轮, 装在已有边界读数里。
-        // 只在配了该轴 cap 时判; per-axis 幂等标志为本内环局部 (D-6 不跨进程去重)。
-        if (tokenCap !== undefined) {
-          emitBudgetHalfIfHalf(spentTokens, tokenCap, budgetHalfFired, 'tokens', emitRunEventLocal);
-        }
-        if (msCap !== undefined) {
-          emitBudgetHalfIfHalf(spentMs, msCap, budgetHalfFired, 'ms', emitRunEventLocal);
-        }
-        if (tokenCap !== undefined && spentTokens >= tokenCap) {
-          budgetStopped = `token 预算用尽: 已花 ${spentTokens} / 上限 ${tokenCap} (第 ${round - 1} 轮后)`;
-        } else if (msCap !== undefined && spentMs >= msCap) {
-          budgetStopped = `时间预算用尽: 已用 ${Math.round(spentMs / 1000)}s / 上限 ${Math.round(msCap / 1000)}s (第 ${round - 1} 轮后)`;
-        } else {
-          // #158 运行锚那半: 环锚 (loopStartedAt) 量不到前相位烧掉的钱, goal 层注入的
-          // _budgetAnchor 才是整个 solve 的一只钟。
-          const runHit = dispatchBudgetHit();
-          if (runHit) budgetStopped = `${runHit} (第 ${round - 1} 轮后, 运行锚)`;
-        }
-        if (budgetStopped) {
-          logger.warn({ node: id, round, spentTokens, spentMs }, `[omd/executor-dag] ${budgetStopped} → 内环不开新一轮`);
-          // 停在**开跑之前** → atRound 记的是没能开成的那一轮 (与 completedRounds 差 1, 见字段注释)。
-          writeLoopJournal(round - 1, poisoned, prevReason, false, last?.output ?? '', {
-            kind: 'budget-exhausted',
-            evidence: budgetStopped,
-            atRound: round,
-          });
-          break;
-        }
-      }
-      // 切片 1 (C-1 INV-1): 轮开始 —— 取消/预算闸之后, runConductorRound 之前。
-      // ms 取值从这里起算, judge 时间落在轮结束与下一条轮开始之间, 由内环收尾的 loopMs 兜住。
-      const roundStartedAt = Date.now();
-      logger.info({ node: id, round, at: roundStampNow() }, '[omd/executor-dag] 轮开始');
-      // G1: `roundVerdicts` 此刻含第 1..round-1 轮 (本轮的那条在轮末才 push) —— 正是
-      // `renderPriorRounds` 要的输入。resume 时它已从 journal 接回, 所以跨进程的历史一样看得见。
-      const r = await runConductorRound(id, round, prevReason, prevNextSteps, prevCriterionFailDetail, roundVerdicts, poisoned, prevResults);
-      // 切片 1 (C-1 INV-2): 轮结束 —— runConductorRound 返回后立刻 (D-3: ms 只覆盖展开+执行,
-      // 不含轮末 judge, 三段时间加起来无主)。r.results 是 Map, 子图节点数 = .size。
-      logger.info(
-        { node: id, round, at: roundStampNow(), ms: Date.now() - roundStartedAt, nodes: r.results.size },
-        '[omd/executor-dag] 轮结束',
-      );
-      doneRounds = round;
-      // #158: 轮内派发闸触发 → 终态词上叶 (不然 goal 层把预算停读成普通未收敛, 指引就错了)。
-      // journal 在这儿写一条; 后面 settle 的"跑完才发现"账 `if (!budgetStopped)` 自然不重记。
-      if (r.budgetHalt && !budgetStopped) {
-        budgetStopped = r.budgetHalt;
-        writeLoopJournal(round, poisoned, prevReason, false, r.leaf.output, {
-          kind: 'budget-exhausted',
-          evidence: r.budgetHalt,
-          atRound: round,
-        });
-      }
-      prevResults = r.results;
-      usageAcc = addUsage(usageAcc, r.usage);
-      last = { ...r.leaf, usage: usageAcc };
-      const isFinal = round === maxRounds;
-
-      // ── §8.4 动作级熔断 ────────────────────────────────────────────────────
-      // 顺序上**先于**检测者与 judge: 它判的是"这一格上零位移", 是确定性的字节比对, 比任何
-      // 一次 LLM 判定都硬; 而且早一步退环就少烧一次 judge 调用。
-      for (const [cid, res] of r.results) {
-        if (res.kind !== 'command' || res.status !== 'failed') continue;
-        const cmd = (plan!.nodes[cid] as { command?: string } | undefined)?.command;
-        if (cmd) failedActions.push({ command: cmd, output: res.output });
-      }
-      const actionBlock = repeatedActionBlock(failedActions, config.repeatedActionThreshold);
-      if (actionBlock) {
-        logger.warn({ node: id, round, reason: actionBlock.split('\n')[0] }, '[omd/executor-dag][fuse-action] 动作级熔断 → 环提前退出 (§8.4)');
-        // 与检测者 BLOCKED 同一个出口、同一条 fail-closed 纪律 (恒 converged=false):
-        // 阻塞更不该被读成成功。
-        writeLoopJournal(round, poisoned, prevReason, false, last.output, {
-          kind: 'blocked',
-          evidence: actionBlock, // 原话进 journal, 不复述 —— 复盘要的是"当时看见了什么"
-          atRound: round,
-        });
-        return { ...settle(last, round, false), blocked: actionBlock };
-      }
-
-      // ── D-Q 图内检测者的票 (与 judge 的票同一个毒集) ────────────────────────
-      // 顺序上**先于** judge: 检测者常是确定性 oracle (command 节点), 它说"这段不作数"比
-      // 一次 LLM 判定更硬; 而两者点到同一个 id 时 Set 天然合并, 不需要谁压过谁。
-      for (const cid of r.detector.rejected) poisoned.add(cid);
-      // 刀①-1 毒集关闸: 被点名子节点的盘上 checkpoint 立即归档 —— 下一轮重跑时第二支才是关的。
-      archivePoisoned(r.detector.rejected);
-      if (r.detector.blocked !== undefined) {
-        // BLOCKED 异步出口: 图没坏、节点没挂, 是"没有外部输入推不动" —— 剩下的轮数是纯烧钱。
-        // 恒 converged=false (fail-closed: 阻塞更不该被读成成功)。
-        logger.warn({ node: id, round, reason: r.detector.blocked }, '[omd/executor-dag] 检测者判 BLOCKED → 环提前退出 (D-Q)');
-        writeLoopJournal(round, poisoned, prevReason, false, last.output, {
-          kind: 'blocked',
-          evidence: r.detector.blocked,
-          atRound: round,
-        });
-        return { ...settle(last, round, false), blocked: r.detector.blocked };
-      }
-
-      // 单轮档 (max_rounds=1, 缺省): 不请 judge —— 没有下一轮可去, 判了也没有用它的地方,
-      // 白花一次贵座调用。这也是零回归的那一半。
-      //
-      // `judge_final` 是那唯一的例外 (D-F): 调用方要拿这个裁决当"整体目标成了吗"的答案
-      // (撤外层之后没有别的层再问这句), 那就值得为单轮档也多付一次。
-      // 多轮档照旧**每轮都判** —— 末轮那次不只是为了下一轮, 它还要写进 journal (resume 据它
-      // 判"这个节点上次到底成没成"), 省掉它等于让 resume 拿一个空白的结论重跑。
-      // 配了冻结判据就一定要问 judge —— 判据轴要的是**两个布尔**, 缺了 judge 那一半,
-      // 「judge 太紧」(判据过了而 judge 说没成) 这一格就永远观测不到。
-      if (maxRounds === 1 && !judgeFinal && !config.freezeCriterion) return { ...settle(last, round), ...(budgetStopped ? { budgetStopped } : {}) };
-
-      // ── 冻结判据进环 (2026-08-01) ────────────────────────────────────────────
-      // **在这儿直接跑, 不作为子节点** —— 这是护栏①: `renderRoundForJudge` 渲染的是 children,
-      // 而 command 子节点通过时 facts 会写「命令退出码符合预期」。judge 一旦看得见判据结论
-      // 就会抄答案, 两条判据永远一致 —— 而判据轴量的恰恰是它们的不一致。
-      // 顺序上先于 judge (同 §8.4 与 D-Q 那两条: 确定性的先问, 早一步就少烧一次贵座调用)。
-      // 赦免证据原文 (S-37 下沉): freezeGreen 走 waived 路径时, evidence 字段带它进 journal
-      // —— 否则 verifier/judge 看到的是 "silent green", 那正是本契约要杀的形状 (INV-3)。
-      let freezeWaivedNote: string | undefined;
-      // #245 (INV-5): 红时构造失败明细 (构造块在闭包**内**, cr.text / cr.exitCode 只在这里拿得到)。
-      // 闸拒 / 赦免 / 绿 → 缺席, 一个字不挂 —— 闸拒 ≠ 跑出红, 不混这两态。`extractFailSet`
-      // 复用 accept-delta 的那一份 (INV-8)。failSet 空 → 只带命令与退出码, **不带原文** (原文
-      // 有制品/journal 通道, 必达块按构造有界 —— 不让一块无限长塞进 prompt)。
-      let freezeFailDetail: string | undefined;
-      // P2b-runtime (2026-09-02): 环内判据自己是 bare 整仓 pytest 且命中 2/4/5 —— harness 没
-      // 给出判词, 不是"判据红"。闭包外层捕获这个态, 因为 freezeGreen 的返回型 (boolean|null)
-      // 没有第四态的位置 (同 freezeFailDetail/freezeWaivedNote 的既有写法, 不改闭包签名)。
-      let freezeInconclusive = false;
-      const freezeGreen = await (async (): Promise<boolean | null> => {
-        const fc = config.freezeCriterion;
-        if (!fc || !config.commandRunner) return null; // 没配 = 旧行为, 判据只在环外跑
-        try {
-          const cr = await config.commandRunner({ command: fc.command });
-          // `null` (死于信号) 不是闸拒: 闸拒 = 命令没执行, 死于信号 = 执行了没跑完 —— 两者下一步相反。
-          const blocked = cr.exitCode !== null && cr.exitCode < 0; // 闸拒 ≠ 跑出红, 不赦免 (D-4 同款纪律)
-          let ok = !blocked && cr.exitCode === (fc.expectExit ?? 0);
-          // 与节点级 expect_output 同语义: 退出码判「怎么结束的」, 这一格判「跑到了什么」。
-          if (ok && fc.expectOutput !== undefined && !(cr.text ?? '').includes(fc.expectOutput)) ok = false;
-          let waivedHere = false;
-          if (!ok && !blocked && fc.waiveRed) {
-            const waived = fc.waiveRed(cr.text);
-            if (waived !== null) {
-              ok = true;
-              freezeWaivedNote = waived;
-              waivedHere = true;
-            }
-          }
-          // P2b-runtime: waiveRed 优先于这一格判定 (赦免过的绿不该被回退成 inconclusive)。
-          const inconclusive = !ok && !blocked && !waivedHere && isFrozenCriterionInconclusive(fc.command, cr.exitCode, cr.text ?? '');
-          if (inconclusive) freezeInconclusive = true;
-          // #245 INV-5: 红 ∧ 未闸拒 ∧ 未赦免 ∧ 非 inconclusive → 构造失败明细。
-          // review fix (P2): inconclusive 不许套用"回归"文案 (会被下一轮读成新引入的失败),
-          // 但也不许整块消音 (仓规坑②"fail-open 不许吞证据") —— 换一句诚实的、不带红/回归
-          // 框架的事实, 让下一轮的 conductor 至少知道判据命令这次没给出判词、该换个指到具体
-          // 测试文件的命令, 而不是对着一句空 prompt 继续瞎猜。
-          if (!ok && !blocked && !waivedHere) {
-            if (!inconclusive) {
-              const failSet = extractFailSet(cr.text);
-              const head = `冻结判据红 (${fc.command} → exit ${cr.exitCode})`;
-              freezeFailDetail = failSet.length
-                ? `${head}\n· 失败 ${failSet.length} 条: ${failSet.join(', ')}`
-                : head;
-            } else {
-              freezeFailDetail = `冻结判据没给出判词 (${fc.command} → exit ${cr.exitCode}, bare 整仓 pytest, harness 没跑起来 —— 别当回归读, 给一条指到具体测试文件的命令)`;
-            }
-          }
-          if (inconclusive) {
-            logger.info({ node: id, round, command: fc.command, exitCode: cr.exitCode }, '[omd/executor-dag] 冻结判据 (环内) —— harness-inconclusive, 不当回归读');
-          } else {
-            logger.info({ node: id, round, command: fc.command, exitCode: cr.exitCode, ok, waived: !!freezeWaivedNote }, '[omd/executor-dag] 冻结判据 (环内)');
-          }
-          return ok;
-        } catch (e) {
-          // 判据本身跑不起来 ≠ 判据没过 —— 但对停止决定而言两者一样 (不能据此判绿)。
-          logger.warn({ node: id, round, err: String(e) }, '[omd/executor-dag] 冻结判据跑不起来 → 按未过处理');
-          return false;
-        }
-      })();
-
-      const verdict = await judgeConductorRound(id, node.goal ?? id, r.leaf, round, r.children, r.claims);
-      usageAcc = addUsage(usageAcc, verdict.usage);
-      // 四态各自的判词原文 (D-3, 2026-08-23):
-      //   · `unreachable` → 错误原文 (judge 调用本身挂了, 它没投过票);
-      //   · 其它三态     → verdict.reason (converged/rejected 是 judge 的 failureReason;
-      //                                gate-rejected 是闸合成的, judge 没被问过 —— 这一格
-      //                                **不许**被冒充成 judge 的票, 否则又把"没投票"灌进
-      //                                "投了反对票"那一格了)。
-      // No-silent-caps (D-2): 超 2000 字符 → 全文落 `<runDir>/reason-<nodeId>-r<round>.txt`,
-      // journal 存告示 + 指针, 与交接 / fanin / debug-plan redEvidence 同形。
-      const REASON_CAP_CHARS = 2000;
-      const rawReason = verdict.unreachable ? (verdict.unreachable ?? '') : (verdict.reason ?? '');
-      let reasonField: string;
-      if (rawReason.length <= REASON_CAP_CHARS) {
-        reasonField = rawReason;
-      } else {
-        const fullPath = continuity ? continuity.manager.saveReasonFull(continuity.runId, id, round, rawReason) : null;
-        const kept = rawReason.slice(0, REASON_CAP_CHARS);
-        reasonField = kept + (fullPath
-          ? `\n[判词已截断 (cap=${REASON_CAP_CHARS}, 原文 ${rawReason.length} 字符); 全文在 ${fullPath} —— 有 read 工具就按需分页读它]`
-          : `\n[判词已截断 (cap=${REASON_CAP_CHARS}, 原文 ${rawReason.length} 字符); 全文未写入磁盘 (无 continuity), 判词尾部已丢]`);
-        logger.warn(
-          { node: id, round, len: rawReason.length, cap: REASON_CAP_CHARS, persisted: !!fullPath },
-          '[omd/executor-dag] 内环判词超 cap → 全文写入磁盘 + journal 存指针',
-        );
-      }
-      // 两道闸各说了什么, 逐轮记一条。**只记不判** —— 下面的收敛判定一个字没改。
-      // 三态/两态不压平的理由见 `RoundVerdict`: 「没配判据」≠「判据红」,「judge 调不通」≠「judge 说没成」。
-      roundVerdicts.push({
-        round,
-        criterion: freezeGreen === null ? 'none' : freezeInconclusive ? 'invalid' : freezeGreen ? 'green' : 'red',
-        judge: verdict.unreachable ? 'unreachable' : verdict.converged ? 'converged' : verdict.synthetic ? 'gate-rejected' : 'rejected',
-        reason: reasonField,
-        // #228: judge 真答了才有这一列。缺席 = 不写键 (不是空串) —— 事后要能分出
-        // 「judge 没被问过」与「judge 答了一句空话」(仓规坑①)。
-        ...(verdict.nextSteps ? { nextSteps: verdict.nextSteps } : {}),
-        // G2: 契约结论同款纪律 —— judge 真答了才有这一列, 缺席 ≠ aligned。
-        ...(verdict.contractVerdict ? { contract: verdict.contractVerdict } : {}),
-      });
-      // ── G2 契约闸 (2026-08-28) ──────────────────────────────────────────────
-      // judge 说这个节点的 goal 相对**原题**写歪了 (漏了硬约束 / 换成了另一个目标)。
-      //
-      // **这里不重跑, 也不自己改 goal。** 仓规: impl 暴露 contract 错 → **回流改 contract**,
-      // 不是 silent override。再转一轮只会照着同一份歪契约再干一遍 —— 加轮数是这一格最没用的动作,
-      // 所以 stop kind 取 `blocked` (N5 词表: "要人给外部输入, 加轮数没用"), 不取 not-converged。
-      //
-      // ⚠ 只拦 `needs_revision` / `invalid` 两态。`unknown` = 判不了, 那与 judge 拿不准同性质,
-      //   照常继续转 (拿 unknown 停轮 = 把"我不知道"读成"它错了", 会把一次犹豫变成一次误停)。
-      // ⚠ 与 `converged` **正交**: 收敛了也拦 —— `converged=true ∧ contract='invalid'` 正是最坏那格
-      //   (活干完了, 干的是另一件事), 放过去就是拿一份写歪的契约给出一个"成功"。
-      if (verdict.contractVerdict === 'needs_revision' || verdict.contractVerdict === 'invalid') {
-        const issue = verdict.contractIssue?.trim() || '(judge 判契约不 aligned 但没写清哪一条 —— 按原题逐条自查)';
-        const evidence = `G2 契约闸: judge 判本节点 goal 相对原题 ${verdict.contractVerdict} —— ${issue}`;
-        logger.warn(
-          { node: id, round, contract: verdict.contractVerdict, converged: verdict.converged },
-          '[omd/executor-dag][contract-gate] G2: goal 相对原题写歪 → 停轮交人改契约 (加轮数没用)',
-        );
-        observe([{ kind: 'contract-misaligned', nodes: [id], message: evidence }]);
-        writeLoopJournal(round, poisoned, prevReason, false, last.output, {
-          kind: 'blocked',
-          evidence,
-          atRound: round,
-        });
-        // ⚠ 不写 `failureKind`: 那张表 (`node-failure.ts`) 每一条都带逐条处置指引, 扩它是另一片的活。
-        // 这一格的处置已经在 journal 的 `stop.kind='blocked'` + observation 里说清了 (无第二套)。
-        return settle(last, round, false);
-      }
-      // ── ask 出口 (2026-08-28) ───────────────────────────────────────────────
-      // 连续两轮判官都说「材料不足以判断这活对不对」= 这个歧义**不会靠再转一轮自己消掉**,
-      // 它要的是人回答一句话。LH-Harness 把这条做成 manager 的一等路由 (`Next: ask`):
-      // 暂停 → 抛问题 → 答案作权威用户输入进下一轮。omd 这边的等价物是「停轮 + 把问题记下来」,
-      // 答案经 resume 时的 `ownerDirectives` 逐字进下一轮 prompt (那条通道早就在, 不新造)。
-      //
-      // ## 为什么触发权在引擎不在模型
-      //
-      // judge 只提供**问题内容** (`askOwner`), **停不停由这里的确定性判据说了算**。
-      // 反过来做 (模型想停就停) 等于给它一个按钮 —— 一个爱提问的座位能把每一跑都停在第 1 轮,
-      // 而这一格没有任何机械证据能反驳它。可靠性来自模型之外: 触发是数出来的, 不是求来的。
-      //
-      // ## 判据为什么是「连续两轮」而不是「一轮」
-      //
-      // 一轮 unknown 很常见 (第 1 轮材料本来就少, 探索一轮就清楚了)。**连续两轮**才是
-      // 「转了一圈回来还是不知道」。streak 直接从 `roundVerdicts` 数 —— 不另开计数器,
-      // 那份数组本来就随 journal 写入磁盘, resume 之后接得回来 (同一件事两处声明就是漂移源, S-39)。
-      //
-      // ⚠ 与上面 G2 那道闸互斥 (contract 四态各归各的出口), 排在它后面只是让契约轴的两个出口挨着。
-      const unknownStreak = (() => {
-        let n = 0;
-        for (let i = roundVerdicts.length - 1; i >= 0; i--) {
-          if (roundVerdicts[i]!.contract === 'unknown') n++;
-          else break;
-        }
-        return n;
-      })();
-      if (unknownStreak >= ASK_UNKNOWN_STREAK) {
-        // 缺席不编: judge 说不出要问什么, 就照实写它说不出 —— 编一个问题比没有问题更坏
-        // (人会去回答一个引擎虚构的问题, 而真正卡住的地方一个字没被记下来)。
-        const question = verdict.askOwner?.trim();
-        const evidence = question
-          ? `ask 出口: 连续 ${unknownStreak} 轮判官都说不准这活对不对 → 停轮问 owner: ${question}`
-          : `ask 出口: 连续 ${unknownStreak} 轮判官都说不准这活对不对, 但它**没写出要问什么** → 停轮交人 (请自己对着原题看这个节点的 goal 该怎么定)`;
-        logger.warn(
-          { node: id, round, streak: unknownStreak, hasQuestion: !!question },
-          '[omd/executor-dag][ask-owner] 连续两轮契约 unknown → 停轮问 owner (再转一轮消不掉这个歧义)',
-        );
-        observe([{ kind: 'owner-question', nodes: [id], message: evidence }]);
-        writeLoopJournal(round, poisoned, prevReason, false, last.output, {
-          kind: 'blocked',
-          evidence,
-          atRound: round,
-        });
-        return settle(last, round, false);
-      }
-      // judge **调不通** → 立刻退环, 不把剩下的轮数烧在一个确定性故障上 (2026-07-31)。
-      // 与 §8.4 熔断同一个出口形状, 但 kind 是 `infra-error` 不是 `blocked`: N5 词表里这两格的
-      // 下一步相反 —— blocked 是"要人给外部输入", infra-error 是"引擎自己出事, 该修的是引擎"。
-      // 把它念成 not-converged (此前的行为) 会让人去加轮数, 而加轮数正是最没用的那个动作。
-      // 判据绿 → **这一轮就是最后一轮** (D-I「以判据为准」; 而判据本身已由 G4 的空世界自检 +
-      // 反面样本探针两道筛过, 不是随便一条命令就有停止权)。judge 的票**只记录不决定** ——
-      // 护栏②: 不问的话「judge 太紧」那一格永远观测不到, 等于从另一头把判据轴杀掉。
-      if (freezeGreen === true) {
-        // 护栏④: judge 同时调不通 → 仍然按判据停, 但**出声说这一跑只有一道闸** ——
-        // 不说的话就是"以为两道闸、其实一道", 而那正是这个仓一直在杀的形状。
-        const oneGate = verdict.unreachable ? ` · ⚠ judge 调不通 (${verdict.unreachable}) —— 这一跑只有一道闸` : '';
-        if (verdict.unreachable) logger.warn({ node: id, round }, '[omd/executor-dag] 冻结判据绿但 judge 调不通 → 按判据收敛, 但这一跑只有一道闸');
-        logger.info({ node: id, round, judgeSaid: verdict.converged }, '[omd/executor-dag] 冻结判据绿 → 环提前收敛 (judge 的票只记录)');
-        const waiverTag = freezeWaivedNote ? ` · 赦免: ${freezeWaivedNote}` : '';
-        writeLoopJournal(round, poisoned, prevReason, true, last.output, {
-          kind: 'success',
-          evidence: `冻结判据绿 (${config.freezeCriterion!.command})${oneGate}${waiverTag}`,
-          atRound: round,
-        });
-        // S-44 时效锚: 在**判据刚绿的这一刻**取一次工作树快照。外层拿它比对收尾时的树,
-        // 不一致 = 这条绿说的是另一棵树。取不到锚返回 undefined → 下游判 unknown, 不判 changed。
-        const freezeAnchor = captureTreeAnchor(continuity?.execRoot ?? continuity?.repoRoot ?? process.cwd()) ?? undefined;
-        return {
-          ...settle(last, round, true),
-          // C (2026-08-21): 这一位往外带, 外层 verifier 才知道"这一轮拿到过机器绿"。
-          // 不带的话, 外层只能看见一堆 done 节点, 而"done"与"判据绿"是两个问题。
-          freezeGreen: true,
-          ...(freezeAnchor ? { freezeAnchor } : {}),
-          // judge 自己那一票**单独带出去**: `converged` 现在是判据说的, 不再等于 judge 说的。
-          // 混在一起会让判据轴把"判据绿"误记成"judge 也说绿" —— 那正是它要量的那一格。
-          // synthetic (确定性闸合成的判词) 同 unreachable 一样**不写这一位** (#148):
-          // judge 没被问过, 「没投票」≠「投了反对票」—— 写了就是拿闸的回声冒充 judge 的票。
-          ...(verdict.unreachable || verdict.synthetic ? {} : { judgeConverged: verdict.converged }),
-        };
-      }
-
-      if (verdict.unreachable) {
-        logger.warn({ node: id, round, err: verdict.unreachable }, '[omd/executor-dag] judge 调不通 → 环提前退出 (infra-error, 不烧剩余轮数)');
-        writeLoopJournal(round, poisoned, prevReason, false, last.output, {
-          kind: 'infra-error',
-          evidence: `judge 调不通: ${verdict.unreachable}`, // 原话进 journal, 复盘要的是当时看见了什么
-          atRound: round,
-        });
-        return { ...settle(last, round, false), infraStopped: `judge 调不通: ${verdict.unreachable}` };
-      }
-
-      // ── 闸级熔断 (2026-08-16): §8.4 那条原则的第三个粒度 ────────────────────────
-      //
-      // 上面按 kind 分的判据有个够不着的角: **确定性**故障若碰巧落进"瞬时"那一类, 就会每轮
-      // 重来直到轮数烧光。实例: `minimax-native` 把业务码塞进 `status`, 业务码全 ≥ 1000 →
-      // 鉴权失败 (1004) / 无效 key (2049) 一律落进 `isProviderFault` 的 `s >= 500` 那支。
-      // 按 kind **猜**不出来 —— 但**转一轮量一量**就知道。
-      //
-      // 判据沿用仓里既有的那条 (轮级 D-Q、动作级 §8.4 都是它): **「相同」而不是「重复」**。
-      //   逐字相同 → 这一格零位移 → 确定性, 退环
-      //   文本在变 → 事情在动 (模型换了说法) → 继续转
-      // 这个键在这里不用调: 坏 key 每轮逐字相同 (第 2 轮退); 瞬时 1000 文本虽同, 但连续两轮
-      // 的概率 ≈ 0.017² ≈ 0.03% (`.omd/eval/gate-m3` 实测 M3 关思考 1/60); parse 抖动的错误里
-      // 带随输出变的 token, 文本不同 → 继续。
-      if (verdict.faultKey && verdict.faultKey === lastJudgeFaultKey) {
-        judgeFaultStreak++;
-      } else {
-        judgeFaultStreak = verdict.faultKey ? 1 : 0;
-      }
-      lastJudgeFaultKey = verdict.faultKey;
-      if (judgeFaultThreshold >= 2 && judgeFaultStreak >= judgeFaultThreshold) {
-        const evidence = `judge 连续 ${judgeFaultStreak} 轮以逐字相同的方式失败 (零位移 → 确定性): ${verdict.faultKey}`;
-        logger.warn({ node: id, round, streak: judgeFaultStreak }, '[omd/executor-dag][fuse-judge] 闸级熔断 → 环提前退出 (infra-error, 不烧剩余轮数)');
-        // 与 judge 调不通同一个出口、同一个词: 该修的是引擎/凭证, 不是"等人给外部输入" (N5)。
-        writeLoopJournal(round, poisoned, prevReason, false, last.output, { kind: 'infra-error', evidence, atRound: round });
-        return { ...settle(last, round, false), infraStopped: evidence };
-      }
-      last = { ...r.leaf, usage: usageAcc };
-
-      // D-4 同款铸票: judge 点名的子节点 → **id** 入毒集 (键取 id 的理由见 NodeLoopJournal 的注)。
-      for (const cid of verdict.rejected) poisoned.add(cid);
-      // 刀①-1 毒集关闸: judge 点名的子节点盘上 checkpoint 立即归档 (同 detector 那处)。
-      archivePoisoned(verdict.rejected);
-      // 检测者与 judge 点的名并在一起当"这一轮谁坏了"; 空转判据看的就是这个合集。
-      const rejectedNow = [...new Set([...verdict.rejected, ...r.detector.rejected])];
-      // 制品 lint 的发现**接在失败原因后面**进下一轮的重展开 prompt —— 环的信息通道只有这一条,
-      // 「你少画了一条边」这句话进不去, conductor 下一轮还会照样少画 (D-12 lint 为主的落点)。
-      // ── 「产物没变」检测 (2026-07-31, G5 正解) ────────────────────────────────
-      // 判在这里而不是和空转判据一起, 是因为**它不拦** —— 它的出口就是下面这条 prompt 通道。
-      // 位置在 journal 之前: 这句话必须跟着 prevReason 一起被写进 journal, 否则 resume 接回来
-      // 的那一轮会丢掉它 (环唯一的信息通道断一次, 就等于这条检测器白跑)。
-      const curArtifacts = collectRoundArtifacts(r.results);
-      const move = classifyArtifactMove(prevArtifacts, curArtifacts);
-      prevArtifacts = curArtifacts;
-      // ── 机会计数 (2026-08-06): 判据**够不够得着**要与「够得着且没命中」分开记 ─────────
-      // 少了这三行, 一次 `loop-no-artifact-change: 0` 在账本里与"这个环压根没走到能判的地方"
-      // 长得一模一样 —— 而两者的下一步相反 (前者该收掉这条检测器, 后者该问环为什么只转一圈)。
-      if (move.kind !== 'unobserved' || move.why !== 'first-round') moveTransitions++;
-      if (move.kind === 'unobserved' && move.why !== 'first-round') moveUnobserved++;
-      const noMove = move.kind === 'no-move' ? move.observation : null;
-      if (noMove) {
-        moveFindings++;
-        noArtifactChangeRounds++;
-        logger.warn(
-          { node: id, round, files: Object.keys(curArtifacts.hashes).length, consecutive: noArtifactChangeRounds },
-          '[omd/executor-dag] 盘上没有位移: 产物与上一轮逐字节相同 (只报不拦, 攒 K 用)',
-        );
-        observe([noMove]);
-      } else {
-        noArtifactChangeRounds = 0;
-      }
-      // ⚠ `r.claimObs` 用**全量**而不是 observe 判新的那批 (lint 走的是后者): journal 每轮覆写,
-      // 「上一轮未通过」是本轮快照。只在首次出现那轮进 prevReason 的话, 盘上留下的最后一轮就
-      // 没有它 —— 而 report-only 唯一的价值就是事后拿原句人工核对误伤 (见 claimObs 的类型注)。
-      // ⚠ 顺带记一笔耦合: prevReason 也是**新颖性坍塌**判据的输入 (pushNoveltyRound 取前 400 字)。
-      // 一条逐轮重复的发现会让各轮文本更像, 于是簇数更容易不增 —— 那条同样只报不拦 (只追加一行
-      // 建议进 prompt), 所以不改控制流; 但它的读数从此不是纯净的, 解读时要知道有这一路输入。
-      const roundObs = [...r.lint, ...r.claimObs, ...(noMove ? [noMove] : [])];
-      // #228: 「下一步」**不并进 prevReason** —— 并进去它就跟判词一起进 `body`, 一起被头切,
-      // 而它偏偏住在尾部 (那正是这一票要治的)。走独立变量 → 独立参数 → 必达块。
-      // 缺席 (judge 没被问过 / 没答) 时置回 undefined, 不留上一轮的残值: 挂一条**上上轮**的
-      // 下一步比不挂更坏 —— 读者无从知道它已经过期了。
-      prevNextSteps = verdict.nextSteps;
-      // #245: 冻结判据失败明细同款线程 —— 单轮一鲜, 不留残值。本轮 freeze 绿 / 闸拒 / 赦免 / 未配
-      // → freezeFailDetail === undefined → 下一轮 prompt 不挂这一块 (缺席零字节, INV-6)。
-      // inconclusive (review fix, P2) 不落这一格空: 它挂的是不带"红/回归"框架的诚实事实句
-      // (见上方构造处), 不是缺席 —— 别把"有话说但换了说法"读成"没话说"。
-      prevCriterionFailDetail = freezeFailDetail;
-      prevReason = roundObs.length
-        ? `${verdict.reason}\n\n[图外观察者]\n${roundObs.map((o) => `- ${o.message}`).join('\n')}`
-        : verdict.reason;
-      // r1 C2 (INV-R1-3): 簇数连续 K 轮不增 → 警告行**追加进 prevReason** (环唯一的信息通道,
-      // 只进 prompt 不进控制流; 终止权仍归轮数/预算/判据)。同时落 observation 进账本 (INV-R1-4)。
-      if (pushNoveltyRound(noveltyTexts, noveltySeq, prevReason)) {
-        logger.info({ node: id, round, seq: noveltySeq }, '[omd/executor-dag] 新颖性坍塌 (簇数连续不增) → 建议行进下一轮 prompt');
-        observe([{ kind: 'novelty-collapse', nodes: [id], message: `簇数序列 [${noveltySeq.join(',')}] 连续 2 轮不增` }]);
-        prevReason = `${prevReason}\n\n${NOVELTY_COLLAPSE_LINE}`;
-      }
-
-      // **每轮判完就写** journal —— 不是节点结束时写。崩在这之后, 下次 resume 接得回来。
-      writeLoopJournal(
-        round,
-        poisoned,
-        prevReason,
-        verdict.converged,
-        last.output,
-        // 收敛才是"停"; 没收敛只是这一轮判完了, 环还要继续 —— 那时不写 stop
-        // (写了会让 resume 读到一个"已经停过"的环)。
-        verdict.converged ? { kind: 'success', evidence: `judge 判收敛 (第 ${round} 轮)`, atRound: round } : undefined,
-      );
-      if (verdict.converged) {
-        logger.info({ node: id, round }, '[omd/executor-dag] 内环收敛 (D-A)');
-        return settle(last, round, true);
-      }
-      // 轮数用尽仍未收敛 (judge_final 档才走到这): 返最后一轮结果并**如实带上 converged=false**。
-      if (isFinal) {
-        logger.warn({ node: id, maxRounds }, '[omd/executor-dag] 内环轮数用尽仍未收敛 (INV-GOAL-4 有界)');
-        // N6: 四条停止轴里**最常走**的这一条此前一个字都不留 —— journal 上只看得到
-        // "最后一轮判完没收敛", 与"阻塞"、"预算停"在盘上长得一模一样, 于是 resume 的人分不出
-        // 该加轮数、该加预算、还是该去看一眼。⚠ 这条 return 在轮末 journal **之后**,
-        // 所以要再写一次 (同轮号, 补上 stop) —— 第一版把它写在函数尾部, 而这条 return
-        // 根本走不到那里, 探针一跑就看见 stop 缺席。
-        writeLoopJournal(round, poisoned, prevReason, false, last.output, {
-          kind: 'not-converged',
-          evidence: `轮数用尽仍未收敛 (跑满 ${round} / 上限 ${maxRounds} 轮, judge 最后一轮仍判未达标)`,
-          atRound: round,
-        });
-        return settle(last, round, false);
-      }
-      // ── D-Q 空转 → BLOCKED (判在"还有轮可跑"之后): 这一轮重展开得到与上一轮**完全相同**的
-      // 子图 (内容寻址 id 逐个相同) 且拒的还是同一批 → 再转按构造不会有新东西, 剩下的轮是纯烧钱。
-      const shape: RoundShape = { childIds: r.childIds, rejected: rejectedNow };
-      const stuck = detectLoopNoProgress(prevShape, shape);
-      prevShape = shape;
-      if (stuck) {
-        observe([stuck]);
-        // ⚠ N6 顺手修的一个**真漏**: 这条 BLOCKED 出口此前**压根不写 journal** ——
-        // 而 writeLoopJournal 的文档注释白纸黑字写着"三个调用点共用: 正常轮末 / 检测者 BLOCKED /
-        // **空转 BLOCKED**"。三缺一, 于是空转停下来的环 resume 时读不回自己为什么停,
-        // 只会看到"上一轮没收敛"。又一次声明面与执行面对不上。
-        writeLoopJournal(round, poisoned, prevReason, false, last.output, {
-          kind: 'blocked',
-          evidence: stuck.message,
-          atRound: round,
-        });
-        return { ...settle(last, round, false), blocked: stuck.message };
-      }
-      logger.info({ node: id, round, rejected: verdict.rejected.length }, '[omd/executor-dag] 内环未收敛 → 重新展开');
-    }
-    // D-P: 取消是从这条路出来的 (循环 break)。**不谎报收敛, 也不谎报失败** —— 已跑完的轮次
-    // 是真跑完的, 结果照原样返, converged 缺席 = 没人判过 (调用方按 `?? false` 读)。
-    if (isCancelled() && last) {
-      logger.warn({ node: id, doneRounds }, '[omd/executor-dag] 内环因取消收尾 (已判轮次全在 journal 里, resume 可续)');
-      return settle(last, doneRounds);
-    }
-    // 预算轴出口 (2026-07-31): 与取消同一个形状 —— 已跑完的轮次照原样返, **converged=false 显式给**
-    // (fail-closed: 没跑完就不是成)。`budgetStopped` 与 `blocked` **刻意是两个字段**: 前者加预算
-    // resume 很可能就成, 后者再多钱都一样, 两个不同的下一步不该读同一句话。
-    if (budgetStopped && last) {
-      return { ...settle(last, doneRounds, false), budgetStopped };
-    }
-
-    // 到这里 = startRound > maxRounds (resume 接回一个已跑满轮数却没收敛的节点): 一轮都没跑,
-    // 没有裁决可报。**不谎报收敛**。
-    //
-    // ⚠ **2026-08-06 改判**: 此前这条归 `infra-error`, 而 infra-error 的判词是「重试 / 换池」——
-    // 对这一格**重试一万次都是同样的 0ms 死**。盘上实测: 10 条 infra-error 里 9 条是这一格,
-    // 同一个 run 的同一个节点在 8 小时里被重入 9 次, 每次 0–1ms。且 infra-error 在
-    // run 级 severity 里排第一 → 整跑结论被一个"没轮次了"盖成"引擎坏了"。
-    // 现在归 `rounds-exhausted` (→ run 级 `blocked`, 同 gate-rejected: 再试也没用, 要改条件本身),
-    // 并且**判词里指名道姓给出两条出口**, 其中删 journal 那条要带真实路径 —— 猜不到的出口等于没出口。
-    const journalPath = cm ? cm.loopPath(continuity!.runId, id) : '(无 continuity, 无 journal 文件)';
-    logger.warn(
-      { node: id, maxRounds, startRound, journalPath, completedRounds: journal?.completedRounds },
-      '[omd/executor-dag] 内环无轮可跑 (resume 已用尽轮数) → rounds-exhausted, 别重试',
-    );
-    return (
-      last ?? {
-        id,
-        status: 'failed',
-        failureKind: 'rounds-exhausted',
-        kind: 'conductor',
-        output:
-          `[内环轮数已用尽: journal 记 ${journal?.completedRounds ?? 0} 轮 / 上限 ${maxRounds} 轮, 本次重入一轮都没跑]\n` +
-          '**原样重试没有用** —— 每次都会在同一个位置零执行返回。两条出口二选一:\n' +
-          `  ① 调高该节点的 max_rounds (schema 上界 4) —— 意思是"再给它几轮";\n` +
-          `  ② 删掉 ${journalPath} 让轮次归零 —— 意思是"忘掉之前几轮的毒集与上轮原因, 重头来"。`,
-        deps,
-        usage: usageAcc,
-      }
-    );
-  };
 
   // ── U1 P1: map 节点运行时展开 (SDD 0009 §2.3 StateMachine) ──────────────────
   // lister → expandMapNode(纯) → 子节点入 plan.nodes 复用 runNode 全套(路由/产物闸/checkpoint)
@@ -4333,17 +2212,7 @@ async function executePlan(
         // leaf 无从自救 —— g1 换档后立刻现形。config.leafTaskContext=false 可关 (零回归逃生口)。
         config.leafTaskContext === false ? undefined : task,
       );
-      // D-Q 检测者: 协议附在 prompt 末尾 (省得每张手写 plan 抄一遍)。**只对内环里的子节点** ——
-      // 环外没有消费者, 附了协议却没人读它的裁决 = 又一个"是验证的样子而不是验证"。
-      const detectorNode = node.detector === true;
-      if (detectorNode && !conductorChildIds.has(id)) {
-        logger.warn(
-          { node: id },
-          '[omd/executor-dag] detector 只在 conductor 节点展开出的子图里有消费者 (环在那儿) → 本节点忽略 (D-Q)',
-        );
-      }
-      const detectorNote = detectorNode && conductorChildIds.has(id) ? `\n${DETECTOR_PROTOCOL}` : '';
-      const prompt = (cav ? `${basePrompt}\n\n${cav}` : basePrompt) + pony + detectorNote;
+      const prompt = (cav ? `${basePrompt}\n\n${cav}` : basePrompt) + pony;
       // C-1 (2026-08-19): 注入文本 token 计量。与 buildLeafPrompt (planner.ts:82-89) 一致口径:
       // 「注入」= 累加 `(deps 文本) 被 fencedUpstream 包过 → 拼成 Predecessor outputs 块」那一段。
       // chars/4 与 agent-leaf.ts:778 `BYTES_PER_TOKEN` 同族 (pi-agent-core `estimateTokens` 口径),
@@ -5270,7 +3139,6 @@ async function executePlan(
   const nodeExecutors: Record<NodeExecKind, (c: NodeExecCtx) => Promise<LeafResult>> = {
     primitive: (c) => runPrimitiveNode(c.id),
     map: (c) => runMapNode(c.id),
-    conductor: (c) => runConductorNode(c.id),
     await: (c) => runAwaitNode(c.id),
     command: (c) => runCommandNode(c),
     research: (c) => runResearchNode(c),
@@ -6116,23 +3984,6 @@ async function executePlan(
   })();
   observe(raceProbe.observations);
 
-  // ── 检查者写了东西吗 (D4 / §7.3, 2026-08-06, 只报不拦) ─────────────────────────
-  // D-Q 检测者是**图内节点**: 与被它检查的兄弟共享同一棵 worktree, 而 conductor 把它排成
-  // `executor:'agent'` 时它手里就是有写工具的。实测 54 跑: 23 个 detector 里 7 个是 agent (记了 writeCounts 的 4 个),
-  // 那 4 个一次都没写 —— 这条纪律今天成立, 但成立的方式是**运气不是不变量**,
-  // 而且真写了此前没有任何一处会知道。判据与分母都在 detectDetectorWrites 上。
-  const detectorProbe = detectDetectorWrites(
-    Object.values(results)
-      .filter((r) => (plan?.nodes[r.id] as { detector?: unknown } | undefined)?.detector === true)
-      .map((r) => ({
-        id: r.id,
-        kind: r.kind,
-        // 缺席 ≠ 0: 这条链没人报 (旧 runner) 与"跑了但没写"是两件事, 前者进 unobserved。
-        ...(r.writeCounts ? { writes: r.writeCounts[0] } : {}),
-        ...(r.writeCandidates ? { writeCandidates: r.writeCandidates } : {}),
-      })),
-  );
-  observe(detectorProbe.observations);
 
   // 最后再扫一次「声称 vs 引擎记录」—— **与上面那条 lint 同一个理由**: 内环那道只覆盖有 conductor
   // 节点的图, 而平铺的普通图 (`dag_run` 那条路) 一个 conductor 都没有, 上面那条路根本不经过。
@@ -6250,23 +4101,6 @@ async function executePlan(
   };
 }
 
-/**
- * 跑 omd 本体内部 executor-DAG。task → conductor 规划 → 现场 fan-out leaves → results。
- * 纯 in-process, 不落 PG。conductor/leaf 模型必须显式 (无硬默认)。
- *
- * 校验回流 (config.verifier 给则启用): DAG 跑完 → verifier 审结果 → fail 且配了**可用**升级模型
- * (provider 已注册) → 用更强 conductor 模型 + 注入失败原因重规划重跑, 有界 (maxEscalations, 默认 1)。
- * **升级模型 provider 未注册 (没配 API key) → 不升级, 维持弱模型** (Nick 指令; escalationProviderReady 判)。
- */
-export async function runExecutorDag(
-  task: string,
-  config: ExecutorDagConfig,
-  prior?: PriorExec,
-): Promise<ExecutorDagResult> {
-  if (!config.conductorModel) throw new Error('executor-dag: conductorModel 必填 (无硬默认, 形如 provider:modelId)');
-  if (!config.leafModel) throw new Error('executor-dag: leafModel 必填 (无硬默认, 形如 provider:modelId)');
-  return runDagInternal(task, config, null, prior);
-}
 
 /**
  * D-7 预构造入口: 接受一张**预构造 ConductorPlan** (pathfinder slice-compiler 的产物), **跳过 conductor
@@ -6469,12 +4303,12 @@ function dropPoisonedGreens(
 async function runDagInternal(
   task: string,
   config: ExecutorDagConfig,
-  prebuiltPlan: ConductorPlan | null,
+  plan: ConductorPlan,
   prior?: PriorExec,
 ): Promise<ExecutorDagResult> {
   const observed: { exec?: ExecOnce; sessionId?: string; conductorModel?: string } = {};
   try {
-    return await runDagInternalCore(task, config, prebuiltPlan, observed, prior);
+    return await runDagInternalCore(task, config, plan, observed, prior);
   } catch (err) {
     const exec = observed.exec;
     if (config.onComplete && exec) {
@@ -6515,7 +4349,7 @@ async function runDagInternal(
 async function runDagInternalCore(
   task: string,
   config: ExecutorDagConfig,
-  prebuiltPlan: ConductorPlan | null,
+  plan: ConductorPlan,
   /** crash 入账观察槽: core 每轮把 exec/sessionId/conductorModel 塞进来, 见 runDagInternal 的注。 */
   observed: { exec?: ExecOnce; sessionId?: string; conductorModel?: string },
   /** 上一**外层轮**的 {plan, results} (D-21 跨轮复用)。轮内 escalation 的 prior 另在下方组装。 */
@@ -6555,8 +4389,7 @@ async function runDagInternalCore(
   // 上存在 —— dag_run 直跑没有图名, 那时缺席 (不编一个 'execute', §3 第 1 条)。进 per-seat 台账,
   // 让「契约段 vs 执行段各烧多少」一条查询答得出 (#144)。
   const generate =
-    config.generate ?? makeDefaultGenerate(sessionId, typeof task === 'string' ? task : undefined, prebuiltPlan?.name);
-  const maxPlanRetries = config.maxPlanRetries ?? 2;
+    config.generate ?? makeDefaultGenerate(sessionId, typeof task === 'string' ? task : undefined, plan.name);
   const maxEscalations = config.maxEscalations ?? 1;
   // agent 模板注册表: 注入 (测试/宿主) 或加载 (内置+.omd/agents)。每 run 载一次, 规划+执行+升级共用。
   const templates = config.agentTemplates ?? loadAgentTemplates({ root: config.continuity?.repoRoot });
@@ -6566,11 +4399,7 @@ async function runDagInternalCore(
   observed.sessionId = sessionId;
   observed.conductorModel = conductorModel;
   let exec: ExecOnce;
-  if (prebuiltPlan) {
-    exec = await executePlan(applyPlanFilters(prebuiltPlan, config), task, config, generate, { in: 0, out: 0 }, templates, prior, undefined, warnedUnknownProfiles);
-  } else {
-    exec = await planAndExecute(task, config, conductorModel, generate, maxPlanRetries, templates, prior, undefined, warnedUnknownProfiles);
-  }
+  exec = await executePlan(applyPlanFilters(plan, config), task, config, generate, { in: 0, out: 0 }, templates, prior, undefined, warnedUnknownProfiles);
   observed.exec = exec;
   // ── 冻结节点快照(SDD 2026-08-22 「冻结判据在重规划轮里并不冻结」, C-1/C-2/D-1/D-5):
   //   在 round-1 跑完**之后**立刻快照调用方点名的节点定义(post-filter 形态, 与
@@ -6941,16 +4770,27 @@ async function runDagInternalCore(
           if (closure.has(e.node)) blameAnchor.set(e.node, `\n\n---\n[verifier 打回 · 第 ${escCount} 轮]\n${e.reason}\n`);
         }
       }
+      // 原图重跑 (2026-09-04, v1 重画退役) 且判词**没点名** (无 blame 围栏 / 畸形围栏): 没有闭包可定点, 而原图
+      // 逐字重跑会被 D-21 整图复用成零工作的空转。D-14 的形状是「finding 回灌到干活的节点」—— 这里把判词原文
+      // 锚到每个会调模型的节点 (command 节点与冻结节点不动), 它们指纹变了就真重跑; 判官点了名则仍只重跑闭包。
+      const reinjectAll = !config.deterministicReplan && closure === null;
+      if (reinjectAll) {
+        const frozen = new Set(config.frozenNodes ?? []);
+        for (const [id, n] of Object.entries(exec.plan.nodes)) {
+          if (n.executor === 'command' || frozen.has(id)) continue;
+          blameAnchor.set(id, `\n\n---\n[verifier 打回 · 第 ${escCount} 轮 · 判词未点名节点, 全图带 finding 重跑]\n${verdict.reason}\n`);
+        }
+      }
       const closureFps = new Set<string>();
-      if (closure) {
-        for (const [id, fp] of merkleFingerprints(exec.plan)) if (closure.has(id)) closureFps.add(fp);
+      if (closure || reinjectAll) {
+        for (const [id, fp] of merkleFingerprints(exec.plan)) if (closure ? closure.has(id) : blameAnchor.has(id)) closureFps.add(fp);
       }
       // D-21: 上轮 plan+results 作复用匹配源 — 语义未变的节点零 LLM 注入上轮输出, 只重跑变化子图。
       // 毒集: blame 解析成功 = 闭包指纹 (D-2, 取代整轮); 失败 = 从外层轮继承 (INV-1 零回归)。
       const priorExec: PriorExec = {
         plan: exec.plan,
         results: exec.results,
-        ...(closure ? { poisoned: closureFps } : prior?.poisoned?.size ? { poisoned: prior.poisoned } : {}),
+        ...(closure || reinjectAll ? { poisoned: closureFps } : prior?.poisoned?.size ? { poisoned: prior.poisoned } : {}),
       };
       // S3.6 补丁模式优先 (未补丁节点字节不动 → 复用按构造成立); 补丁失败回退整图重规划 (fail-open)。
       // 平铺图确定性重规划 (SDD 2026-08-22 「平铺图确定性重规划」): 给则**直跳过**补丁与整图两段,
@@ -6963,96 +4803,87 @@ async function runDagInternalCore(
         { round: escCount, at: roundStampNow(), poisoned: closure ? closure.size : 0, nodes: Object.keys(exec.plan.nodes).length },
         '[omd/executor-dag] 重规划轮开始',
       );
-      const deterministicPlan = config.deterministicReplan?.();
-      let replanMode: 'patch' | 'full' | 'deterministic';
-      let patched: Awaited<ReturnType<typeof tryPatchReplan>> | null = null;
-      let deterministicUsage: ModelUsage = { in: 0, out: 0 };
-      if (deterministicPlan) {
-        replanMode = 'deterministic';
-        // D2 切片 3 —— 确定性重规划空转检测 → 修补节点。
-        // 实测现场 (run e7e360f6): accept 红 + 平铺图 compileBreakdown 产物逐字相同 → 闭包内
-        // 节点全部 D-21 复用 → 72 秒零修复空转。本片让引擎**当场**判空转, 改合一个修补节点:
-        // task = verifier 失败原文 + 「只修这些」; 写集 = 本轮 leaf 写集并集; verify = 同条
-        // accept 命令。BlameRetryLedger.replanMode 仍记 'deterministic' (修 union 越出本片写
-        // 集 — 真要单独记 replanMode=repair-spin 走 follow-up 切片); 空转命中的可见信号改放
-        // 判词日志 + plan.name 含 `__repair_spin_` 前缀 (图谱命名空间, 与 iterate 的 __iterate_*
-        // 同源, 单测可一眼锚定)。
-        const spinResult = trySpinRepair({
-          closure,
-          deterministicPlan,
-          priorPlan: exec.plan,
-          // #273 判据同源: 「谁会被复用」只有 computeReuse 说了算 (done+非毒+依赖链可复用) ——
-          // 指纹近似把 failed 切片当「会复用」, 修补计划替换了本要真重跑的计划 (run b13545da)。
-          // 预览与 executePlan 内那次 computeReuse 同 plan 同 prior 同毒集, 结果必然一致。
-          reusedIds: new Set(
-            computeReuse(applyPlanFilters(deterministicPlan, config), priorExec, priorExec.poisoned).keys(),
-          ),
-          frozenNodes: config.frozenNodes ?? [],
-          priorResults: exec.results,
-          verdictReason: verdict.reason,
-          escCount,
-          // SDD 2026-08-31 修补节点补上下文 (片 2 接线) — 七段构造的注入面 (片 1 已就绪, 本片传值):
-          //   task          = 同作用域原任务 (D-2: 与 escTask 用同一个变量, 拼装不漂)
-          //   baseline      = 隔离档 commit (D-3 两档分辨判别依据; 缺席 = head 档, 走 headSnapshot 路径)
-          //   gitCwd        = 隔离档 execRoot, head 档 repoRoot (D-3 / D-6, 两侧同一个锚)
-          //   headSnapshot  = head 档才读, 隔离档不读 (D-3 两档分辨); 走既有 manager 接口, fail-open
-          //   gitDiff       = 真跑 `git diff <baseline> -- <paths>`, 失败抛错 (D-7 fail-open 留证)
-          //   logEvidence   = 走既有 logger.warn (INV-D2-4), 修一处全局可见
-          // ⚠ marker「REPAIR_CONTEXT_WIRED」= 片 2 接线存在的字符串锚, wiring 测试扫它。
-          task,
-          baseline: config.continuity?.rollbackBaseline,
-          gitCwd: config.continuity?.execRoot ?? config.continuity?.repoRoot ?? process.cwd(),
-          headSnapshot:
-            config.continuity && !config.continuity.rollbackBaseline
-              ? (config.continuity.manager.loadHeadBaseline(config.continuity.runId) as
-                  | HeadWriteSetBaseline
-                  | null) ?? undefined
-              : undefined,
-          gitDiff: defaultGitDiff,
-          logEvidence: (msg, payload) => logger.warn({ ...payload, round: escCount }, msg),
-        });
-        let planToRun = deterministicPlan;
-        if (spinResult.kind === 'spin') {
-          planToRun = spinResult.plan;
-          logger.info(
-            {
-              round: escCount,
-              replaced: deterministicPlan.name,
-              repair: spinResult.plan.name,
-              closureSize: closure?.size ?? 0,
-              reusedPriorFps: priorExec.poisoned?.size ?? 0,
-            },
-            '[omd/executor-dag] 重规划空转命中 (D2 切片 3) → 合成修补节点, 不跑原确定性计划',
-          );
-        } else if (spinResult.kind === 'fallback') {
-          // 罕见的「无 command 类 verify 节点」情形 — 修补计划合成不出来, 退回原计划继续跑
-          // (INV-D2-4 fail-open 不吞证据: 记一条 warn, 仍执行原 plan)。
-          logger.warn(
-            { round: escCount, planName: deterministicPlan.name },
-            '[omd/executor-dag] 重规划空转命中但合成修补节点失败 (无 command 类 verify) → 退回原计划 (fail-open)',
-          );
-        }
-        exec = await executePlan(applyPlanFilters(planToRun, config), escTask, config, generate, { in: 0, out: 0 }, templates, priorExec, blameAnchor, warnedUnknownProfiles);
-      } else {
-        patched = await tryPatchReplan(escTask, verdict.reason, priorExec, config, conductorModel, generate, maxPlanRetries, templates, blameAnchor, closure, warnedUnknownProfiles);
-        // D-3 (SDD 2026-08-11-l2-diff-replan): replanMode 记这一轮走的是补丁差量还是回落整图,
-        // replanTokens 是这一轮的总账 —— 补丁成功时 exec.conductorUsage 已折进补丁尝试的 token
-        // (tryPatchReplan 内部注释同证); 回落时补丁尝试 (patched.usage) 与整图重灌 (exec.conductorUsage)
-        // 两段都要, 不因回落就丢补丁那段的花费 (NULL≠0)。
-        replanMode = patched.exec ? 'patch' : 'full';
-        if (patched.exec) {
-          exec = patched.exec;
-        } else {
-          conductorUsage = addUsage(conductorUsage, patched.usage); // 补丁尝试的 token 不丢账
-          exec = await planAndExecute(escTask, config, conductorModel, generate, maxPlanRetries, templates, priorExec, blameAnchor, warnedUnknownProfiles, 'escalation');
-        }
+      // v1 规划式 conductor 已退役 (owner 2026-09-03): 升级轮不再有「模型重画」这一档。给了 `deterministicReplan`
+      // (sdd-direct 平铺图) ⇒ 复用编译产物; 没给 (dag_run_plan / map_deliver 等预置图) ⇒ **原图 + finding 重跑**:
+      // 被点名节点的 goal 带 blameAnchor (指纹变 → 真重跑), 闭包外节点 D-21 复用。图错了 ⇒ 响亮失败交回作者
+      // (与 INV-D3-4「sddPath 禁回落」同一条纪律, 推广到所有预置图), 不让模型现场重画。
+      const hookPlan = config.deterministicReplan?.();
+      // ⚠ 原图重跑必须**浅拷贝 nodes**: exec.plan 就是 priorExec.plan, executePlan 落 blameAnchor 时按 id 换节点对象,
+      //   共用同一个 nodes 表就等于改了上一轮的指纹 → 毒集 (按改前指纹铸的票) 落空 → 被点名节点逃过毒集被复用
+      //   (与 applyPlanPatch 那条注同一个病, run-usage-accumulation GWT-2 当场抓到)。
+      const deterministicPlan = hookPlan ?? ({ ...exec.plan, nodes: { ...exec.plan.nodes } } as ConductorPlan);
+      const replanMode: 'deterministic' | 'reinject' = hookPlan ? 'deterministic' : 'reinject';
+      const deterministicUsage: ModelUsage = { in: 0, out: 0 };
+      // D2 切片 3 —— 确定性重规划空转检测 → 修补节点。
+      // 实测现场 (run e7e360f6): accept 红 + 平铺图 compileBreakdown 产物逐字相同 → 闭包内
+      // 节点全部 D-21 复用 → 72 秒零修复空转。本片让引擎**当场**判空转, 改合一个修补节点:
+      // task = verifier 失败原文 + 「只修这些」; 写集 = 本轮 leaf 写集并集; verify = 同条
+      // accept 命令。BlameRetryLedger.replanMode 仍记 'deterministic' (修 union 越出本片写
+      // 集 — 真要单独记 replanMode=repair-spin 走 follow-up 切片); 空转命中的可见信号改放
+      // 判词日志 + plan.name 含 `__repair_spin_` 前缀 (图谱命名空间, 与 iterate 的 __iterate_*
+      // 同源, 单测可一眼锚定)。
+      const spinResult = trySpinRepair({
+        closure,
+        deterministicPlan,
+        priorPlan: exec.plan,
+        // #273 判据同源: 「谁会被复用」只有 computeReuse 说了算 (done+非毒+依赖链可复用) ——
+        // 指纹近似把 failed 切片当「会复用」, 修补计划替换了本要真重跑的计划 (run b13545da)。
+        // 预览与 executePlan 内那次 computeReuse 同 plan 同 prior 同毒集, 结果必然一致。
+        reusedIds: new Set(
+          computeReuse(applyPlanFilters(deterministicPlan, config), priorExec, priorExec.poisoned).keys(),
+        ),
+        frozenNodes: config.frozenNodes ?? [],
+        priorResults: exec.results,
+        verdictReason: verdict.reason,
+        escCount,
+        // SDD 2026-08-31 修补节点补上下文 (片 2 接线) — 七段构造的注入面 (片 1 已就绪, 本片传值):
+        //   task          = 同作用域原任务 (D-2: 与 escTask 用同一个变量, 拼装不漂)
+        //   baseline      = 隔离档 commit (D-3 两档分辨判别依据; 缺席 = head 档, 走 headSnapshot 路径)
+        //   gitCwd        = 隔离档 execRoot, head 档 repoRoot (D-3 / D-6, 两侧同一个锚)
+        //   headSnapshot  = head 档才读, 隔离档不读 (D-3 两档分辨); 走既有 manager 接口, fail-open
+        //   gitDiff       = 真跑 `git diff <baseline> -- <paths>`, 失败抛错 (D-7 fail-open 留证)
+        //   logEvidence   = 走既有 logger.warn (INV-D2-4), 修一处全局可见
+        // ⚠ marker「REPAIR_CONTEXT_WIRED」= 片 2 接线存在的字符串锚, wiring 测试扫它。
+        task,
+        baseline: config.continuity?.rollbackBaseline,
+        gitCwd: config.continuity?.execRoot ?? config.continuity?.repoRoot ?? process.cwd(),
+        headSnapshot:
+          config.continuity && !config.continuity.rollbackBaseline
+            ? (config.continuity.manager.loadHeadBaseline(config.continuity.runId) as
+                | HeadWriteSetBaseline
+                | null) ?? undefined
+            : undefined,
+        gitDiff: defaultGitDiff,
+        logEvidence: (msg, payload) => logger.warn({ ...payload, round: escCount }, msg),
+      });
+      let planToRun = deterministicPlan;
+      if (spinResult.kind === 'spin') {
+        planToRun = spinResult.plan;
+        logger.info(
+          {
+            round: escCount,
+            replaced: deterministicPlan.name,
+            repair: spinResult.plan.name,
+            closureSize: closure?.size ?? 0,
+            reusedPriorFps: priorExec.poisoned?.size ?? 0,
+          },
+          '[omd/executor-dag] 重规划空转命中 (D2 切片 3) → 合成修补节点, 不跑原确定性计划',
+        );
+      } else if (spinResult.kind === 'fallback') {
+        // 罕见的「无 command 类 verify 节点」情形 — 修补计划合成不出来, 退回原计划继续跑
+        // (INV-D2-4 fail-open 不吞证据: 记一条 warn, 仍执行原 plan)。
+        logger.warn(
+          { round: escCount, planName: deterministicPlan.name },
+          '[omd/executor-dag] 重规划空转命中但合成修补节点失败 (无 command 类 verify) → 退回原计划 (fail-open)',
+        );
       }
-      // 冻结节点复原(SDD 2026-08-22, C-2): 补丁模式与整图重规划两条路都在这里收敛后再做。
+      exec = await executePlan(applyPlanFilters(planToRun, config), escTask, config, generate, { in: 0, out: 0 }, templates, priorExec, blameAnchor, warnedUnknownProfiles);
+      // 冻结节点复原(SDD 2026-08-22, C-2): 确定性重规划与原图重跑两条路都在这里收敛后再做。
       // 先复原先于 observed.exec = exec 是有意的 — 把复原后的 plan 一起 snapshot 给观察者。
       restoreFrozenNodes(exec, frozenNodeSnapshot, config.frozenNodes);
       observed.exec = exec;
       observed.conductorModel = conductorModel;
-      const replanTokens = replanMode === 'deterministic' ? deterministicUsage : replanMode === 'patch' ? patched!.usage : addUsage(patched!.usage, exec.conductorUsage);
+      const replanTokens = deterministicUsage;
       const rerunWallMs = Date.now() - rerunStart;
       // D-4 打回读数入账 (SDD 契约 f): 每次打回追加一条。reuseHits = 闭包外命中数 ——
       // 闭包指纹已入毒集, reusedNodes 里不可能有闭包节点, 这个数就是「闭包外且 D-21 命中」, 无第二套判定。

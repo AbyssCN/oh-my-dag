@@ -159,7 +159,7 @@ describe('③ 终态面 — 原因 + blame 摘要 + resume 把手 (G-2)', () => 
     const drafts = collectRunTickets(r, {
       runId: RUN,
       verification: CIRCUIT,
-      blameRetry: { blameSize: 2, closureSize: 5, reuseHits: 3, rerunWallMs: 1000, replanMode: 'full', replanTokens: { in: 0, out: 0 } },
+      blameRetry: { blameSize: 2, closureSize: 5, reuseHits: 3, rerunWallMs: 1000, replanMode: 'reinject', replanTokens: { in: 0, out: 0 } },
     });
     expect(drafts[0]!.title).toBe(
       `[同因熔断] conductor 只修不发明却新增 cache_evidence 节点 · blame 2 节点/失效闭包 5 · resume: dag_goal resume=${RUN}`,

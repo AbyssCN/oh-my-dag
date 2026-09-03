@@ -26,7 +26,7 @@ import {
   createAgentLeafRunner,
   splitContentPartsForPi,
 } from './agent-leaf';
-import { runExecutorDag } from './dag/engine';
+import { runExecutorDag } from '../../test/helpers/legacy-plan-entry';
 import { CheckpointManager } from './continuity/checkpoint-manager';
 import { setLoggerDestination } from '../logger';
 import type { ExecutorDagConfig, GenerateFn } from './dag/types';
@@ -140,7 +140,6 @@ describe('GWT-4 · engine → agentRunner.promptImages 透传 (INV-3)', () => {
       leafModel: PI_MODEL,
       agentLeafModel: PI_MODEL,
       generate,
-      maxPlanRetries: 0,
       continuity: { manager: new CheckpointManager(cwd), runId: 'R', repoRoot: cwd },
       agentRunner: runner,
       // 前驱 src 是 command 节点 → 必须注入 commandRunner (engine.ts:3267: 缺则 failed)。
@@ -185,7 +184,6 @@ describe('GWT-4 · engine → agentRunner.promptImages 透传 (INV-3)', () => {
       leafModel: PI_MODEL,
       agentLeafModel: PI_MODEL,
       generate,
-      maxPlanRetries: 0,
       continuity: { manager: new CheckpointManager(cwd), runId: 'R', repoRoot: cwd },
       agentRunner: runner,
     };

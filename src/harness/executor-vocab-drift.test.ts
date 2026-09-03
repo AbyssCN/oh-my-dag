@@ -99,9 +99,9 @@ describe('executor 词表漂移闸 (prompt ↔ zod 真源)', () => {
   test('★0 前置: 两个 zod 值域都读得出来, 且确实是宽窄两个 —— 读不出来这条闸就是空的', () => {
     expect(listerZod, '读不到第一个 executor z.enum (lister, :57) —— 判据锚点漂了').toBeDefined();
     expect(nodeZod, '读不到第二个 executor z.enum (节点, :156) —— 判据锚点漂了').toBeDefined();
-    // 窄的是 lister(3 个), 宽的是节点(7 个)。顺序反了下面全错, 所以在这里钉死。
+    // 窄的是 lister(3 个), 宽的是节点(6 个; 'conductor' 随 v1 于 2026-09-03 退役)。顺序反了下面全错, 所以在这里钉死。
     expect([...(listerZod as Set<string>)].sort()).toEqual(['agent', 'command', 'leaf']);
-    for (const v of ['leaf', 'agent', 'command', 'map', 'research', 'conductor', 'await'])
+    for (const v of ['leaf', 'agent', 'command', 'map', 'research', 'await'])
       expect((nodeZod as Set<string>).has(v), `节点 zod 值域少了 ${v}`).toBe(true);
   });
 

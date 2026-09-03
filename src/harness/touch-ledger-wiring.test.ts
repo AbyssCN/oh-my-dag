@@ -44,7 +44,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { runExecutorDag } from './dag/engine';
+import { runExecutorDag } from '../../test/helpers/legacy-plan-entry';
 import type { ExecutorDagConfig, GenerateFn } from './dag/types';
 import { createAgentLeafRunner } from './agent-leaf';
 import { CheckpointManager } from './continuity/checkpoint-manager';
@@ -107,7 +107,6 @@ function makeConfig(cwd: string, generate: GenerateFn, extra: Partial<ExecutorDa
     leafModel: 'test:leaf',
     agentLeafModel: MODEL,
     generate,
-    maxPlanRetries: 0,
     continuity: { manager: new CheckpointManager(cwd), runId: 'RUN1', repoRoot: cwd },
     ...extra,
   };

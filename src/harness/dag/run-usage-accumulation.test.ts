@@ -80,32 +80,6 @@ const makeEscalationGenerate = (round2Patch: Record<string, unknown>, perLeafUsa
 describe('D7 切片 1: run-level usage 跨轮累加 (SDD #274, INV-D7-1 恰计一次)', () => {
   registerProvider('escx', { baseUrl: 'http://127.0.0.1:9', apiKey: 'test-key', api: 'openai-compatible' });
 
-  /** GWT-1 36a5f131 形状: 首轮 5 节点 → 修补新增 2 个新下游节点 → leavesIn = 5 + 2 = 7。 */
-  test('GWT-1: 修补轮新增下游 → leavesIn 跨轮累加 = 首轮 + 修轮新节点', async () => {
-    const { generate, calls } = makeEscalationGenerate(
-      // 修补加 2 个节点, depends_on=[] 即可独立跑; 无 blame 围栏 ⇒ patch 无闭包限制。
-      { x: { goal: '补丁新增丁', depends_on: ['a'] }, y: { goal: '补丁新增戊', depends_on: ['a'] } },
-      { in: 2, out: 3, cacheHit: 4 },
-    );
-    const r = await runExecutorDagWithPlan(
-      plan({ a: { goal: '甲' }, b: { goal: '乙' }, c: { goal: '丙' } }),
-      makeConfig(generate, {
-        verifier: makeFirstFailVerifier('缺审查节点'),
-        conductorEscalationModel: 'escx:strong',
-      }),
-    );
-    expect(r.verification?.pass).toBe(true);
-    // 修补模式生效: a/b/c 逐字保留 ⇒ D-21 复用, 用量=0; x/y 真跑一次, 贡献 2 each。
-    // leavesIn = 首轮 (3 节点 × 2) + 修轮 (2 节点 × 2) = 10。
-    expect(r.usage.leavesIn).toBe(10);
-    expect(r.usage.leavesOut).toBe(15); // 5 × 3
-    expect(r.usage.leavesCacheHit).toBe(20); // 5 × 4
-    // 真实调用次数: a/b/c 各 1 (a 喂给 x/y 加一次也算 a 头上), x/y 各 1
-    // a 被 x、y 两节点 depends_on, 计 3 次 (轮 1 一次 + 轮 2 喂给 x、y 各一次的 dep 摘要等等)
-    // 关键是 b/c 在 calls 里只出现一次 — 修补轮真没跑它们。
-    expect(calls.filter((c) => c === 'b').length).toBe(1);
-    expect(calls.filter((c) => c === 'c').length).toBe(1);
-  });
 
   /** GWT-2 D-21 复用不双记: 修补仅修闭包内 (c) → 闭包外 a, b 零 LLM 注入, leavesIn 不翻倍。 */
   test('GWT-2: 修补仅修闭包内 c → 闭包外 a, b D-21 注入零贡献', async () => {
@@ -116,7 +90,8 @@ describe('D7 切片 1: run-level usage 跨轮累加 (SDD #274, INV-D7-1 恰计�
     const r = await runExecutorDagWithPlan(
       plan({ a: { goal: '甲' }, b: { goal: '乙' }, c: { goal: '丙' } }),
       makeConfig(generate, {
-        verifier: makeFirstFailVerifier('仅 c 不合格'),
+        // 2026-09-04: 没有补丁模式了, 闭包由判词的 ```blame 围栏给出 (原图 + finding 重跑, 闭包外 D-21 复用)。
+        verifier: makeFirstFailVerifier('仅 c 不合格\n```blame\n[{"node": "c", "reason": "仅 c 不合格"}]\n```\n'),
         conductorEscalationModel: 'escx:strong',
       }),
     );

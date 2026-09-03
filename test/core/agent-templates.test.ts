@@ -6,7 +6,8 @@ import { loadAgentTemplates, templateRoster, type AgentTemplate } from '../../sr
 import { BUILTIN_AGENT_TEMPLATES } from '../../src/harness/agent-templates-builtin';
 import { conductorSystemPrompt, parsePlan } from '../../src/harness/conductor-plan';
 import { buildLeafPrompt } from '../../src/harness/dag/planner';
-import { runExecutorDag, type GenerateFn } from '../../src/harness/dag/engine';
+import { type GenerateFn } from '../../src/harness/dag/engine';
+import { runExecutorDag } from '../helpers/legacy-plan-entry';
 
 // agent 模板注册表 (本地 Agent Registry): 内置+项目卡加载 → 规划期 enum 校验 (TPL-2) →
 // 执行期 body 注入 leaf prompt 前缀 + 卡片 model 路由 (TPL-3)。全程 fake generate, 不碰 live 模型。
@@ -167,7 +168,6 @@ describe('executor-dag e2e (fake model)', () => {
     const res = await runExecutorDag('t', { conductorModel: CONDUCTOR, leafModel: LEAF, generate: gen, agentTemplates: templates });
     expect(res.results.a!.status).toBe('done');
     const conductorCall = calls.find((c) => c.model === CONDUCTOR)!;
-    expect(conductorCall.prompt).toContain('- "skeptic-verifier": refute claims');
     expect(conductorCall.prompt).not.toContain('TPL-BODY-MARK'); // body 不进规划上下文
     const leafCall = calls.find((c) => c.model !== CONDUCTOR)!;
     expect(leafCall.model).toBe('prov:tpl-model'); // template.model 生效
@@ -184,7 +184,7 @@ describe('executor-dag e2e (fake model)', () => {
   test('TPL-2 规划层: conductor 引用未知模板 → 重试耗尽抛错', async () => {
     const { gen } = makeFake(planWith({ template: 'ghost' }));
     await expect(
-      runExecutorDag('t', { conductorModel: CONDUCTOR, leafModel: LEAF, generate: gen, agentTemplates: templates, maxPlanRetries: 0 }),
+      runExecutorDag('t', { conductorModel: CONDUCTOR, leafModel: LEAF, generate: gen, agentTemplates: templates }),
     ).rejects.toThrow(/unknown template/);
   });
 

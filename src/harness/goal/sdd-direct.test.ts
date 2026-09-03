@@ -463,7 +463,6 @@ describe('runGoal 直通 v2 (切片 5: 分解表可编译 → 零 conductor 平�
     const plan = seenPlans[0]!;
     expect(plan.name).toBe('goal-execute-flat');
     expect(Object.keys(plan.nodes).length).toBe(5); // 2026-08-22 RED 删掉: 每片 2 节点 + accept
-    expect(Object.values(plan.nodes).some((n) => n.executor === 'conductor')).toBe(false);
     // G-2: 全量回归恰一次, 且就是冻结判据那条命令。**命令来自 verify 列** (2026-08-11 起,
     // 不再是分类器那条 `bun test`): 各片 verify 串联 + 末环去路径限定的全量版。
     const accept = 'bun test src/a.test.ts && bun test src/b.test.ts && bun test';

@@ -9,8 +9,8 @@ import { join } from 'node:path';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagConfig, ExecutorDagResult } from '../dag/types';
 import type { VerifierVerdict } from '../verifier';
-import { conductorCtxOf, runLoopTask, runOrchestratingLoop, type LoopHost } from './loop-run';
-import { CONDUCTOR_NODE_ID, ORCHESTRATING_LOOP_PLAN_NAME, REINJECT_ANCHOR_HEAD } from './orchestrating-loop';
+import { conductorCtxOf, runLoopTask, runOrchestratingLoop, withLoopConfig, type LoopHost } from './loop-run';
+import { CONDUCTOR_NODE_ID, ORCHESTRATING_LOOP_PLAN_NAME, REINJECT_ANCHOR_HEAD, compileOrchestratingLoop, loopDepthOf } from './orchestrating-loop';
 
 type Seen = { plan: ConductorPlan; cfg: ExecutorDagConfig };
 
@@ -125,5 +125,38 @@ describe('assemble 接线绊线: 生产引擎接缝的任务入口是编排循�
     expect(src).toContain("import { runOrchestratingLoop } from '../harness/goal/loop-run';");
     expect(src).toContain('runExecutorDag: runOrchestratingLoop');
     expect(src).not.toMatch(/import \{[^}]*\brunExecutorDag\b[^}]*\} from '\.\.\/harness\/dag\/engine'/);
+  });
+});
+
+describe('decompose 卡 → 嵌套编排循环 (2026-09-04, 替掉 v1 的 executor:conductor 展开)', () => {
+  const callTool = async (cfg: ExecutorDagConfig, name: string, params: unknown) => {
+    const face = cfg.leafFace!({ id: CONDUCTOR_NODE_ID } as never)!;
+    const tool = face.customTools!.find((t) => t.name === name)!;
+    return (await tool.execute('call-1', params)) as { content: { type: string; text: string }[]; details?: Record<string, unknown> };
+  };
+
+  test('顶层 conductor 派 decompose → 子 run 是循环 plan (前缀 d1.conductor, escalation 座), 子 config 带 leafFace + maxEscalations 0, 深度 1', async () => {
+    const seen: Seen[] = [];
+    const cfg = baseCfg({ conductorEscalationModel: 'e:sota' });
+    const plan = compileOrchestratingLoop({ goal: '大活', ctx: conductorCtxOf(host(cfg), null) });
+    const loopCfg = withLoopConfig(cfg, plan, { ...host(cfg), runDag: fakeEngine(seen) }, null, '大活');
+    const res = await callTool(loopCfg, 'decompose', { goal: '这一步拆不出来' });
+    expect(res.details?.ok).not.toBe(false);
+    expect(seen).toHaveLength(1);
+    const child = seen[0]!;
+    expect(child.plan.name).toBe(ORCHESTRATING_LOOP_PLAN_NAME);
+    expect(Object.keys(child.plan.nodes)).toEqual(['d1.conductor']);
+    expect(child.plan.nodes['d1.conductor']).toMatchObject({ executor: 'agent', model: 'e:sota' });
+    expect(loopDepthOf(child.plan)).toBe(1);
+    // 证伪: runChild 不认循环 plan (去掉 isOrchestratingLoopPlan 分支) → 子 run 的 conductor 是裸 agent 叶, 没有卡, 这两条红。
+    expect(child.cfg.maxEscalations).toBe(0);
+    const childFace = child.cfg.leafFace?.({ id: 'd1.conductor' } as never);
+    expect(childFace).toBeDefined();
+    expect(child.cfg.verifier).toBeUndefined(); // 终审只在顶层 run 打
+    // 嵌套 conductor 的面上不再有 decompose (深度闸在 compile 里拒, 卡还在面上, 调了就拒)。
+    const nestedDecompose = childFace!.customTools!.find((t) => t.name === 'decompose')!;
+    const rej = (await nestedDecompose.execute('call-2', { goal: '再拆' })) as { content: { text: string }[]; details?: { ok?: boolean } };
+    expect(rej.details?.ok).toBe(false);
+    expect(rej.content[0]!.text).toContain('深度上限');
   });
 });

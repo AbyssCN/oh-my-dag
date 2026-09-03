@@ -11,7 +11,7 @@ import {
   type PrimitiveCtx,
 } from '../../src/harness/primitive-registry';
 import { parsePlan } from '../../src/harness/conductor-plan';
-import { runExecutorDag } from '../../src/harness/dag/engine';
+import { runExecutorDag } from '../helpers/legacy-plan-entry';
 import type { GenerateFn } from '../../src/harness/dag/types';
 
 // ── fake ctx:leaf 按 goal 内容返不同桩,usage 每发 +1 ──────────────────────

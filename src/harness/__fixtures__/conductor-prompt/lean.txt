@@ -59,16 +59,10 @@ Executor kind per node (field "executor"):
 - "map"  = runtime dynamic fan-out (field "map"): a lister enumerates an array AT RUNTIME, then a
             per-element template spawns one child per item. Use when the work-list is unknown until run
             time (see the "Runtime work-list" section below).
-- "conductor" = runtime HETEROGENEOUS decomposition: when it runs, it plans its own sub-graph and
-            schedules it. Use ONLY when HOW to break this step up depends on what upstream produces
-            ("decide the split after reading the research"). Costs one extra planning call plus a
-            layer of indirection — if you can name the steps NOW, name them now instead. Not for
-            "the same thing N times" (that is "map"). Its children may NOT be map/conductor.
-            See the runtime-decomposition shape below for when NOT to use it.
 - "await" = park until ANOTHER run publishes that artifact to the run-board, then git-merge its
             commit (field "await": {"artifact", "fromRun"?, "timeoutMs"?} — REQUIRED with it). Use
             ONLY when a separate run owns the artifact; nothing in THIS graph can unpark it.
-Default to "leaf" unless the node needs tools/CLI/web. Only "map"/"conductor" spawn DAG sub-nodes.
+Default to "leaf" unless the node needs tools/CLI/web. Only "map" spawns DAG sub-nodes.
 HARD RULE — file producers MUST be "agent": if a node CREATES or MODIFIES any file (its job is to
   implement/write/生成 a path like src/x.ts), it MUST set executor:"agent" AND output_type:"file"
   (set output_path too). A "leaf" CANNOT touch the filesystem — a leaf told to write a file silently
@@ -92,7 +86,7 @@ HARD RULE — big content enters via PROMPT (billed once), never via an agent to
   "command" node feeding a "leaf" via depends_on — content reaches the leaf prompt at
   one-time cost. Keep "agent" for nodes that must DECIDE what to read next from content, modify
   files, or run verification. Explore-then-hand-off: an agent/lister may LOCATE, but re-reading goes
-  to command+leaf pairs (via executor:"conductor" when the list exists only at run time). Optional
+  to command+leaf pairs (via a "map" node when the list exists only at run time). Optional
   field "content_bytes" (estimated bytes the node must ingest) helps the engine pick the route.
   KEEP PER-SOURCE IDENTITY when reading many files: ONE file per node ("cat <path>", e.g. a map
   template over the list), or if you must bundle, use "tail -v -n +1 <paths>" which prints an
@@ -155,22 +149,6 @@ compressed to save tokens — the real result lives in files/structured output, 
 
 Field "persona" (optional): ONE line ROLE + first-principles lens to condition a weak executor
 into its expert region (research/judgement/design leaves only; omit for mechanical/command).
-RULE — if you draw a node that depends on ≥2 sibling nodes in order to CHECK WHETHER THEY AGREE
-(consistency / no-conflict / same-assumptions / cross-check), you MUST put "detector": true on it.
-This holds however you implement it: a hand-written `node -e` / grep / diff command that compares the
-siblings IS the detector — writing the comparison yourself does not replace the field, it is what needs it.
-Without that field its findings are just text nobody acts on; with it the engine reads its output as
-a VERDICT and feeds it back into the loop:
-  `REJECT: <sibling node id>`  → that sibling's output is not accepted; the loop redoes it next round
-  `BLOCKED: <one-line reason>` → no amount of retrying helps without outside input; the loop stops
-Name siblings by the ids YOU write in this plan (the engine translates them to runtime ids).
-The verdict is what you PRINT, not the exit code — print those lines and exit 0. Failing the node
-on a conflict is not the channel; it just adds a red node the loop then has to explain away.
-PREFER executor:"command" (`echo "REJECT: <that id>"` is deterministic and cheaper than a model call);
-a "leaf" detector works too. It only has an effect inside a conductor node's OWN sub-graph.
-NEVER put "detector" on a node with fewer than 2 producing dependencies: a single-producer
-"is it complete / is it good?" review is the ROUND JUDGE's job, and marking it just wastes a node.
-Also skip it when an OFF-THE-SHELF project check already decides (tsc / lint / `bun test`).
 Keep the graph acyclic.
 
 Constrained control-flow primitives (field "kind":"primitive" — OPTIONAL, prefer over hand-wiring):
@@ -236,14 +214,14 @@ Graph shapes (proven decompositions — match by trigger, and heed the "NOT when
   paper_corpus [map] — lister 子步用 command 在运行时列出 10 篇论文路径
   paper_corpus::<论文> [command] ×10 — 模板按元素展开, keyBy 给稳定身份
   load_checklist [command] ← —
-- runtime-decomposition — 一步在规划期**分不出来**, 留一个 executor:"conductor" 节点, 到它跑的时候现场画子图
+- runtime-decomposition — 一步在规划期**分不出来**, 派一张 decompose 卡: escalation 座上再开一层编排循环 (同样七张卡), 到它跑的时候现场拆
   WHEN: 这一步该怎么拆, 取决于上游跑出来的东西 —— "看完调研再决定分几路" / "按契约定下来的接口面拆实装"。规划期硬拆只能瞎猜, 猜错的那张图会被照着执行。
   NOT when: ① 现在就拆得出来 —— 那就直接把节点写出来, conductor 节点是多一次模型调用 + 多一层间接, 白花的。② 要扇的是**同一件事的 N 份** (每个模块审一遍 / 每个镜头查一遍) —— 那是 runtime-work-list (map), 它有模板和 keyBy, 比让 conductor 手写 N 个几乎一样的节点稳且便宜。conductor 节点是给**异构**步骤用的 (各有各的 goal/executor/依赖)。
-  · 一个 executor:"conductor" 节点, goal 写清"要达成什么", 不写"分几步"(那正是留给它现场判的)
-  · 它的 depends_on 挂上"决定怎么拆"所需要的上游 —— 展开时那些输出会进它的 prompt
-  · (可选) max_nodes 钳住子图规模; 缺省 64, 与 map 的 maxItems 同一个数
-  · 子图由它现场画, 子节点走完整的 leaf 全套 (路由/产物闸/checkpoint), 与手写节点无差
-  ENFORCED: 展开闸: 子节点禁再用 conductor/map (D-D); 子图有环 / 空 / 不是合法 plan → 整份拒, 一个子节点都不跑; 子节点 id 内容寻址 (D-B), conductor 改名不改内容则 resume 照旧命中
+  · decompose(goal) —— goal 写清"要达成什么", 不写"分几步"(那正是留给它现场判的)
+  · 把"决定怎么拆"所需要的上游事实写进 goal —— 嵌套的 conductor 只看得见这段文字
+  · 嵌套 conductor 坐 escalation 座, 手里同样是 work / spawn / map / explore / best_of / research 六张卡 (没有 decompose)
+  · 它派出的子图走完整的 leaf 全套 (路由/产物闸/checkpoint), 与顶层派发无差; 终审只在顶层 run 打一次
+  ENFORCED: 深度闸: decompose 只展开一层 —— 嵌套循环里再调 decompose 当场拒 (LOOP_MAX_DEPTH=1); 嵌套 conductor 派出的子图与顶层同闸 (有环 / 空 / 不合法 plan → 整份拒), 子节点 id 内容寻址 (D-B), resume 照旧命中
   EXAMPLE (real green run 5d0853b6): 执行段怎么拆取决于契约内容 —— 规划期留 conductor 节点, 跑到时现场分解
   execute [conductor] ← —    goal 只写「要达成什么」, 不写分几步
   execute::impl [agent] → execute::gate [command] → execute::fix [agent] → …
@@ -275,8 +253,7 @@ OMIT the field — do NOT invent an id and do NOT force-fit a shape you did not 
 Output STRICTLY one JSON object, no prose, matching:
 { "name": string, "description"?: string, "outputs"?: string[], "shape"?: string,
   "nodes": { "<node_id>": { "goal"?: string, "persona"?: string, "profile"?: string, "template"?: string, "mcp"?: string[] (server name or "server:tool" — an unregistered server makes the whole plan INVALID, like "template"),
-    "args"?: object, "depends_on"?: string[], "executor"?: "leaf"|"agent"|"command"|"map"|"research"|"conductor"|"await", "command"?: string, "expect_exit"?: number, "expect_output"?: string, "creative"?: boolean,
-    "max_nodes"?: number, "detector"?: boolean (MUST be true on any node that cross-checks ≥2 siblings),
+    "args"?: object, "depends_on"?: string[], "executor"?: "leaf"|"agent"|"command"|"map"|"research"|"await", "command"?: string, "expect_exit"?: number, "expect_output"?: string, "creative"?: boolean,
     "oracleKind"?: "cheap"|"render"|"judge"|"none"|"self_built" (REQUIRED; UI output MUST NOT be "none" — see PP-O01),
     "toolRefs"?: ["<source>:<name>@<ver>"] (REQUIRED; entries not in working-set rejected at critique — PP-T01),
     "whyNoFanout"?: string|null (REQUIRED non-null when executor is single-leaf; null = "no reason given"),

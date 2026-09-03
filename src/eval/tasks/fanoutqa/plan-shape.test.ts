@@ -115,13 +115,6 @@ describe('plan-shape 分类器', () => {
     expect(classifyPlanShape(tiny).cls).toBe('runtime-fanout'); // 但语义上它是最对的那张
   });
 
-  test('executor:conductor 同样算运行时扇出 (两个件都是为这个形状造的)', () => {
-    const p = plan({
-      list: { goal: '列清单' },
-      sub: { goal: '现场重画子图', depends_on: ['list'], executor: 'conductor', max_nodes: 8 },
-    });
-    expect(classifyPlanShape(p).cls).toBe('runtime-fanout');
-  });
 
   test('宽度阈值就是 FANOUT_MIN_WIDTH: 宽 2 不算扇出, 宽 3 算', () => {
     const wide = (n: number): ConductorPlan =>

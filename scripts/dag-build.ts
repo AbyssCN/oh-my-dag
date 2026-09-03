@@ -27,7 +27,8 @@
  *   ⚠️ fleet 会改工作树 → 默认要求 git 干净 (--allow-dirty 跳过)。跑完审 diff 再 commit, 脚本不自动提交。
  */
 import '../src/harness/script-bootstrap';
-import { runExecutorDag } from '../src/harness/dag/engine';
+// v1 规划式 conductor 已退役 (2026-09-03): 任务入口 = 编排循环 (conductor 节点 + 七张卡), 与 `run` 工具同一入口。
+import { runOrchestratingLoop as runExecutorDag } from '../src/harness/goal/loop-run';
 import { createAgentLeafRunner } from '../src/harness/agent-leaf';
 import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from '../src/harness/command-leaf';
 import { runReview, type ReviewGate } from '../src/harness/review';

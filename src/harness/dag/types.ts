@@ -133,8 +133,6 @@ export interface DagSeatsSeam {
 
 /** 推理档 seam: 各角色的 thinking 档与输出预算 (S-T: 座位档由接线层注入, 显式永远赢)。 */
 export interface DagThinkingSeam {
-  /** conductor 分解推理档 (high 默认/复杂 plan 升 max; conductor 是分解器不需深推理, 见 fleet 注释)。 */
-  conductorThinkingLevel?: 'off' | 'low' | 'medium' | 'high' | 'xhigh';
   /**
    * conductor 输出 token 预算 (plan JSON 随任务规模涨; thinking conductor 的推理可计入 completion)。
    * 省略 → env OMD_CONDUCTOR_MAX_TOKENS → 8192 (deepseek 系安全顶)。k3 大 plan 建议 32768。
@@ -174,11 +172,6 @@ export interface DagRunnersSeam {
    * 那是假 grounded (与"写文件节点无 agentRunner → 失败"同一条纪律: 拒绝静默假成功)。
    */
   researchRunner?: ResearchLeafRunner;
-  /**
-   * 注入式 judge 调用 (测试)。默认真 `model/gateway.send` —— 内环 judge 走 `responseSchema`
-   * 强制结构化, 与只回文本的 `generate` 不是同一个接口, 故单开一个注入口。
-   */
-  judgeSend?: typeof Gateway.send;
   /**
    * executor leaf 模型选型路由器 (B-2 bandit, 见 model-router.ts)。省略 = 静态 (leafModel/agentLeafModel)。
    * 给则 inproc/agent leaf 经 router.select(bucket, 静态) 选模型, DAG 校验后按 reward 回更新。
@@ -228,8 +221,6 @@ export interface RepoCheck {
 
 /** 规划管线 seam: conductor 的输入约束 (roster/模板) 与 plan 的确定性变换/过滤。 */
 export interface DagPlanningSeam {
-  /** conductor 规划无效输出的有界重试 (默认 2 → ≤3 次)。 */
-  maxPlanRetries?: number;
   /** 限定 conductor 可派的 agent roster (进规划 system prompt)。 */
   agents?: string[];
   /**
@@ -499,42 +490,10 @@ export interface DagLoopControlSeam {
    */
   _budgetAnchor?: number;
   /**
-   * **§8.4 动作级熔断**的阈值 (缺省 2)。同一条命令以**逐字相同**的方式失败到这个次数 →
-   * 内环走 BLOCKED 出口。
-   *
-   * ⚠ 判据里"逐字相同"那一半不是可选的优化, 是它能开着跑的**前提**: omd 里失败的 command
-   * 节点常常就是 oracle (`bun test` 红 = 活没干完), 而修复环的正常形态就是"红→改→再红→再改→绿"。
-   * 只按"同一条命令失败 N 次"熔断会把整个修复回路掐死。判据见 `plan/repeated-action.ts`。
-   *
-   * 设 0 或 1 = 关闭本闸 (阈值 1 等于一失败就熔断, 那不是熔断)。
-   */
-  repeatedActionThreshold?: number;
-  /**
-   * **闸级熔断**的阈值 (缺省 2, 2026-08-16)。内环 judge 连续这么多轮以**逐字相同**的方式
-   * 失败 (键 = `kind|status|message`) → 走 infra-error 出口。§8.4 那条原则的第三个粒度:
-   * 轮级看"整轮原地踏步", 动作级看"某条命令零位移", 这一条看"闸自己零位移"。
-   *
-   * ⚠ 它补的是**按 kind 分类够不着的那个角**: 一个确定性故障若碰巧被归进"瞬时"那一类
-   * (实例: `minimax-native` 把业务码塞进 `status`, 1004 鉴权失败 / 2049 无效 key 全落进
-   * `s >= 500` 被判成瞬时), 就会每轮重来直到轮数烧光。按 kind 猜不出来, 转一轮量得出来。
-   *
-   * ⚠ "逐字相同"同样不是可选优化: 文本在变 = 模型换了说法 = 事情在动, 该继续转;
-   * 只按"judge 失败 N 次"熔断会把正常的判词抖动读成故障。
-   *
-   * 设 0 或 1 = 关闭本闸 (同 repeatedActionThreshold 的口径)。
-   */
-  judgeFailureThreshold?: number;
-  /**
    * 跨模型校验器 (model-agnostic skeptic, 见 verifier.ts)。省略 = 不校验 (back-compat 老行为)。
    * 给则 DAG 跑完用它审结果 → fail 且配了可用升级模型时触发 conductor 静默升级重规划。
    */
   verifier?: VerifierFn;
-  /**
-   * 从第几轮起用 `conductorEscalationModel` 重画 (默认 2 = 第 1 轮弱 conductor, 后续升级)。
-   * 外层 fixpoint 与 conductor 节点内环共用这一个旋钮 —— 两处各写一份默认值就会漂。
-   * 仅在 `conductorEscalationModel` 给定且其 provider 已注册时生效。
-   */
-  escalateAfterRound?: number;
   /** verifier-fail → 升级重规划的最大次数 (默认 1)。每次升级 = 一整轮重规划 + 重跑 leaves。 */
   maxEscalations?: number;
   /**
@@ -1241,12 +1200,13 @@ export type BlameRetryLedger = {
   /** 本轮重跑墙钟 (ms)。 */
   rerunWallMs: number;
   /**
-   * 本轮重规划走的是补丁差量还是整图重灌 (SDD 2026-08-11-l2-diff-replan D-3)。
-   * 补丁解析失败/越界拒/档位闸拒 → 回落整图, 此处记 'full' (INV-1: 行为与整图重规划逐字节相同,
-   * 但补丁尝试烧掉的 token 不丢账, 见 replanTokens)。未发生补丁重规划的轮次不应出现该字段
-   * (NULL≠0: 用字段是否存在区分"没走这条路"与"走了记 0")。
+   * 本轮重跑用的是哪张图 (2026-09-03 v1 规划式 conductor 退役后只剩两档, 都不请模型画图):
+   *   'deterministic' = 调用方给了 `deterministicReplan` (sdd-direct 平铺图复用编译产物, 可能被空转修补节点替换);
+   *   'reinject'      = 原图 + verifier finding 锚定到被点名节点重跑 (dag_run_plan / map_deliver 等预置图)。
+   * 历史行里的 'patch' / 'full' (补丁差量 / 整图重画) 是退役前的记录, 读侧照原样展示即可。
+   * 未发生重跑的轮次不应出现该字段 (NULL≠0: 用字段是否存在区分"没走这条路"与"走了记 0")。
    */
-  replanMode: 'patch' | 'full' | 'deterministic';
+  replanMode: 'deterministic' | 'reinject';
   /**
    * 本轮重规划请求的 token 用量。回落到整图时两段都算总账 (补丁尝试 + 整图重灌之和), 不因
    * 回落就丢掉补丁那段的花费。

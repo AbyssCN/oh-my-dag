@@ -197,7 +197,7 @@ describe('GWT-W5 (零回归) — 闸表 / 闸测试一字不动', () => {
     const grSrc = fs.readFileSync(path.join(import.meta.dir, '../gates/gate-registry.ts'), 'utf8');
     // 数 GATE_REGISTRY 里的 `id: '...'` 字面量条数。24 = 2026-09-02 P3 S3 report-trailer 入表后数 (2026-08-30 闸门三角结后 23; 与 gate-registry.test.ts 的字面 24 互锁)
     const ids = grSrc.match(/^\s*id:\s*['"`][a-z0-9-]+['"`],/gm) ?? [];
-    expect(ids.length).toBe(24);
+    expect(ids.length).toBe(19); // 2026-09-04 v1 内环退役: 5 道内环闸出表 (24→19)
   });
 });
 

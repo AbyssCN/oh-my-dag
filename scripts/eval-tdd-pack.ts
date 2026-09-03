@@ -19,7 +19,8 @@ import { join } from 'node:path';
 import { createAgentLeafRunner } from '../src/harness/agent-leaf';
 import { loadAgentTemplates } from '../src/harness/agent-templates';
 import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from '../src/harness/command-leaf';
-import { runExecutorDag } from '../src/harness/dag/engine';
+// v1 规划式 conductor 已退役 (2026-09-03): 任务入口 = 编排循环, 与 `run` 工具同一入口。
+import { runOrchestratingLoop as runExecutorDag } from '../src/harness/goal/loop-run';
 import type { ExecutorDagConfig } from '../src/harness/dag/types';
 import { addPack } from '../src/harness/pack/pack';
 import { bootstrapModelRuntime } from '../src/model/bootstrap';

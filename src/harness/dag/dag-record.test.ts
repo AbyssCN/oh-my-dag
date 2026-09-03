@@ -932,7 +932,7 @@ describe('★ 运行时写竞争: 与静态那条同名不同义, 所以分开�
  * 第三条当场红 —— 那正是本列最容易被写错的一格 (仓规坑①: NULL ≠ 0)。
  */
 describe('外环重修半径 (blameRetry) 进留痕', () => {
-  const led = (blameSize: number, closureSize: number, mode: 'patch' | 'full' | 'deterministic' = 'patch') => ({
+  const led = (blameSize: number, closureSize: number, mode: 'reinject' | 'deterministic' = 'reinject') => ({
     blameSize,
     closureSize,
     reuseHits: 3,
@@ -954,9 +954,9 @@ describe('外环重修半径 (blameRetry) 进留痕', () => {
 
   test('★ blameSize:0 = 打回了但围栏没解析出来 (走整轮) —— 记得下来, 不许当成没打回', () => {
     const rec = createDagRecorder({ path: ':memory:' });
-    const got = rec.get(rec.record(withBlame(led(0, 0, 'full')), { runId: 'br-0' }))!.blameRetry!;
+    const got = rec.get(rec.record(withBlame(led(0, 0, 'reinject')), { runId: 'br-0' }))!.blameRetry!;
     expect(got.blameSize).toBe(0);
-    expect(got.replanMode).toBe('full');
+    expect(got.replanMode).toBe('reinject');
     rec.close();
   });
 

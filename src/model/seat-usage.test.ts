@@ -186,7 +186,7 @@ describe('★ 覆盖率闸: src 里的每个 traceName 字面量都核过', () =
     walk(root);
     // 至少要扫到今天在场的那几个, 否则是扫器坏了在放水 (扫不到东西的闸恒绿)。
     // 三种写法各点一个名, 免得哪天正则少扫一路而计数照样够。
-    expect(seen.has('conductor:plan')).toBe(true); // traceName 单引号常量
+    expect(seen.has('agent-leaf')).toBe(true); // traceName 单引号常量 (v1 的 conductor:plan 已随规划器退役)
     expect(seen.has('fanin-summary:')).toBe(true); // traceName 模板串前缀
     expect(seen.has('verifier')).toBe(true); // meta.role 常量 (#144 补的那批)
     expect(seen.size).toBeGreaterThanOrEqual(16);

@@ -35,59 +35,7 @@ const contentText = (c: string | ContentPart[] | undefined): string =>
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 describe('#158 预算轴三缝', () => {
-  test('① 环入口: 预算已尽 → 内环一轮不开, 零模型调用, budgetStopped 落叶', async () => {
-    let calls = 0;
-    const generate: GenerateFn = async () => {
-      calls++;
-      return { text: 'ok', usage: { in: 1, out: 1 } };
-    };
-    const cfg: ExecutorDagConfig = {
-      conductorModel: 'test:conductor',
-      leafModel: 'test:leaf',
-      generate,
-      agentTemplates: new Map(),
-      loopBudget: { ms: 50 },
-      _budgetAnchor: Date.now() - 10_000, // 锚在 10s 前 = 钱早烧完了
-    };
-    const plan: ConductorPlan = { name: 'p', nodes: { P: { goal: '干活', executor: 'conductor', max_rounds: 2 } } };
-    const r = await runExecutorDagWithPlan(plan, cfg);
-    expect(r.results.P?.status).toBe('failed');
-    expect(r.results.P?.budgetStopped).toContain('预算');
-    expect(calls).toBe(0); // 一发都没打 —— 这正是"轴管用"与"字段在"的差别
-  });
 
-  test('② 轮内派发闸: 预算在 a 在飞时耗尽 → b 不再派发, journal 记 budget-exhausted', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'omd-budget-'));
-    const SUB = JSON.stringify({ name: 'sub', nodes: { a: { goal: '先干 A_LEAF' }, b: { goal: '再干 B_LEAF', depends_on: ['a'] } } });
-    const leafCalls: string[] = [];
-    const generate: GenerateFn = async (req) => {
-      const user = contentText(req.messages.find((m) => m.role === 'user')?.content);
-      if (user.includes(PLAN_BOUNDARY.trim().split('\n')[0]!) || user.includes('TASK (dynamic')) {
-        return { text: SUB, usage: { in: 1, out: 1 } };
-      }
-      const id = user.includes('A_LEAF') ? 'a' : user.includes('B_LEAF') ? 'b' : '?';
-      leafCalls.push(id);
-      if (id === 'a') await sleep(120); // a 在飞时预算 (60ms) 耗尽
-      return { text: `out:${id}`, usage: { in: 1, out: 1 } };
-    };
-    const cfg: ExecutorDagConfig = {
-      conductorModel: 'test:conductor',
-      leafModel: 'test:leaf',
-      generate,
-      agentTemplates: new Map(),
-      loopBudget: { ms: 60 },
-      _budgetAnchor: Date.now(),
-      continuity: { manager: new CheckpointManager(root), runId: 'run-b' },
-    };
-    const plan: ConductorPlan = { name: 'p', nodes: { P: { goal: '两步活', executor: 'conductor', max_rounds: 1 } } };
-    await runExecutorDagWithPlan(plan, cfg);
-    expect(leafCalls).toEqual(['a']); // b 没被派 —— 在飞的跑完, 新的不开
-    const journal = JSON.parse(
-      readFileSync(join(root, '.omd', 'continuity', 'run-b', '_loop-P.json'), 'utf-8'),
-    ) as NodeLoopJournal;
-    expect(journal.stop?.kind).toBe('budget-exhausted'); // 定局时账已超 → 留痕 (S1 埋点那条路)
-    rmSync(root, { recursive: true, force: true });
-  });
 
   test('③ 升级重规划入口: 环跑完但预算已尽 → 不开重规划轮 (escalated=false, verifier 只判一次)', async () => {
     registerProvider('escx158', { baseUrl: 'http://127.0.0.1:9', apiKey: 'test-key', api: 'openai-compatible' });

@@ -3,7 +3,8 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CheckpointManager } from '../../src/harness/continuity/checkpoint-manager';
-import { runExecutorDag, runExecutorDagWithPlan, topoLevels, type GenerateFn } from '../../src/harness/dag/engine';
+import { runExecutorDagWithPlan, topoLevels, type GenerateFn } from '../../src/harness/dag/engine';
+import { runExecutorDag } from '../helpers/legacy-plan-entry';
 import type { AgentLeafInput } from '../../src/harness/leaf-runners';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
 
@@ -286,12 +287,6 @@ describe('omd executor-dag (in-process, fake model)', () => {
     expect(captured[0]).toEqual({ name: 'hooked', levels: 1, nodes: 1 });
   });
 
-  test('conductor 产无效 → 有界重试后抛错', async () => {
-    const gen: GenerateFn = async () => ({ text: 'not json at all', usage: { in: 1, out: 1 } });
-    await expect(
-      runExecutorDag('t', { conductorModel: CONDUCTOR, leafModel: LEAF, generate: gen, maxPlanRetries: 1 }),
-    ).rejects.toThrow(/未产出有效 plan/);
-  });
 
   // ── D-7 预构造入口 (runExecutorDagWithPlan): 跳过 conductor, 下游机器一致 ──
   test('D-7 预构造入口: 跳过 conductor LLM 步 (conductor fn 不被调用), 下游正常执行', async () => {
@@ -348,10 +343,8 @@ describe('omd executor-dag (in-process, fake model)', () => {
       conductorModel: CONDUCTOR,
       leafModel: LEAF,
       generate: gen2,
-      conductorThinkingLevel: 'xhigh', // 复杂 plan 升 max
       inprocThinkingLevel: 'medium',
     });
-    expect(calls2.find((c) => c.model === CONDUCTOR)?.thinkingLevel).toBe('xhigh');
     expect(calls2.find((c) => c.model === LEAF)?.thinkingLevel).toBe('medium');
   });
 });

@@ -34,6 +34,8 @@ export interface ConductorCtx {
   seats: { worker: string; escalation: string; verify: string };
   /** 是否有搜索 provider —— research 工具据此拒(缺 provider 的调用会抓不到东西地失败)。 */
   researchAvailable: boolean;
+  /** 嵌套深度 (顶层缺席 = 0)。decompose 派出的嵌套循环是 1; 到上限 (loop-plan.ts LOOP_MAX_DEPTH) 后 decompose 拒。 */
+  depth?: number;
 }
 
 /**

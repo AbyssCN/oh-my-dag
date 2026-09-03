@@ -48,7 +48,6 @@ describe('compileBreakdown — G-1 平铺: 节点数 = 切片数 + RED/GREEN + a
     expect(Object.keys(plan.nodes).sort()).toEqual(
       ['accept', 's1', 's1-green', 's2', 's2-green'].sort(),
     );
-    expect(Object.values(plan.nodes).some((n) => n.executor === 'conductor')).toBe(false);
     expect(Object.values(plan.nodes).some((n) => n.executor === 'map')).toBe(false);
   });
 

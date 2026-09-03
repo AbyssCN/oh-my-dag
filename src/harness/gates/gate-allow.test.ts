@@ -60,7 +60,7 @@ describe('引用语境豁免 · coord-check 接入面', () => {
     // ⚠ 符号与坐标必须**同行** —— coord-check 按同句共现配对, 分行就不配对, 那样测的是
     // 「配对没发生」而不是「豁免生效」, 是条假绿。第二条用例专门守住这点。
     const text =
-      '- 草案原写作 `runIterate`, 真名 `iterateExecutorDag`(`src/harness/plan/iterate.ts:97`)。 gate-allow(coord-check): 引用的是被更正掉的错名';
+      '- 草案原写作 `runIterate`, 真名 `runExecutorDagWithPlan`(`src/harness/dag/engine.ts:40`)。 gate-allow(coord-check): 引用的是被更正掉的错名';
     const findings = checkCoords(text, { root: process.cwd() });
     const bad = findings.filter((f) => f.raw === 'runIterate');
     expect(bad, '带标记的更正句不该再被判红').toEqual([]);
@@ -68,7 +68,7 @@ describe('引用语境豁免 · coord-check 接入面', () => {
 
   it('★ 去掉标记 → 同一句当场红(证明豁免不是恒真)', () => {
     const text =
-      '- 草案原写作 `runIterate`, 真名 `iterateExecutorDag`(`src/harness/plan/iterate.ts:97`)。';
+      '- 草案原写作 `runIterate`, 真名 `runExecutorDagWithPlan`(`src/harness/dag/engine.ts:40`)。';
     const findings = checkCoords(text, { root: process.cwd() });
     expect(findings.some((f) => f.raw === 'runIterate')).toBe(true);
   });

@@ -67,10 +67,6 @@ export function stampPass(
 		// 卡真钉了模型才让路; 没钉的卡照常按 tier 选池 (否则 node.tier 是哑弹, 见 templateHasModel 注)。
 		if (n.template && (opts.templateHasModel?.(n.template) ?? true)) return null;
 		if (n.executor === "command" || n.executor === "map") return null; // 无模型调用 / 运行时展开
-		// conductor 节点 (P3 D-B/C/D): 它那次调用用的是 **conductor 座位** (config.conductorModel),
-		// 不是 leaf 池 —— stamp 给它盖一个 leaf 档坐标, 执行器根本不读, 就是又一个空旋钮。
-		// 显式 `node.model` 仍然赢 (上面第一条 `if (n.model) return null` 已经放行, 执行器也认)。
-		if (n.executor === "conductor") return null;
 		if (n.kind === "primitive") return null; // 原语节点模型由 primitive 层自理
 		// 多模态 = 能力硬约束, 优先于 tier 档位偏好 (非多模态模型看不见图)。
 		if (n.attach_media === true) {

@@ -189,7 +189,7 @@ describe('重规划轮两行判词 (SDD 2026-08-23 · 引擎自纠错片 1 续)'
     expect(ends).toHaveLength(1);
 
     const e = ends[0]!.payload;
-    expect(['patch', 'full']).toContain(e.mode as string);
+    expect(['reinject']).toContain(e.mode as string);
   });
 
   // G-3 ────────────────────────────────────────────────────────────────────────

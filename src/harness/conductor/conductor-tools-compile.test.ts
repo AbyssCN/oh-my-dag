@@ -11,6 +11,7 @@ import { parsePlan } from '../conductor-plan';
 import { shapeById } from '../shapes';
 import { checkWriteAllowed, resolveNodeWriteAllow } from '../writeset/write-allow';
 import { renderManual } from './render-manual';
+import { CONDUCTOR_NODE_ID, ORCHESTRATING_LOOP_PLAN_NAME, loopDepthOf } from './loop-plan';
 import { bestOfTool } from './tools/best-of';
 import { decomposeTool } from './tools/decompose';
 import { exploreTool } from './tools/explore';
@@ -124,6 +125,26 @@ describe('conductor-tools-compile (D-5/INV-3 格式面)', () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.manual).toBe(renderManual('research'));
+  });
+
+  test('decompose: 编译成嵌套编排循环 —— 单 conductor 节点 (agent), 座位 = escalation, loopDepth = 1, 无 accept', () => {
+    const r = decomposeTool.compile({ goal: '一个还拆不出来的目标', hint: 'saga' }, CTX);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.plan.name).toBe(ORCHESTRATING_LOOP_PLAN_NAME);
+    expect(Object.keys(r.plan.nodes)).toEqual([CONDUCTOR_NODE_ID]);
+    expect(r.plan.nodes[CONDUCTOR_NODE_ID]).toMatchObject({ executor: 'agent', model: CTX.seats.escalation });
+    expect(r.plan.nodes[CONDUCTOR_NODE_ID]!.goal).toContain('shape hint: saga');
+    expect(loopDepthOf(r.plan)).toBe(1);
+  });
+
+  test('decompose: 深度闸 —— 嵌套循环 (ctx.depth = 1) 里再 decompose 当场拒, 拒因带 manual', () => {
+    // 证伪: 删掉 compile 里 `depth >= LOOP_MAX_DEPTH` 那道判断 → 这条红 (无限嵌套的门就开了)。
+    const r = decomposeTool.compile({ goal: '再拆一层' }, { ...CTX, depth: 1 });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain('深度上限');
+    expect(r.manual).toContain('decompose');
   });
 
   test('decompose: manual 原样携带既有 D-D 展开闸「子图不许再嵌 conductor 或 map」的规则', () => {

@@ -4,7 +4,7 @@
  * 4 个 GWT 与契约对齐 (C-2 GWT 表):
  *   1. 三红全类内 (gate-rejected × 3) → 升级环**不开**重规划 (escalation generate 零调用),
  *      STALLED 出口 (circuitBroken=true), observation 点名节点 id 与败因, log 含 `[fuse-paralysis]`。
- *   2. 三红含 1 个 assert-failed (混因) → 照常重规划 (generate 被调), fuse **不**触发。
+ *   2. 三红含 1 个 assert-failed (混因) → 照常重跑 (attempts=2), fuse **不**触发。
  *      反向自检 INV-9: 「混因」是阻熔断条件, 不是顺熔断条件 —— 删掉 `every(...)` 中"全员"的
  *      限制会把它误放过去。
  *   3. 二红全类内 → 数量不足, 照常重规划 (fuse 不触发)。反向自检 INV-9: 「阈值」判据
@@ -19,7 +19,7 @@
  * 全程 stub generate / verifier / commandRunner, 零模型调用, 零 IO, 零真实文件系统。
  */
 import { describe, expect, test, beforeAll } from 'bun:test';
-import { runExecutorDag } from './engine';
+import { runExecutorDag } from '../../../test/helpers/legacy-plan-entry';
 import { setCoreLogger, type CoreLogger } from '../logger';
 import { registerProvider } from '../../model/providers';
 import type { ConductorPlan } from '../conductor-plan';
@@ -163,7 +163,7 @@ describe('#249 外环瘫痪绊线 + #244 活环扩集 (片 2)', () => {
   // ─────────────────────────────────────────────────────────────────────────
   // GWT-2: 三红含 1 个 assert-failed (混因) → fuse 不触发, 重规划照常
   // ─────────────────────────────────────────────────────────────────────────
-  test('GWT-2: 3 红中 1 个 assert-failed → 照常重规划 (generate 被调), fuse 不触发', async () => {
+  test('GWT-2: 3 红中 1 个 assert-failed → 照常重跑 (attempts=2), fuse 不触发', async () => {
     try {
       await withCapturedLogger(async (captured) => {
         // 注: c = assert-failed 会触发 oracle-red 短路, verifier 不会被调用
@@ -199,7 +199,8 @@ describe('#249 外环瘫痪绊线 + #244 活环扩集 (片 2)', () => {
           }),
         );
         // ① conductor 调 2 次 (首发 + escalation), 升级环**开了** — 这就是混因不熔断的证据
-        expect(stub.conductorCalls()).toBe(2);
+        expect(stub.conductorCalls()).toBe(1); // 2026-09-04: 重跑不再请模型画图 (原图 + finding), 规划层恰一发
+        expect(r.verification!.attempts).toBe(2); // 但升级轮真开了
         // ② fuse **不**触发 → circuitBroken 缺席 (D-6 同形出口未启用)
         expect(r.verification!.circuitBroken).toBeUndefined();
         // ③ log **不**含 [fuse-paralysis]
@@ -214,7 +215,7 @@ describe('#249 外环瘫痪绊线 + #244 活环扩集 (片 2)', () => {
   // ─────────────────────────────────────────────────────────────────────────
   // GWT-3: 二红全类内 → 数量不足, fuse 不触发, 重规划照常
   // ─────────────────────────────────────────────────────────────────────────
-  test('GWT-3: 2 红全类内 → 数量不足 (阈值=3), 照常重规划 (generate 被调), fuse 不触发', async () => {
+  test('GWT-3: 2 红全类内 → 数量不足 (阈值=3), 照常重跑 (attempts=2), fuse 不触发', async () => {
     try {
       await withCapturedLogger(async (captured) => {
         const seenResults: Array<Record<string, LeafResult>> = [];
@@ -254,7 +255,8 @@ describe('#249 外环瘫痪绊线 + #244 活环扩集 (片 2)', () => {
         expect(seenResults[0]!.b!.failureKind).toBe('gate-rejected');
         expect(seenResults[0]!.ok!.status).toBe('done');
         // ② conductor 调 2 次 (首发 + escalation)
-        expect(stub.conductorCalls()).toBe(2);
+        expect(stub.conductorCalls()).toBe(1); // 2026-09-04: 重跑不再请模型画图 (原图 + finding), 规划层恰一发
+        expect(r.verification!.attempts).toBe(2); // 但升级轮真开了
         // ③ fuse **不**触发
         expect(r.verification!.circuitBroken).toBeUndefined();
         // ④ log **不**含 [fuse-paralysis]
@@ -311,46 +313,4 @@ describe('#249 外环瘫痪绊线 + #244 活环扩集 (片 2)', () => {
     }
   });
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // GWT-4: 规划环 PP-O02 扩集 — 写节点无 oracleKind 无 command → 被闸拒回, 二发改 oracleKind:'judge' 放行
-  // ─────────────────────────────────────────────────────────────────────────
-  test('GWT-4: planCriticGate=true + 写节点无 oracleKind 无 command → generate 恰调 2 次, 终 plan 是二发', async () => {
-    const stub = makeStub({
-      planSequence: [
-        // 首发: 写节点 + 无 command + 无 oracleKind → PP-O02 必命中
-        {
-          name: 'first',
-          nodes: {
-            doc: { goal: '写文档', output_type: 'file' } as unknown as ConductorPlan['nodes'][string],
-          },
-        },
-        // 二发: 同形状, 加 oracleKind:'judge' (文档类交付合法判据)
-        {
-          name: 'second',
-          nodes: {
-            doc: {
-              goal: '写文档',
-              oracleKind: 'judge',
-              whyNoFanout: 'single node, no fanout needed',
-              budgetBasis: { calls: 1, tokensIn: 0, tokensOut: 0, costUsdCeiling: 0.01, estimatedBy: 'stub' },
-              output_type: 'file',
-            } as ConductorPlan['nodes'][string],
-          },
-        },
-      ],
-    });
-    const r = await runExecutorDag(
-      'task',
-      baseConfig(stub.generate, {
-        planCriticGate: true,
-        // 无 commandRunner / verifier → 走完执行后默认通过 (本次测试焦点在规划环, 不在执行结果)
-      }),
-    );
-    // ① generate 恰调 2 次 (首发拒回 + 二发放行)
-    expect(stub.conductorCalls()).toBe(2);
-    // ② 终 plan = 二发 (plan.name === 'second')
-    expect(r.plan.name).toBe('second');
-    // ③ 二发节点的 oracleKind = judge (PP-O02 不再触发)
-    expect((r.plan.nodes.doc as { oracleKind?: string }).oracleKind).toBe('judge');
-  });
 });

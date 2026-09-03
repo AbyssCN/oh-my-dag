@@ -13,9 +13,11 @@
  * 拿它当夹具就永远测不到"已绿节点不重跑"。agent 叶子才走 `saveDoneCheckpoint` 全套
  * (含 outputPaths + artifactHashes), 也才是"已批准制品"这句话的真正落点。
  *
+ * 2026-09-03: 外层 fixpoint (`iterateExecutorDag`) 随 v1 规划式 conductor 退役, 夹具改成**单跑**预置图
+ * (`runExecutorDagWithPlan`): 崩溃恢复要证的是节点级 checkpoint / 制品校验, 那些机制没动。
+ *
  * 用法:
- *   bun run test/core/fault-injection-child.ts --root <dir> --run <runId>
- *     [--resume] [--max-rounds N] [--hang <nodeId>] [--verdicts reject-b,converge]
+ *   bun run test/core/fault-injection-child.ts --root <dir> --run <runId> [--resume] [--hang <nodeId>]
  *
  * stdout 末行 `##RESULT## {json}` = 给父进程的结构化读数。
  */
@@ -23,10 +25,9 @@ import { appendFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CheckpointManager } from '../../src/harness/continuity/checkpoint-manager';
 import { runExecutorDagWithPlan } from '../../src/harness/dag/engine';
-import { iterateExecutorDag } from '../../src/harness/plan/iterate';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
+import type { ExecutorDagConfig } from '../../src/harness/dag/types';
 import type { AgentLeafRunner } from '../../src/harness/leaf-runners';
-import type { FixpointVerdict } from '../../src/harness/plan/fixpoint';
 import { hangUntilKilled } from './hang-watchdog';
 
 // checkpoint 落 <root>/.omd/continuity/<runId>/ —— 夹具自持, 不受宿主 OMD_DATA_HOME 影响。
@@ -41,14 +42,7 @@ const arg = (name: string): string | undefined => {
 const root = arg('root')!;
 const runId = arg('run') ?? 'run-1';
 const resume = argv.includes('--resume');
-const maxRounds = Number(arg('max-rounds') ?? '1');
 const hangNode = arg('hang');
-/** 从第几轮起才挂 (默认 1)。测"崩在轮间"要让第 1 轮**跑完并写下 journal**, 崩在第 2 轮。 */
-const hangRound = Number(arg('hang-round') ?? '1');
-let curRound = 0;
-let localRound = 0;
-/** 逐轮裁决: `converge` | `reject-<id>` (未收敛且点名) | `blind` (未收敛且不点名 → fail-closed)。 */
-const verdictSpec = (arg('verdicts') ?? 'converge').split(',');
 
 /** a → b → c 串行三节点。串行是刻意的: 崩在 c 时 a/b 必然已绿, 「不重跑」才有可判的对象。 */
 const NODE_IDS = ['a', 'b', 'c'] as const;
@@ -71,7 +65,7 @@ const plan: ConductorPlan = {
  */
 const agentRunner: AgentLeafRunner = async ({ prompt }) => {
   const id = /NODE=(\w+)/.exec(prompt)?.[1] ?? 'unknown';
-  if (id === hangNode && curRound >= hangRound) {
+  if (id === hangNode) {
     writeFileSync(join(root, `READY-${id}`), '', 'utf-8');
     await hangUntilKilled(); // 等 SIGKILL —— 但有自毁上限, 见 hang-watchdog.ts (父进程先死时不留孤儿)
   }
@@ -84,51 +78,21 @@ const agentRunner: AgentLeafRunner = async ({ prompt }) => {
 const manager = new CheckpointManager(root);
 const continuity = { manager, runId, repoRoot: root, ...(resume ? { resume: true } : {}) };
 
-let round = 0;
-const judge = async (): Promise<FixpointVerdict> => {
-  const spec = verdictSpec[Math.min(round++, verdictSpec.length - 1)] ?? 'converge';
-  if (spec === 'converge') return { converged: true, score: 1 };
-  if (spec === 'blind') return { converged: false, score: 0, failureReason: '说不出哪错了' };
-  return {
-    converged: false,
-    score: 0,
-    failureReason: `${spec} 的产出是编的`,
-    rejectedNodes: [spec.slice('reject-'.length)],
-  };
-};
+process.stderr.write(`[child] resume=${resume}\n`);
 
-const before = manager.loadFixpointJournal(runId);
-process.stderr.write(
-  `[child] resume=${resume} journalRounds=${before?.completedRounds ?? 0} poisoned=${before?.poisoned.length ?? 0}\n`,
-);
-
-const res = await iterateExecutorDag('把三步做完', {
-  conductorModel: 'fixture:none', // 预构造 plan → conductor 永不被调用 (仅过必填闸)
+const res = await runExecutorDagWithPlan(plan, {
+  conductorModel: 'fixture:none', // 预构造 plan → 不请任何模型 (仅过必填闸)
   leafModel: 'fixture:none',
   agentLeafModel: 'fixture:none',
   agentRunner,
-  maxRounds,
   continuity,
-  judge,
-  _runDag: (_task, cfg, prior) => {
-    // 本进程内的轮号 (恢复时接着 journal 数, 否则 --hang-round 在 resume 进程里会错位)。
-    curRound = (resume ? before?.completedRounds ?? 0 : 0) + ++localRound;
-    return runExecutorDagWithPlan(plan, cfg, prior);
-  },
-} as Parameters<typeof iterateExecutorDag>[1]);
+} as ExecutorDagConfig);
 
-const after = manager.loadFixpointJournal(runId);
-const statuses = res.finalRound?.result.results ?? {};
+const statuses = res.results;
 const resultJson = JSON.stringify({
-  startedFromRound: (resume ? before?.completedRounds ?? 0 : 0) + 1,
-  roundsThisProcess: res.rounds.length,
-  converged: res.converged,
-  completedRounds: after?.completedRounds ?? 0,
-  poisoned: after?.poisoned.length ?? 0,
-  lastRoundStatuses: Object.fromEntries(
-    NODE_IDS.map((id) => [id, (statuses[id] as { status?: string } | undefined)?.status ?? 'absent']),
-  ),
-  reusedNodes: res.finalRound?.result.reusedNodes ?? [],
+  converged: NODE_IDS.every((id) => statuses[id]?.status === 'done'),
+  lastRoundStatuses: Object.fromEntries(NODE_IDS.map((id) => [id, statuses[id]?.status ?? 'absent'])),
+  reusedNodes: res.reusedNodes ?? [],
 });
 writeFileSync(join(root, 'RESULT.json'), resultJson, 'utf-8');
 process.stdout.write(`##RESULT## ${resultJson}\n`);

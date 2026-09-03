@@ -85,20 +85,6 @@ async function runUnkilled(
 
 describe('真杀夹具的自毁上限 —— 没人来杀时不许变成孤儿', () => {
   test(
-    '★① inner-loop-crash-child: 无人 SIGKILL → 自己按 watchdog 退出',
-    async () => {
-      const r = await runUnkilled('inner-loop-crash-child.ts', [
-        '--max-rounds', '2', '--hang-round', '2', '--verdicts', 'reject-b,converge',
-      ]);
-      expect(r.sawSentinel, '没等到哨兵 = 夹具没进挂起点, 本条读数无效(不是闸的结论)').toBe(true);
-      // -1 = 我们自己兜底杀的 → 说明它没自毁, 正是本闸要抓的那件事。
-      expect(r.exitCode, `子进程没有自毁 (stderr 尾部: ${r.stderr.slice(-500)})`).toBe(HANG_WATCHDOG_EXIT);
-      expect(r.stderr).toContain('##HANG-WATCHDOG##'); // 吞异常可以, 吞证据不行
-    },
-    GIVE_UP_MS + 30_000,
-  );
-
-  test(
     '★② fault-injection-child: 同上 (两个夹具共用同一条上限, 不许只修一个)',
     async () => {
       const r = await runUnkilled('fault-injection-child.ts', [

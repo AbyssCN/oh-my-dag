@@ -23,7 +23,8 @@ import { mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { detectRuntimeWriteRace, type OverlapPair } from '../../src/harness/plan/observers';
-import { runExecutorDag, runExecutorDagWithPlan, type GenerateFn } from '../../src/harness/dag/engine';
+import { runExecutorDagWithPlan, type GenerateFn } from '../../src/harness/dag/engine';
+import { runExecutorDag } from '../helpers/legacy-plan-entry';
 
 const pair = (a: string, b: string, aPaths: string[], bPaths: string[]): OverlapPair => ({
   a,
@@ -181,59 +182,5 @@ describe('运行时写竞争 · 接在引擎上 (真跑一遍)', () => {
     expect(res.writeRace!.pairs).toBe(1);
     expect(res.writeRace!.findings).toBe(0);
     expect(res.observations?.some((o) => o.kind === 'write-race')).toBeFalsy();
-  });
-});
-
-/**
- * **子图那一层看得见吗**(2026-08-06 补)—— 端到端。
- *
- * 判据对 ≠ 通道通(交接 31 §五 第 4 条)。上面那三条钉的是"父子不算一对"这条**判据**,
- * 而下面这条钉的是**引擎真把子节点喂进了重叠集** —— 首版没喂,于是判据再对也永远收不到料。
- */
-describe('★ 运行时写竞争 · conductor 子图那一层 (端到端)', () => {
-  const SUB = JSON.stringify({
-    name: 's',
-    nodes: { w1: { goal: '写一', executor: 'agent' }, w2: { goal: '写二', executor: 'agent' } },
-  });
-
-  const runSub = async (mode: 'collide' | 'separate') => {
-    const dir = mkdtempSync(join(tmpdir(), 'wrace-sub-'));
-    let nth = 0;
-    const res = await runExecutorDagWithPlan(
-      { name: 'outer', nodes: { C: { goal: '干活', executor: 'conductor' } } } as never,
-      {
-        conductorModel: 'c:m',
-        leafModel: 'l:m',
-        agentTemplates: new Map(),
-        generate: (async () => ({ text: SUB, usage: { in: 1, out: 1 } })) as GenerateFn,
-        agentRunner: async () => {
-          const i = nth++;
-          const file = mode === 'collide' ? 'shared.md' : `own-${i}.md`;
-          await new Promise((r) => setTimeout(r, 20)); // 保证两个子节点窗口真重叠
-          writeFileSync(join(dir, file), `第 ${i} 个`);
-          return { text: 'ok', usage: { in: 1, out: 1 }, filesTouched: [file], cwd: dir };
-        },
-      } as never,
-    );
-    return res;
-  };
-
-  test('★ 两个并发**子节点**撞同一个文件 → 报, 且父子对没混进任何一格', async () => {
-    // 证伪: 把内环 pump 里的 `liveNow.add(cid)` 删掉 → overlaps 归 0, 这条当场红
-    // (首版就是这个状态 —— 判据一直是对的, 只是从来没有料喂进来)。
-    const res = await runSub('collide');
-    expect(res.writeRace!.overlaps).toBe(1); // ← 只有兄弟那一对; 两个父子对已在判据层滤掉
-    expect(res.writeRace!.pairs).toBe(1);
-    expect(res.writeRace!.findings).toBe(1);
-    const hit = (res.observations ?? []).filter((o) => o.kind === 'write-race');
-    expect(hit.length).toBe(1);
-    // 报的必须是**两个子节点**, 不是父亲 —— 报了父亲那条建议就没法照做
-    expect(hit[0]!.nodes.every((n) => n.startsWith('C::'))).toBe(true);
-  });
-
-  test('★ 子节点各写各的 → 不报, 而**机会照样计数**', async () => {
-    const res = await runSub('separate');
-    expect(res.writeRace!.pairs).toBe(1);
-    expect(res.writeRace!.findings).toBe(0);
   });
 });

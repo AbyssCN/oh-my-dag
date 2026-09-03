@@ -23,7 +23,6 @@ const mkCfg = (runner: (input: AgentLeafInput) => Promise<AgentLeafResult>): Exe
   leafModel: 't:leaf',
   agentLeafModel: 't:leaf',
   generate,
-  maxPlanRetries: 0,
   agentRunner: runner,
 });
 const plan = (): ConductorPlan => ({ name: 'trailer-ledger', nodes: { a: { executor: 'agent', goal: '带判据', self_check: { ...SPEC } } } });

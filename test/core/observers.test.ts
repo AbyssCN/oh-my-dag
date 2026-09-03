@@ -7,7 +7,6 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { lintArtifactEdges, detectLoopNoProgress, artifactLintObservations } from '../../src/harness/plan/observers';
-import { parseDetectorVerdict } from '../../src/harness/plan/detector';
 
 const ROOT = '/repo';
 
@@ -87,97 +86,5 @@ describe('D-12 制品边 lint — 未声明的制品依赖 (INV-P2-4)', () => {
     };
     expect(lintArtifactEdges(nodes, results, { root: ROOT })).toEqual(lintArtifactEdges(nodes, results, { root: ROOT }));
     expect(lintArtifactEdges(nodes, results, { root: ROOT }).map((f) => f.path)).toEqual(['/repo/a.ts', '/repo/b.ts']);
-  });
-});
-
-describe('D-Q 环空转检测 — BLOCKED 的判据', () => {
-  const shape = (childIds: string[], rejected: string[]) => ({ childIds, rejected });
-
-  test('第一轮没有比对对象 → 不判 (prev=null)', () => {
-    expect(detectLoopNoProgress(null, shape(['a'], ['a']))).toBeNull();
-  });
-
-  test('子图**完全相同** + 拒的是同一批 → 判空转', () => {
-    const o = detectLoopNoProgress(shape(['a', 'b'], ['b']), shape(['b', 'a'], ['b']));
-    expect(o?.kind).toBe('loop-no-progress');
-    expect(o?.nodes).toEqual(['b']);
-  });
-
-  test('重展开画出了**不一样的**子图 → 不判 (环正在起作用)', () => {
-    expect(detectLoopNoProgress(shape(['a'], ['a']), shape(['a', 'c'], ['a']))).toBeNull();
-  });
-
-  test('同一张子图但拒的**换了一批** → 不判 (信息在变)', () => {
-    expect(detectLoopNoProgress(shape(['a', 'b'], ['a']), shape(['a', 'b'], ['b']))).toBeNull();
-  });
-
-  test('一个都没被点名 → 不判 —— 那是 judge 漏填票, 不是空转 (重画仍可能有用)', () => {
-    expect(detectLoopNoProgress(shape(['a'], []), shape(['a'], []))).toBeNull();
-  });
-});
-
-describe('D-Q 检测者输出协议', () => {
-  test('REJECT/BLOCKED 行被读成裁决, 正文其余部分不影响', () => {
-    const v = parseDetectorVerdict(
-      ['分析: 两份产出对不上。', 'REJECT: c::a1', '这里随便写点别的', 'BLOCKED: 目标本身自相矛盾, 需要 owner 拍板'].join('\n'),
-      ['c::a1', 'c::b2'],
-    );
-    expect(v.rejected).toEqual(['c::a1']);
-    expect(v.blocked).toBe('目标本身自相矛盾, 需要 owner 拍板');
-  });
-
-  test('点名图里没有的 id → 幽灵 (留痕不入毒集)', () => {
-    const v = parseDetectorVerdict('REJECT: send-report\nREJECT: c::a1', ['c::a1']);
-    expect(v.rejected).toEqual(['c::a1']);
-    expect(v.ghosts).toEqual(['send-report']);
-  });
-
-  test('没有协议行 = 没有裁决 (不是全批准也不是全拒绝)', () => {
-    const v = parseDetectorVerdict('看着都挺好的, 我没意见。', ['c::a1']);
-    expect(v.rejected).toEqual([]);
-    expect(v.blocked).toBeUndefined();
-  });
-
-  test('正文里出现小写 reject: 之类的话 → 不误命中 (关键词大写 + 行首)', () => {
-    const v = parseDetectorVerdict('我 reject: 这个说法\n下面 REJECT 不带冒号也不算', ['c::a1']);
-    expect(v.rejected).toEqual([]);
-    expect(v.ghosts).toEqual([]);
-  });
-
-  /**
-   * 命令检测者按构造只知道**规划期的可读 id** (命令串写死在规划期, 那时内容寻址 id 还不存在)。
-   * 不给这条翻译, `REJECT:` 这一半协议对 command 节点等于不存在 —— 它只剩静态的 `BLOCKED:` 能喊。
-   */
-  test('可读别名点名 → 翻成运行期 id (命令检测者唯一能用的点名方式)', () => {
-    const aliases = new Map([['write-a', 'C::9zz'], ['write-b', 'C::8yy']]);
-    const v = parseDetectorVerdict('REJECT: write-a', ['C::9zz', 'C::8yy'], aliases);
-    expect(v.rejected).toEqual(['C::9zz']);
-    expect(v.ghosts).toEqual([]);
-  });
-
-  test('运行期 id 直接点名照样认 (LLM 检测者在 prompt 里看得见它)', () => {
-    const aliases = new Map([['write-a', 'C::9zz']]);
-    expect(parseDetectorVerdict('REJECT: C::9zz', ['C::9zz'], aliases).rejected).toEqual(['C::9zz']);
-  });
-
-  test('翻不出来的名字仍是幽灵 (别名映射不是"什么都认")', () => {
-    const v = parseDetectorVerdict('REJECT: 不存在的名字', ['C::9zz'], new Map([['write-a', 'C::9zz']]));
-    expect(v.rejected).toEqual([]);
-    expect(v.ghosts).toEqual(['不存在的名字']);
-  });
-
-  test('别名与运行期 id 指同一个节点 → 去重 (两种写法各点一次不该毒两遍)', () => {
-    const v = parseDetectorVerdict('REJECT: write-a\nREJECT: C::9zz', ['C::9zz'], new Map([['write-a', 'C::9zz']]));
-    expect(v.rejected).toEqual(['C::9zz']);
-  });
-
-  test('多条 BLOCKED → 取第一条 (同一件事的不同说法)', () => {
-    const v = parseDetectorVerdict('BLOCKED: 第一条\nBLOCKED: 第二条', []);
-    expect(v.blocked).toBe('第一条');
-  });
-
-  test('同一个 id 点两次 → 去重', () => {
-    const v = parseDetectorVerdict('REJECT: x\nREJECT: x', ['x']);
-    expect(v.rejected).toEqual(['x']);
   });
 });

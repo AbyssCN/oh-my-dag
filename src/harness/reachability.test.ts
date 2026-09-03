@@ -72,6 +72,13 @@ const DYNAMIC_ENTRIES: Record<string, string> = {
     '**benchmark 靶子**: `eval/tasks/medium.ts` 与 `large.ts` 都把这个路径列进目标集 —— ' +
     'eval 会清空它让 fleet 照 SPEC 重建。⚠ `planToMermaid` 生产零消费者, ' +
     '存在的唯一理由就是当靶子; 删它会同时打断两个 fixture。',
+  'src/harness/plan/llm-judge.ts':
+    '`judge` / `gate` 两个座位的登记消费点 (model/seats.ts 的 where 指向 makeLlmConvergenceJudge)。' +
+    '2026-09-04 v1 规划式 conductor 与内环退役后, 生产路径上没有调用它的地方了; 座位表仍登记它, ' +
+    '删座位是另一刀 (owner 定)。退出条件: 座位表撤掉 judge/gate, 或它接上新消费点 (嵌套循环的判官)。',
+  'src/eval/tasks/judge-artifact-cases.ts':
+    'eval 语料 (judge 产物核对的正负样本): 消费方 = colocated `.test.ts` + `plan/claimed-actions.test.ts`。' +
+    '跑它的 eval 脚本 (eval-judge-artifacts) 随 v1 内环 judge 于 2026-09-04 删除, 语料留作判据的回归样本。',
   'src/harness/conductor/coverage.ts':
     'P3 契约 D-23 / INV-18 覆盖三分法**字面量的落盘处** (CARD_COVERED / COMPILER_COVERED / PRIMITIVE_EXCLUDED): ' +
     '消费方 = colocated 的 `conductor-tools-coverage.test.ts` (三张表两两不相交、并 = PRIMITIVE_IDS、与契约逐元素相等)。' +

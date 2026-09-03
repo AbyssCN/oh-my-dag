@@ -10,7 +10,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { buildLeafPrompt, TASK_CONTEXT_MAX_CHARS } from './dag/planner';
-import { runExecutorDag, runExecutorDagWithPlan } from './dag/engine';
+import { runExecutorDagWithPlan } from './dag/engine';
 import type { ConductorPlan } from './conductor-plan';
 import type { ExecutorDagConfig, GenerateFn } from './dag/types';
 
@@ -60,19 +60,6 @@ describe('引擎接线', () => {
     generate,
     agentTemplates: new Map(),
     ...extra,
-  });
-
-  test('默认: 任务原文到达 leaf', async () => {
-    const prompts: string[] = [];
-    await runExecutorDag('把 docs/x.md 里的三条结论列出来', cfg(capture(prompts)));
-    expect(prompts).toHaveLength(1);
-    expect(prompts[0]).toContain('把 docs/x.md 里的三条结论列出来');
-  });
-
-  test('leafTaskContext:false → 旧行为 (逃生口真的能关)', async () => {
-    const prompts: string[] = [];
-    await runExecutorDag('把 docs/x.md 里的三条结论列出来', cfg(capture(prompts), { leafTaskContext: false }));
-    expect(prompts[0]).not.toContain('<original-task');
   });
 
   // 预构造 plan 路径的 "task" 是 deriveTaskFromPlan 合成的**图大纲**(逐条列出每个节点的 goal),

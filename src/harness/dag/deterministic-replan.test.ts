@@ -201,7 +201,7 @@ describe('切片 1 · 平铺图确定性重规划 (SDD 2026-08-22)', () => {
       return { text: 'out:leaf', usage: { in: 1, out: 1 } };
     };
     const verifier = twoRoundVerifier();
-    // 返回 undefined → 引擎走 tryPatchReplan / planAndExecute, 不该进 deterministic 分支。
+    // 返回 undefined → 引擎走原图重跑 (reinject), 不该记成 deterministic。
     const detReplan = () => undefined;
     const r = await runExecutorDagWithPlan(
       round1Plan(),
@@ -217,10 +217,9 @@ describe('切片 1 · 平铺图确定性重规划 (SDD 2026-08-22)', () => {
     );
     expect(r.verification!.pass).toBe(true);
     expect(r.blameRetry).toBeDefined();
-    // replanMode 必须是 'patch' 或 'full', 不是 'deterministic'(INV-3)。
-    expect(['patch', 'full']).toContain(r.blameRetry!.replanMode);
-    // 真进了补丁路径 (patched ≥ 1)
-    expect(patched).toBeGreaterThanOrEqual(1);
+    // replanMode 必须是 'reinject' (原图重跑), 不是 'deterministic'(INV-3)。2026-09-04: 补丁路径随 v1 退役, 不再有 escalation:repair 请求。
+    expect(['reinject']).toContain(r.blameRetry!.replanMode);
+    expect(patched).toBe(0);
   });
 
   // G-4 ────────────────────────────────────────────────────────────────────────
@@ -249,8 +248,8 @@ describe('切片 1 · 平铺图确定性重规划 (SDD 2026-08-22)', () => {
     );
     expect(r.verification!.pass).toBe(true);
     expect(r.blameRetry).toBeDefined();
-    expect(['patch', 'full']).toContain(r.blameRetry!.replanMode);
-    expect(patched).toBeGreaterThanOrEqual(1);
+    expect(['reinject']).toContain(r.blameRetry!.replanMode);
+    expect(patched).toBe(0); // 2026-09-04: 无补丁请求, 原图重跑
   });
 
   // 反向自检(切片 1 表行 1): 顶层 seam 字段被掏空 ⇒ G-1 当场红。

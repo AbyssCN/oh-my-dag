@@ -31,7 +31,8 @@ import { $ } from 'bun';
 import { bootstrapModelRuntime } from '../../model/bootstrap';
 import { existsSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import { runExecutorDag } from '../../harness/dag/engine';
+// v1 规划式 conductor 已退役 (2026-09-03): 任务入口 = 编排循环, 与 `run` 工具同一入口。
+import { runOrchestratingLoop as runExecutorDag } from '../../harness/goal/loop-run';
 import type { ExecutorDagResult } from '../../harness/dag/engine';
 import { createAgentLeafRunner } from '../../harness/agent-leaf';
 import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from '../../harness/command-leaf';

@@ -40,10 +40,10 @@ const SOURCE_BY_FILE: Readonly<Record<string, string>> = {
 // 实扫 — 用于 GWT-1 / GWT-4 / GWT-7 (这些要求「扫真源码」)
 const REAL_VERDICTS = scanGateVerdicts(SOURCE_BY_FILE);
 
-describe('GWT-1 — INV-1: 扫真源 (engine.ts + run-goal.ts) 的 id 集合 ⊇ 表里全部 24 个 id', () => {
-  test('登记的 24 个 id 都被实扫命中', () => {
+describe('GWT-1 — INV-1: 扫真源 (engine.ts + run-goal.ts) 的 id 集合 ⊇ 表里全部 19 个 id', () => {
+  test('登记的 19 个 id 都被实扫命中', () => {
     const registryIds = GATE_REGISTRY.map((e) => e.id);
-    expect(registryIds).toHaveLength(24); // 2026-09-02 P3 S3 report-trailer 入表 (23→24); 2026-08-25 #249 fuse-paralysis 入表 (13→14); S2 片 3 spin-rung2-ladder 入表 (14→15); S3 片 5 retry-domain-mask + verifier-ledger + partial-quorum-failure 入表 (15→18); 2026-08-28 G2 contract-gate 入表 (18→19) + ask-owner 入表 (19→20); 2026-08-30 刀① artifact-echo + artifact-drift + artifact-foreign 入表 (20→23)
+    expect(registryIds).toHaveLength(19); // 2026-09-04 v1 内环退役: fuse-action / fuse-judge / false-completion / contract-gate / ask-owner 出表 (24→19); 2026-09-02 P3 S3 report-trailer 入表 (23→24); 2026-08-25 #249 fuse-paralysis 入表 (13→14); S2 片 3 spin-rung2-ladder 入表 (14→15); S3 片 5 retry-domain-mask + verifier-ledger + partial-quorum-failure 入表 (15→18); 2026-08-28 G2 contract-gate 入表 (18→19) + ask-owner 入表 (19→20); 2026-08-30 刀① artifact-echo + artifact-drift + artifact-foreign 入表 (20→23)
     for (const id of registryIds) {
       expect(REAL_VERDICTS.has(id)).toBe(true);
     }
@@ -142,14 +142,11 @@ describe('GWT-7 — INV-7: 13 条原文以整串仍在 entry.file 里 (保证只
     ['artifact-verdict', '产物闸判定 (declaredArtifact 节点; entry = 进闸条数)'],
     ['artifact-broken', '写后即验: 节点写完之后文件语法解析不过 → 节点 failed (部分写入损坏)'],
     ['heartbeat', 'agent leaf 停摆 (心跳闸) → 节点 failed'],
-    ['fuse-action', '动作级熔断 → 环提前退出 (§8.4)'],
-    ['fuse-judge', '闸级熔断 → 环提前退出 (infra-error, 不烧剩余轮数)'],
     ['fuse-spin', 'agent leaf 空转熔断 → 节点 failed'],
     ['fuse-samecause', 'D-6 同因熔断 → 停止重试 (连撞同一根因), STALLED 交人'],
     ['oracle-exit-miss', 'command 节点未命中 expect_exit → failed (D-K)'],
     ['oracle-exit-scope', 'expect_exit 只对 executor:command 生效 → 本节点忽略 (D-K)'],
     ['writescope-drop', '产物闸写域外路径剔除 (不参与判死, 仅记账; s1 Step C)'],
-    ['false-completion', 'D-4 谎报完成闸: 声称完成而验收命令实败 → 判未收敛'],
     ['spin-rung2-ladder', '档 2 再次空转 → 节点终止 (越过 max_retry 预算)'],
     ['retry-domain-mask', 'oracle 域判否 → 越过 max_retry, 节点终止 (D-2 / INV-2)'],
     ['verifier-ledger', 'verdict 账本追加 (round=${attempts}, kind=${kind})'],

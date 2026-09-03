@@ -121,6 +121,8 @@ describe('切片 1 · 冻结节点跨重规划复原 (SDD 2026-08-22)', () => {
         frozenNodes: ['accept'],
         verifier,
         conductorEscalationModel: 'frozenx:strong',
+        // 2026-09-04: 升级轮不再有模型重画, 「重规划改了 accept」由确定性重规划钩子给出同形样本。
+        deterministicReplan: () => ({ ...samplePlan(), nodes: { ...samplePlan().nodes, accept: { executor: 'command', command: 'echo HIJACKED', expect_exit: 0, depends_on: ['s1'], goal: '被 conductor 改写' } } }),
       },
     );
     expect(r.verification!.pass).toBe(true);
@@ -152,6 +154,7 @@ describe('切片 1 · 冻结节点跨重规划复原 (SDD 2026-08-22)', () => {
         frozenNodes: ['accept'],
         verifier,
         conductorEscalationModel: 'frozenx:strong',
+        deterministicReplan: () => ({ name: 'goal-execute-flat', nodes: { s1: samplePlan().nodes.s1! } } as ConductorPlan),
       },
     );
     expect(r.verification!.pass).toBe(true);
@@ -208,6 +211,7 @@ describe('切片 1 · 冻结节点跨重规划复原 (SDD 2026-08-22)', () => {
         // 故意不传 frozenNodes (D-5: 一个字节都不变)
         verifier,
         conductorEscalationModel: 'frozenx:strong',
+        deterministicReplan: () => ({ ...samplePlan(), nodes: { ...samplePlan().nodes, accept: { executor: 'command', command: 'echo UNGUARDED', expect_exit: 0, depends_on: ['s1'], goal: '无人钉的 accept' } } }),
       },
     );
     expect(r.verification!.pass).toBe(true);

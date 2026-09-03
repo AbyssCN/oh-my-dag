@@ -5,7 +5,7 @@
  * 本函数判"这是哪类节点", engine 里的 `nodeExecutors` 表定"这类节点谁来跑"。
  *
  * 忠实性约束 (行为保持重构, 单一变量 = 分发机制):
- *   - 判定顺序与原 if-链逐条相同 (primitive → map → conductor → await → command → research → leaf);
+ *   - 判定顺序与原 if-链逐条相同 (primitive → map → await → command → research → leaf; `conductor` 类随 v1 规划式 conductor 于 2026-09-03 退役, 词表外 → null fail-closed);
  *   - 带 guard 的三类 (primitive 缺 node.primitive / map 缺 node.map / await 缺 node.await)
  *     缺配套字段时回落 leaf —— 原链的 fall-through 语义原样保留;
  *   - **唯一刻意变化**: 词表外的 executor 字符串返回 null (原链静默落 inproc leaf)。
@@ -16,7 +16,7 @@
  * 不是运行期惊喜 (B1 判据"表删一行 → fail-closed"的编译期形态)。
  */
 
-export const NODE_EXEC_KINDS = ['primitive', 'map', 'conductor', 'await', 'command', 'research', 'leaf'] as const;
+export const NODE_EXEC_KINDS = ['primitive', 'map', 'await', 'command', 'research', 'leaf'] as const;
 export type NodeExecKind = (typeof NODE_EXEC_KINDS)[number];
 
 /** leaf 家族 executor 值 (agent/inproc 双模路由在 leaf 执行体内部, 不在这层分)。 */
@@ -34,7 +34,6 @@ export interface NodeKindProbe {
 export function nodeExecKind(node: NodeKindProbe): NodeExecKind | null {
   if (node.kind === 'primitive' && node.primitive) return 'primitive';
   if (node.executor === 'map' && node.map) return 'map';
-  if (node.executor === 'conductor') return 'conductor';
   if (node.executor === 'await' && node.await) return 'await';
   if (node.executor === 'command') return 'command';
   if (node.executor === 'research') return 'research';

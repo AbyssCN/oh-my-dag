@@ -29,6 +29,9 @@ import {
   CONDUCTOR_NODE_ID,
   buildConductorFace,
   compileOrchestratingLoop,
+  conductorNodeIdOf,
+  isOrchestratingLoopPlan,
+  loopDepthOf,
   withReinjectedFinding,
 } from './orchestrating-loop';
 
@@ -41,6 +44,8 @@ export interface LoopHost {
   dag: ExecutorDagConfig;
   /** D-5 唯一执行入口的注入面 (测试传 fake); 缺席 = 真 runExecutorDagWithPlan。 */
   runDag?: (plan: ConductorPlan, config: ExecutorDagConfig) => Promise<ExecutorDagResult>;
+  /** 嵌套深度 (顶层缺席 = 0); decompose 派出的子循环 = 1。 */
+  depth?: number;
 }
 
 /** conductor 面的坐标: 写根 / 命令白名单 / 并发 / 三个座位 / 有没有研究手。 */
@@ -66,6 +71,7 @@ export function conductorCtxOf(host: LoopHost, runnable: LoopRunnable): Conducto
       verify: seat('verifier') ?? '',
     },
     researchAvailable: Boolean(host.dag.researchRunner),
+    ...(host.depth ? { depth: host.depth } : {}),
   };
 }
 
@@ -92,7 +98,13 @@ export function withLoopConfig(
     const continuity = base.continuity
       ? { ...base.continuity, runId: `${base.continuity.runId}:d${seq}`, resume: false }
       : undefined;
-    const childCfg: ExecutorDagConfig = { ...childBase, ...(continuity ? { continuity } : {}) };
+    let childCfg: ExecutorDagConfig = { ...childBase, ...(continuity ? { continuity } : {}) };
+    // decompose 卡 (2026-09-04): 子 run 自己也是一张编排循环 —— 给它装同一副面 (七张卡 + 只读手), 深度 +1;
+    // 终审仍只在父 run 打 (childBase 已剥 verifier), 子循环的 conductor 坐 escalation 座 (plan 上已钉)。
+    if (isOrchestratingLoopPlan(childPlan)) {
+      const depth = loopDepthOf(childPlan) || (host.depth ?? 0) + 1;
+      childCfg = withLoopConfig(childCfg, childPlan, { ...host, depth }, null, childPlan.nodes[conductorNodeIdOf(childPlan)]?.goal ?? task, undefined);
+    }
     return (host.runDag ?? runExecutorDagWithPlan)(childPlan, childCfg);
   };
   const budgetMs = base.loopBudget?.ms;
@@ -100,9 +112,10 @@ export function withLoopConfig(
   // 回灌第二跑时文件已存在 → 这里算出 [], 但 ledger.criterionFreeze 里已有 hashes → 工具面从那里恢复保护 (initFreezeState)。
   const criterionFiles = runnable ? missingPathArgs(runnable.command, host.cwd) : [];
   const freezeFiles = criterionFiles.length ? criterionFiles : ledger?.criterionFreeze?.files ?? [];
+  const conductorId = conductorNodeIdOf(plan);
   const face = buildConductorFace(
     {
-      goal: plan.nodes[CONDUCTOR_NODE_ID]?.goal ?? task,
+      goal: plan.nodes[conductorId]?.goal ?? task,
       writeRoot: host.cwd,
       protectedPaths: extractProtectedPaths(task),
       ...(ctx.acceptance ? { acceptance: ctx.acceptance } : {}),
@@ -117,7 +130,7 @@ export function withLoopConfig(
   return {
     ...base,
     maxEscalations: 0,
-    leafFace: (node) => (node.id === CONDUCTOR_NODE_ID ? face : undefined),
+    leafFace: (node) => (node.id === conductorId ? face : undefined),
   };
 }
 
