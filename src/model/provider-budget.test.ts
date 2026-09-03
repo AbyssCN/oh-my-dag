@@ -34,6 +34,10 @@ import {
   makeBudgetedCall,
   setBackoffParams,
   resetBudget,
+  PROVIDER_RPM_DEFAULTS,
+  providerOf,
+  providerRpmStats,
+  setProviderRpm,
 } from './provider-budget';
 
 const err = (msg: string) => new Error(msg);
@@ -120,5 +124,39 @@ describe('非 mimo 坐标也要吃退避 (本次缺口)', () => {
     });
     await expect(call({ model: 'fake:x' })).resolves.toBe('ok');
     expect(calls).toBe(1);
+  });
+});
+
+describe('按 provider 登记的 RPM 桶 (2026-09-04, MiniMax Token Plan 120 RPM)', () => {
+  test('缺省登记: minimax-cn = 120; providerOf 取坐标前段', () => {
+    expect(PROVIDER_RPM_DEFAULTS['minimax-cn']).toBe(120);
+    expect(providerOf('minimax-cn:MiniMax-M3')).toBe('minimax-cn');
+    expect(providerOf('nocolon')).toBeUndefined();
+  });
+
+  test('★ 登记的 provider: 桶空了就等下一张牌 (稳态不超 RPM), 没登记的不等', async () => {
+    resetBudget();
+    setProviderRpm('minimax-cn', 1200); // 20 张/秒, 排空后下一张要等 ~50ms
+    let calls = 0;
+    const call = makeBudgetedCall(async (_req: { model?: string }) => { calls++; return 'ok'; });
+    for (let i = 0; i < 1200; i++) await call({ model: 'minimax-cn:MiniMax-M3' });
+    const t0 = Date.now();
+    await call({ model: 'minimax-cn:MiniMax-M3' });
+    const waited = Date.now() - t0;
+    // 证伪: 把 makeBudgetedCall 里 `await waitProviderToken(bucket)` 删掉 → waited ≈ 0, 这条红。
+    expect(waited).toBeGreaterThanOrEqual(30);
+    expect(calls).toBe(1201);
+    // 没登记的 provider: 同样排空式调用 1201 次不等牌。
+    const t1 = Date.now();
+    for (let i = 0; i < 1201; i++) await call({ model: 'unregistered:model' });
+    expect(Date.now() - t1).toBeLessThan(30);
+    setProviderRpm('minimax-cn', 0);
+    resetBudget();
+  });
+
+  test('providerRpmStats 可观测: limit 与余牌', () => {
+    resetBudget();
+    const st = providerRpmStats();
+    expect(st['minimax-cn']).toEqual({ limit: 120, tokens: 120 });
   });
 });

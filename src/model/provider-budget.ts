@@ -17,6 +17,15 @@
  *
  * 经典 counting-semaphore + 直接 hand-off: release 时若有 waiter, 槽直接转交 (不减计数)。
  * Date.now() 在 daemon src 合法 (仅 Workflow 脚本禁用)。
+ *
+ * ## 按 provider 登记的 RPM 桶 (2026-09-04, owner: MiniMax Token Plan 120 RPM 内动态调并发)
+ *
+ * 上面三层是 MiMo 专属 (并发槽 + 桶 + 溢出)。MiniMax Token Plan 的限额形状不同: token 不计费、只限 **120 RPM**
+ * (interactive / agentic), 撞了就是 2062。所以对它只要一件事 —— 稳态速率别过 120/min, 并发让它自己浮动:
+ * 每发调用先等这个 provider 的桶发牌 (没牌就等下一张, 不溢出、不拒), 429 仍走退避安全网。并发数由此
+ * **随调用时长自适应**: agentic 叶一发几分钟 → 同时在飞可以远超 120; 秒级快调用 → 在飞被牌压到 ~2。
+ * 登记表 `PROVIDER_RPM_DEFAULTS` + 环境变量 `OMD_PROVIDER_RPM="minimax-cn=120,foo=30"` 覆盖; 没登记的 provider
+ * 不进桶 (受其服务端限流 + 429 退避)。fleet.ts 的 provider 并发池从此只是**突发上限**, 不再是稳态旋钮。
  */
 
 const DEFAULT_CAP = 100; // 2026-06-08: 24→100 (官方 RPM 100; 并发是突发上限, 速率治理交给 RPM bucket)
@@ -29,6 +38,82 @@ const DEFAULT_RPM = 100;
 let rpmLimit = Number(process.env.OMD_MIMO_RPM) || DEFAULT_RPM;
 let rpmTokens = rpmLimit; // 起步满桶
 let rpmLastRefill = Date.now();
+
+// ---- ②' 按 provider 登记的 RPM 桶 (MiMo 之外; MiMo 仍走上面那只桶, 零回归) ----
+/** 缺省登记表: 官方 / owner 给的稳态上限。minimax-cn = Token Plan 120 RPM (owner 2026-09-04)。 */
+export const PROVIDER_RPM_DEFAULTS: Readonly<Record<string, number>> = { 'minimax-cn': 120 };
+interface RpmBucket { limit: number; tokens: number; lastRefill: number }
+const providerBuckets = new Map<string, RpmBucket>();
+/** 解析 `OMD_PROVIDER_RPM="a=120,b=30"`; 坏项忽略并留一行证据 (fail-open: 配错不许把整层闸弄没)。 */
+function providerRpmFromEnv(env: NodeJS.ProcessEnv = process.env): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const item of (env.OMD_PROVIDER_RPM ?? '').split(',')) {
+    const t = item.trim();
+    if (!t) continue;
+    const [k, v] = t.split('=');
+    const n = Number(v);
+    if (k && Number.isFinite(n) && n > 0) out[k.trim()] = n;
+    else console.warn(`[provider-budget] OMD_PROVIDER_RPM 项无法解析, 忽略: "${t}"`);
+  }
+  return out;
+}
+let providerRpmLimits: Record<string, number> = { ...PROVIDER_RPM_DEFAULTS, ...providerRpmFromEnv() };
+/** 坐标 → provider 段 (`minimax-cn:MiniMax-M3` → `minimax-cn`)。 */
+export function providerOf(model: string | undefined): string | undefined {
+  if (typeof model !== 'string') return undefined;
+  const i = model.indexOf(':');
+  return i > 0 ? model.slice(0, i) : undefined;
+}
+function bucketFor(provider: string): RpmBucket | undefined {
+  const limit = providerRpmLimits[provider];
+  if (!limit) return undefined;
+  let b = providerBuckets.get(provider);
+  if (!b || b.limit !== limit) {
+    b = { limit, tokens: limit, lastRefill: Date.now() };
+    providerBuckets.set(provider, b);
+  }
+  return b;
+}
+function refillBucket(b: RpmBucket): void {
+  const now = Date.now();
+  const elapsedMin = (now - b.lastRefill) / 60_000;
+  if (elapsedMin <= 0) return;
+  const add = elapsedMin * b.limit;
+  if (add >= 0.0001) {
+    b.tokens = Math.min(b.limit, b.tokens + add);
+    b.lastRefill = now;
+  }
+}
+/** 等到该 provider 的桶发牌 (priority 语义: 不溢出、不拒, 只等)。 */
+async function waitProviderToken(b: RpmBucket): Promise<void> {
+  refillBucket(b);
+  while (b.tokens < 1) {
+    const deficit = 1 - b.tokens;
+    await sleep(Math.ceil((deficit / b.limit) * 60_000) + 5);
+    refillBucket(b);
+  }
+  b.tokens -= 1;
+}
+/** 运维 / 测试钩子: 改某 provider 的 RPM (0 = 撤桶)。 */
+export function setProviderRpm(provider: string, rpm: number): void {
+  if (rpm > 0) providerRpmLimits = { ...providerRpmLimits, [provider]: rpm };
+  else {
+    const { [provider]: _drop, ...rest } = providerRpmLimits;
+    void _drop;
+    providerRpmLimits = rest;
+  }
+  providerBuckets.delete(provider);
+}
+/** 可观测: 每个登记 provider 的桶状态。 */
+export function providerRpmStats(): Record<string, { limit: number; tokens: number }> {
+  const out: Record<string, { limit: number; tokens: number }> = {};
+  for (const provider of Object.keys(providerRpmLimits)) {
+    const b = bucketFor(provider)!;
+    refillBucket(b);
+    out[provider] = { limit: b.limit, tokens: Math.floor(b.tokens) };
+  }
+  return out;
+}
 
 // ---- ③ 429 退避参数 (测试可调小) ----
 let backoffBaseMs = Number(process.env.OMD_MIMO_BACKOFF_BASE_MS) || 500;
@@ -121,6 +206,8 @@ export function resetBudget(): void {
   waiters.length = 0;
   rpmTokens = rpmLimit;
   rpmLastRefill = Date.now();
+  providerBuckets.clear();
+  providerRpmLimits = { ...PROVIDER_RPM_DEFAULTS, ...providerRpmFromEnv() };
 }
 export function setBackoffParams(baseMs: number, attempts: number): void {
   backoffBaseMs = Math.max(0, baseMs);
@@ -178,7 +265,7 @@ async function callWith429Backoff<R>(fn: () => Promise<R>): Promise<R> {
  * 用 MiMo 速率感知预算闸包一个 call 函数。Req 泛型继承真实调用签名 (保留 messages 等字段)。
  * @param rawCall 真正的模型调用 (如 callModel)。
  * @returns budgetedCall(req, overflowModel?):
- *   - 非 mimo → 直接 rawCall (DeepSeek 不闸, 受其服务端限流)。
+ *   - 非 mimo → 登记了 RPM 的 provider 先等该 provider 的桶发牌 (minimax-cn 120/min), 其余直接 rawCall; 都吃 429 退避。
  *   - mimo + 无 overflowModel (priority) → 等并发槽 + 等 RPM 牌 → 429 退避重试 → release。
  *   - mimo + 有 overflowModel (spillable) → try 并发槽 + try RPM 牌; 任一无 / 撞 429 → 改调 overflowModel。
  */
@@ -189,7 +276,12 @@ export function makeBudgetedCall<Req extends { model?: string }, R>(rawCall: (re
     // 零重试。座位切成 18/18 MiniMax 后这成了主干道: bench 一批 40 并发撞了 1156 次限流,
     // 每次都把 conductor 打成「未产出有效 plan」→ 整个 run crash, 该批 72% trial 报废。
     // 退避是纯增益: 不撞限流时零开销 (第一次就返回); 硬配额耗尽也不退 (见 isRetryableRateLimit)。
-    if (!isMimoModel(req.model)) return callWith429Backoff(() => rawCall(req));
+    if (!isMimoModel(req.model)) {
+      // 登记了 RPM 的 provider (minimax-cn 120): 先等桶发牌, 再发; 没登记的直接发。两边都吃 429 退避。
+      const bucket = bucketFor(providerOf(req.model) ?? '');
+      if (bucket) await waitProviderToken(bucket);
+      return callWith429Backoff(() => rawCall(req));
+    }
 
     if (overflowModel) {
       // overflow 角色 (executor leaf): 不排队 —— 并发满 / 无 RPM 牌 → 溢出。

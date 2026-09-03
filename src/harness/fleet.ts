@@ -59,10 +59,12 @@ export const DEFAULT_PROVIDER_POOLS: Record<string, number> = {
   // 把两件事压在一个数上, 结果就是为了保护本机而顺手把网络等待型的 inproc 扇出也钳到 64。
   deepseek: Number.MAX_SAFE_INTEGER,
   'xiaomi-token-plan-ams': 8, // probe: >8 即 429, 硬上限 = 8 (**这个是真硬顶, 别跟着放**)
-  // 2026-08-18 owner: minimax-cn 官方 RPM=200, 此前没登记 → 吃兜底 8 纯冤枉 (墙钟四跑拆解
-  // 已点名「现吃兜底 8, 未探真顶」)。agentic 叶单发分钟级 → 32 并发 ≈ 每分钟十几发, 离 200
-  // 一个数量级余量; TPM 未探, 429 由 heal 兜底。本机足迹另有 per-kind 闸 (AGENT_DEFAULT_FANOUT) 管。
-  'minimax-cn': 32,
+  // 2026-08-18 owner: minimax-cn 官方 RPM=200, 此前没登记 → 吃兜底 8 纯冤枉。
+  // 2026-09-04 owner: Token Plan 的真限额是 **120 RPM** (token 不计费), 稳态由 provider-budget.ts 的
+  // per-provider RPM 桶管 (每发先等牌); 这一格从此只是**突发上限** —— 取一分钟的牌数, 让桶成为唯一的
+  // 稳态旋钮 (agentic 叶一发几分钟, 32 并发会先于 120 RPM 卡住自己)。本机足迹另有 per-kind 闸
+  // (AGENT_DEFAULT_FANOUT / OMD_MAX_INFLIGHT_LEAVES) 管。实测: 8 路 0 次 2062, 16 路 3 分钟撞限 (2026-09-03)。
+  'minimax-cn': 120,
 };
 /** 未列出 provider 的兜底 cap。 */
 const FALLBACK_PROVIDER_CAP = 8;
