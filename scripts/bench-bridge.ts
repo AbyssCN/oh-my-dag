@@ -64,9 +64,14 @@ export interface PassthroughRoute {
  * `role: "developer"` (OpenAI 新形状), minimax 吃, deepseek 400「messages[0].role: unknown variant」。只改这一个字,
  * 其余字节原样 —— 这不是 translate, 是同一形状里两家方言的一个词。
  */
-export function normalizeForDeepseek<T extends { messages?: Array<Record<string, unknown>> }>(body: T): T {
-  if (!Array.isArray(body.messages)) return body;
-  return { ...body, messages: body.messages.map((m) => (m.role === 'developer' ? { ...m, role: 'system' } : m)) };
+export function normalizeForDeepseek<T extends { messages?: Array<Record<string, unknown>>; stream?: boolean; stream_options?: unknown; store?: unknown }>(body: T): T {
+  // stream_options: deepseek 对「stream_options 而 stream≠true」400 (smoke8-dsw 第三次根因); store: OpenAI 专有, 不带。
+  // ⚠ 一律剥 stream_options: 透传道上游恒 stream=false (单块回包再按需包成 SSE, 见 handlePassthrough), 留着就是 400。
+  const { stream_options: _so, store: _st, ...rest } = body as T & { stream_options?: unknown; store?: unknown };
+  void _so; void _st;
+  const out = rest as unknown as T;
+  if (!Array.isArray(out.messages)) return out;
+  return { ...out, messages: out.messages.map((m) => (m.role === 'developer' ? { ...m, role: 'system' } : m)) };
 }
 
 export async function handlePassthrough(

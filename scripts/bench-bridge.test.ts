@@ -165,5 +165,9 @@ describe('deepseek 透传形状归一 (2026-09-03)', () => {
     expect(out.reasoning_effort).toBe('medium');
     const bare: { model: string; messages?: Array<Record<string, unknown>> } = { model: 'x' };
     expect(normalizeForDeepseek(bare)).toEqual({ model: 'x' });
+    // stream_options / store 一律去掉 (上游恒 stream=false, 留 stream_options 就是 deepseek 400); stream 本身原样留给透传道处理。
+    type B = { model: string; stream?: boolean; stream_options?: unknown; store?: unknown; messages?: Array<Record<string, unknown>> };
+    const withOpts: B = { model: 'x', stream: true, stream_options: { include_usage: true }, store: false };
+    expect(normalizeForDeepseek(withOpts) as B).toEqual({ model: 'x', stream: true });
   });
 });
