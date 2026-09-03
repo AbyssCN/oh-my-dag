@@ -414,16 +414,3 @@ export function buildConductorFace(facts: ConductorFacts, deps: ConductorRuntime
   };
 }
 
-/**
- * 默认开 (D-17)。`config.orchestratingLoop` 显式布尔压过环境; `OMD_ORCHESTRATING_LOOP=0|false` 关。
- * 关掉之后回到 D-17 的下一档 (chain → flat-first → v1), 那是 R-1 「D4 路由命中率」对照臂的入口。
- * 不给 solve/run 加 inputSchema 参数 (D-16): 这条只有 config 与 env 两个入口。
- */
-export function orchestratingLoopEnabled(
-  config: { orchestratingLoop?: boolean },
-  env: NodeJS.ProcessEnv = process.env,
-): boolean {
-  if (typeof config.orchestratingLoop === 'boolean') return config.orchestratingLoop;
-  const v = (env.OMD_ORCHESTRATING_LOOP ?? '').trim().toLowerCase();
-  return !(v === '0' || v === 'false' || v === 'off');
-}

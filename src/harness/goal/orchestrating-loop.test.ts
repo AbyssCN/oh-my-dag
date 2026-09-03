@@ -40,7 +40,6 @@ import {
   buildConductorFace,
   compileOrchestratingLoop,
   createConductorRuntimeTools,
-  orchestratingLoopEnabled,
   prefixPlanIds,
   withReinjectedFinding,
   checkCriterionFreeze,
@@ -199,18 +198,6 @@ describe('buildConductorFace — INV-8 / D-20', () => {
   });
 });
 
-describe('orchestratingLoopEnabled — 缺省开, env 0/false/off 关, config 布尔压过 env (D-17)', () => {
-  test('矩阵', () => {
-    expect(orchestratingLoopEnabled({}, {})).toBe(true);
-    expect(orchestratingLoopEnabled({}, { OMD_ORCHESTRATING_LOOP: '0' })).toBe(false);
-    expect(orchestratingLoopEnabled({}, { OMD_ORCHESTRATING_LOOP: 'false' })).toBe(false);
-    expect(orchestratingLoopEnabled({}, { OMD_ORCHESTRATING_LOOP: 'off' })).toBe(false);
-    expect(orchestratingLoopEnabled({}, { OMD_ORCHESTRATING_LOOP: '1' })).toBe(true);
-    expect(orchestratingLoopEnabled({ orchestratingLoop: false }, { OMD_ORCHESTRATING_LOOP: '1' })).toBe(false);
-    expect(orchestratingLoopEnabled({ orchestratingLoop: true }, { OMD_ORCHESTRATING_LOOP: '0' })).toBe(true);
-  });
-});
-
 // ── runGoal 接线 ────────────────────────────────────────────────────────────────
 
 interface Observed {
@@ -262,12 +249,12 @@ const baseCfg = (cwd: string, extra: Partial<RunGoalConfig> = {}): RunGoalConfig
     ...extra,
   }) as RunGoalConfig;
 
-describe('runGoal — 缺省走编排循环 (D-17), 显式关回 v1', () => {
+describe('runGoal — 编排循环是 solve 唯一的非 SDD 路径 (D-17; v1 已退役 2026-09-03)', () => {
   test('★ 缺省: plan 名 / 节点 / leafFace 只对 conductor / maxEscalations 0 / path; classify 恰 1 次 (INV-12)', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omd-loop-default-'));
     const seen: Observed[] = [];
     const calls = { n: 0 };
-    const r = await runGoal('修 add()', baseCfg(cwd, { orchestratingLoop: true, _classify: classify(calls, EXEC_ACCEPT), _runDag: fakeEngine(seen) }));
+    const r = await runGoal('修 add()', baseCfg(cwd, { _classify: classify(calls, EXEC_ACCEPT), _runDag: fakeEngine(seen) }));
     expect(seen).toHaveLength(1);
     const { plan, cfg } = seen[0]!;
     expect(plan.name).toBe(ORCHESTRATING_LOOP_PLAN_NAME);
@@ -285,39 +272,13 @@ describe('runGoal — 缺省走编排循环 (D-17), 显式关回 v1', () => {
     expect(r.stages.find((s) => s.stage === 'execute')!.summary).toContain('编排循环');
   });
 
-  test('缺省 (config 缺席, env 缺席) 也走循环 —— 这是 D-17 的默认档', async () => {
-    const prev = process.env.OMD_ORCHESTRATING_LOOP;
-    delete process.env.OMD_ORCHESTRATING_LOOP;
-    try {
-      const cwd = mkdtempSync(join(tmpdir(), 'omd-loop-env-default-'));
-      const seen: Observed[] = [];
-      await runGoal('修 add()', baseCfg(cwd, { _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: fakeEngine(seen) }));
-      expect(seen[0]!.plan.name).toBe(ORCHESTRATING_LOOP_PLAN_NAME);
-    } finally {
-      if (prev === undefined) delete process.env.OMD_ORCHESTRATING_LOOP;
-      else process.env.OMD_ORCHESTRATING_LOOP = prev;
-    }
-  });
-
-  test('显式关 → v1 conductor 图 (goal-execute), path=v1, 无 leafFace', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'omd-loop-off-'));
-    const seen: Observed[] = [];
-    const r = await runGoal('修 add()', baseCfg(cwd, { orchestratingLoop: false, _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: async (plan, cfg) => {
-      seen.push({ plan, cfg });
-      return { plan, sessionId: 's', levels: [], results: { execute: { id: 'execute', status: 'done', kind: 'conductor', output: 'ok', deps: [], usage: { in: 1, out: 1 }, rounds: 1, converged: true }, accept: { id: 'accept', status: 'done', kind: 'command', output: '', deps: ['execute'], usage: { in: 0, out: 0 } } }, usage: { conductor: { in: 0, out: 0 }, leavesIn: 0, leavesOut: 0, leavesCacheHit: 0 }, reusedNodes: [], observations: [] } as unknown as ExecutorDagResult;
-    } }));
-    expect(seen[0]!.plan.name).toBe('goal-execute');
-    expect(seen[0]!.cfg.leafFace).toBeUndefined();
-    expect(r.path).toBe('v1');
-  });
-
   test('子图经同一个 _runDag 注入口跑 (D-5 唯一执行入口), 子 run 无 verifier / 无 leafFace / runId 派生', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omd-loop-child-'));
     const seen: Observed[] = [];
     const verifier = async () => ({ pass: true, reason: '', usage: { in: 0, out: 0 } });
     const manager = {} as never;
     await runGoal('修 add()', {
-      ...baseCfg(cwd, { orchestratingLoop: true, _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: fakeEngine(seen) }),
+      ...baseCfg(cwd, { _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: fakeEngine(seen) }),
       dag: { conductorModel: 'c:m', leafModel: 'l:m', verifier, continuity: { manager, runId: 'R1', resume: true, repoRoot: cwd } } as ExecutorDagConfig,
     });
     const face = seen[0]!.cfg.leafFace!({ id: CONDUCTOR_NODE_ID })!;
@@ -345,7 +306,7 @@ describe('D-14 — 终审恰一次 + 单次回灌不复审 (INV-7)', () => {
     const seen: Observed[] = [];
     const vcalls = { n: 0 };
     const r = await runGoal('修 add()', {
-      ...baseCfg(cwd, { orchestratingLoop: true, _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: fakeEngine(seen) }),
+      ...baseCfg(cwd, { _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: fakeEngine(seen) }),
       dag: { conductorModel: 'c:m', leafModel: 'l:m', verifier: failingVerifier(vcalls) } as ExecutorDagConfig,
     });
     expect(seen).toHaveLength(2);
@@ -363,7 +324,7 @@ describe('D-14 — 终审恰一次 + 单次回灌不复审 (INV-7)', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omd-reinject-red-'));
     const seen: Observed[] = [];
     const r = await runGoal('修 add()', {
-      ...baseCfg(cwd, { orchestratingLoop: true, _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: fakeEngine(seen, { acceptRed: (call) => call === 2 }) }),
+      ...baseCfg(cwd, { _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: fakeEngine(seen, { acceptRed: (call) => call === 2 }) }),
       dag: { conductorModel: 'c:m', leafModel: 'l:m', verifier: failingVerifier({ n: 0 }) } as ExecutorDagConfig,
     });
     expect(seen).toHaveLength(2);
@@ -377,7 +338,7 @@ describe('D-14 — 终审恰一次 + 单次回灌不复审 (INV-7)', () => {
     const seen: Observed[] = [];
     const vcalls = { n: 0 };
     const r = await runGoal('研究一下 add()', {
-      ...baseCfg(cwd, { orchestratingLoop: true, _classify: classify({ n: 0 }, EXPLORE_ACCEPT), _runDag: fakeEngine(seen) }),
+      ...baseCfg(cwd, { _classify: classify({ n: 0 }, EXPLORE_ACCEPT), _runDag: fakeEngine(seen) }),
       dag: { conductorModel: 'c:m', leafModel: 'l:m', verifier: failingVerifier(vcalls) } as ExecutorDagConfig,
     });
     expect(Object.keys(seen[0]!.plan.nodes)).toEqual([CONDUCTOR_NODE_ID]);
@@ -390,7 +351,7 @@ describe('D-14 — 终审恰一次 + 单次回灌不复审 (INV-7)', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omd-verifier-pass-'));
     const seen: Observed[] = [];
     const r = await runGoal('修 add()', {
-      ...baseCfg(cwd, { orchestratingLoop: true, _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: fakeEngine(seen) }),
+      ...baseCfg(cwd, { _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: fakeEngine(seen) }),
       dag: { conductorModel: 'c:m', leafModel: 'l:m', verifier: async () => ({ pass: true, reason: 'ok', usage: { in: 0, out: 0 } }) } as ExecutorDagConfig,
     });
     expect(seen).toHaveLength(1);
@@ -402,7 +363,7 @@ describe('D-14 — 终审恰一次 + 单次回灌不复审 (INV-7)', () => {
     const seen: Observed[] = [];
     const vcalls = { n: 0 };
     const r = await runGoal('修 add()', {
-      ...baseCfg(cwd, { orchestratingLoop: true, _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: fakeEngine(seen, { acceptRed: () => true }) }),
+      ...baseCfg(cwd, { _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: fakeEngine(seen, { acceptRed: () => true }) }),
       dag: { conductorModel: 'c:m', leafModel: 'l:m', verifier: failingVerifier(vcalls) } as ExecutorDagConfig,
     });
     expect(seen).toHaveLength(1);
@@ -450,7 +411,7 @@ describe('R-1 账本: runGoal 结果上的 loop', () => {
     const seen: Observed[] = [];
     const vcalls = { n: 0 };
     const r = await runGoal('修 add()', {
-      ...baseCfg(cwd, { orchestratingLoop: true, _classify: async () => ({ tier: 'complex', acceptance: EXEC_ACCEPT, route: { kind: 'none' }, llmCalls: 1 }), _runDag: fakeEngine(seen) }),
+      ...baseCfg(cwd, { _classify: async () => ({ tier: 'complex', acceptance: EXEC_ACCEPT, route: { kind: 'none' }, llmCalls: 1 }), _runDag: fakeEngine(seen) }),
       // 1-B 之后 target=criterion 不再回灌 (见下一组用例); 回灌路径的样本改用 target=implementation。
       dag: { conductorModel: 'c:m', leafModel: 'l:m', verifier: async () => { vcalls.n++; return { pass: false, reason: 'add() still returns wrong sum', target: 'implementation' as const, usage: { in: 0, out: 0 } }; } } as ExecutorDagConfig,
     });
@@ -464,14 +425,12 @@ describe('R-1 账本: runGoal 结果上的 loop', () => {
     expect(r.loop!.cards.calls).toBe(0);
     // R-1 第 4 步: 回灌分界线 —— 第二跑开始时派发数 (这里 conductor 一次没派 → 0, **是 0 不是缺席**); 读侧靠它判「回灌后有没有新派发」。
     expect(r.loop!.dispatchesBeforeReinject).toBe(0);
-    const v1 = await runGoal('修 add()', baseCfg(cwd, { orchestratingLoop: false, _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: async (plan) => ({ plan, sessionId: 's', levels: [], results: { execute: { id: 'execute', status: 'done', kind: 'conductor', output: 'ok', deps: [], usage: { in: 1, out: 1 }, rounds: 1, converged: true }, accept: { id: 'accept', status: 'done', kind: 'command', output: '', deps: ['execute'], usage: { in: 0, out: 0 } } }, usage: { conductor: { in: 0, out: 0 }, leavesIn: 0, leavesOut: 0, leavesCacheHit: 0 }, reusedNodes: [], observations: [] }) as unknown as ExecutorDagResult }));
-    expect(v1.loop).toBeUndefined();
   });
 
   test('没回灌 (verifier 过) ⇒ afterReinject skipped, firstVerdict pass; 注入式分类器无 llmCalls ⇒ null', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omd-loop-ledger2-'));
     const r = await runGoal('修 add()', {
-      ...baseCfg(cwd, { orchestratingLoop: true, _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: fakeEngine([]) }),
+      ...baseCfg(cwd, { _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: fakeEngine([]) }),
       dag: { conductorModel: 'c:m', leafModel: 'l:m', verifier: async () => ({ pass: true, reason: 'ok', usage: { in: 0, out: 0 } }) } as ExecutorDagConfig,
     });
     expect(r.loop!.verifier).toEqual({ calls: 1, firstVerdict: 'pass', target: null, reinjected: false, afterReinject: 'skipped' });
@@ -485,7 +444,7 @@ describe('1-B (2026-09-03): 终审否决判据 (target=criterion) → 不回灌 
     const cwd = mkdtempSync(join(tmpdir(), 'omd-1b-'));
     const seen: Observed[] = [];
     const r = await runGoal('修 add()', {
-      ...baseCfg(cwd, { orchestratingLoop: true, _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: fakeEngine(seen) }),
+      ...baseCfg(cwd, { _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: fakeEngine(seen) }),
       dag: { conductorModel: 'c:m', leafModel: 'l:m', verifier: async () => ({ pass: false, reason: '冻结判据指向实施前不存在的测试文件', target: 'criterion' as const, usage: { in: 0, out: 0 } }) } as ExecutorDagConfig,
     });
     expect(seen).toHaveLength(1); // 证伪: 去掉 D-14 条件里的 `!criterionVeto` → 2 (回灌了), 红
@@ -503,13 +462,13 @@ describe('1-A (2026-09-03): 判据先落盘冻结', () => {
   test('★ runGoal 接线: 判据引用的文件在 cwd 下不存在 → 判据行尾有 "Missing now: src/a.test.ts"; 文件已存在 → 无', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omd-1a-wire-'));
     const seen: Observed[] = [];
-    await runGoal('修 add()', baseCfg(cwd, { orchestratingLoop: true, _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: fakeEngine(seen) }));
+    await runGoal('修 add()', baseCfg(cwd, { _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: fakeEngine(seen) }));
     expect(seen[0]!.cfg.leafFace!({ id: CONDUCTOR_NODE_ID })!.systemPrompt!).toContain('Missing now: src/a.test.ts');
     const cwd2 = mkdtempSync(join(tmpdir(), 'omd-1a-wire2-'));
     mkdirSync(join(cwd2, 'src'), { recursive: true });
     writeFileSync(join(cwd2, 'src/a.test.ts'), 'test');
     const seen2: Observed[] = [];
-    await runGoal('修 add()', baseCfg(cwd2, { orchestratingLoop: true, _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: fakeEngine(seen2) }));
+    await runGoal('修 add()', baseCfg(cwd2, { _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: fakeEngine(seen2) }));
     expect(seen2[0]!.cfg.leafFace!({ id: CONDUCTOR_NODE_ID })!.systemPrompt!).not.toContain('Missing now:');
   });
 

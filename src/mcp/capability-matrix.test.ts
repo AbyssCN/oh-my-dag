@@ -148,10 +148,6 @@ const tools: any[] = [
       throw new Error(`union rows 不是 19: ${m.rows.length}`);
     }
 
-    // ── D4.1 切片 1 触达门 (test-touches-impl): AST 抽「抽得到 chain」, 但 goal.ts 真没真曝面
-    //   是另一个故事 —— 跑一遍 createGoalTool, 确认 inputSchema 真把 chain 装上了。
-    //   理由 = 静态拌线只对文本负责, 实装上**接得对不对**它看不到。
-    expect('chain' in createGoalTool({ runGoal: async () => ({}), runRegistry: {} as never, cwd: '/tmp', buildConfig: () => ({}) } as never).inputSchema).toBe(true);
 
     // (b) 渲染反映假源 + 跟真源盘上比对红
     const rendered = renderSegment(m);

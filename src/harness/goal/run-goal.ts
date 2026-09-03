@@ -32,7 +32,6 @@ import { runExecutorDagWithPlan } from '../dag/engine';
 import { makeDefaultGenerate } from '../dag/defaults';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagResult, LeafResult, DagObservation } from '../dag/types';
-import { buildFlatPlanPrompt, compileFlatPlan, parseFlatPlanOutput } from './flat-plan';
 import { judgeRubric, DEFAULT_RUBRIC_MAX_FAILURES } from './rubric-judge';
 import { classifyGoal, renderAcceptance, type AcceptanceSpec, type GoalClassification, type GoalTier } from './classify-acceptance';
 import { ignitionPreflight, type FreezeCheckOpts, type ExclusiveLocksOpts } from './ignition-preflight';
@@ -77,7 +76,6 @@ import {
 import { specAnchor } from './spec-anchor';
 import { dryRunSddIgnition } from './sdd-ignition-check';
 import { coverSlices, describeSliceCoverage, type SliceCoverageReport } from './slice-coverage';
-import { compileChain } from './stage-chain';
 import { attributeWriteSet, classifyWriteScope, describeWriteSet, SDD_DECLARED_WRITE_SET, type DeclaredWriteSet, type WriteScopeKind, type WriteSetDeclaration, type WriteSetReport } from '../writeset/write-set';
 import { collectRunTickets, type RunTicketSink } from '../pathfinder/run-tickets';
 import { logger } from '../logger';
@@ -94,7 +92,6 @@ import {
   CONDUCTOR_NODE_ID,
   buildConductorFace,
   compileOrchestratingLoop,
-  orchestratingLoopEnabled,
   withReinjectedFinding,
   checkCriterionFreeze,
   renderCriterionFreezeTruth,
@@ -341,51 +338,10 @@ export interface RunGoalConfig {
     /** 计划声明的产物集 —— 重建者据它知道"谁会产出什么"。 */
     declaredArtifacts: readonly string[];
   }) => Promise<{ command: string; expectExit?: number; negativeSample?: string } | null>;
-  /**
-   * **L1 免仪式平铺的 opt-in 开关** (SDD 2026-08-31, INV-3 / D-5)。
-   *
-   * `undefined` = 走环境变量 `OMD_FLAT_FIRST` (`'1'` / `'true'` 视为开, 其余视作关);
-   * 给定布尔值则压过环境变量, **测试 / 装配层用这条** —— 装配点用 env 翻转做整批 A/B,
-   * 测试单跑一个 goal 想钉死走哪条就用 config 显式给。
-   *
-   * 缺省语义 = 关: 不设环境变量时, 任何 goal 的执行路径与今天逐字节相同 (INV-3 零回归)。
-   * 开了之后, **只对无 SDD 的 goal 生效** (有 SDD 走既有 sdd-direct 直通, 不重复走平铺)。
-   *
-   * 轻规划 generate 走 `config.dag.generate ?? makeDefaultGenerate(...)` —— 与 conductor
-   * 路径**同源同真源**。`GenerateFn` 注入面已存在, 测试单跑 goal 时两个注入口的语义一致。
-   */
-  flatFirst?: boolean;
-  /**
-   * **D4 切片 3: 阶段链路由 + 编译 opt-in 开关** (SDD 2026-08-31-dynamic-workflow-design)。
-   *
-   * `undefined` = 走环境变量 `OMD_CHAIN` (`'1'` / `'true'` 视为开, 其余视作关);
-   * 给定布尔值则压过环境变量, **测试 / 装配层用这条**。
-   *
-   * 缺省语义 = 关: 不设环境变量时, 任何 goal 的执行路径与今天逐字节相同 (INV-4 零回归)。
-   * 开了之后, 消费的是 `classified.route` (D-19 / INV-12, 2026-09-02: 与 tier/acceptance
-   * 同一发 classify 调用出的路由决策, 不再另起 `routeChain(goal, deps)` 第二次结构化调用) ——
-   * 命中 `kind:'chain'` ⇒ `compileChain` 编译出 ConductorPlan (拓扑 = 编译器输出, conductor
-   * 无改拓扑权 D-6); 命中 `kind:'shape'` / `kind:'none'` / 越界 ⇒ 降级, 走 L1 (flatFirst) 或
-   * v1 conductor 通路 (零回退)。
-   * ⚠ `classifyGoalCore` 目前没有实装 route 槽, `classified.route` 恒 `{kind:'none'}`
-   * (classify-acceptance.ts 函数头有 P1 回流修正说明) —— 这个开关打开也暂时降级到底,
-   * 不产生行为差异, 待 v2/S7 接回。
-   */
-  chain?: boolean;
-  /**
-   * **P3 S6b (2026-09-02): 编排循环默认路径的开关** —— `undefined` = 走环境变量 `OMD_ORCHESTRATING_LOOP`
-   * (`0` / `false` / `off` 关, 其余含缺席 = **开**); 给定布尔值压过环境 (测试 / 装配层用这条)。
-   *
-   * 缺省语义 = **开** (D-17: sdd-direct > orchestrating-loop > chain > flat-first > v1)。开 = 无 SDD 的 goal 走
-   * `compileOrchestratingLoop` 的两节点图 (conductor agent + accept oracle), conductor 拿七张派工卡与 ≤8k 常驻 prompt,
-   * 终审恰一次 + finding 回灌 conductor 一次 (D-14)。关 = 回到 D-17 的下一档, 行为与 S6a 之后逐字节相同 ——
-   * 那是 R-1 「D4 路由命中率」对照臂的入口。不给 solve/run 加 inputSchema 参数 (D-16)。
-   */
-  orchestratingLoop?: boolean;
  }
 
 /** 这一趟 goal 走的执行路径 (D-1: 路径身份记在结果上, 不进 GRAPH_SHAPES 卡表)。 */
-export type RunGoalPath = 'sdd-direct' | 'orchestrating-loop' | 'chain' | 'flat-first' | 'v1';
+export type RunGoalPath = 'sdd-direct' | 'orchestrating-loop';
 
 export interface RunGoalResult {
   goal: string;
@@ -996,61 +952,8 @@ export function classifyCriterionRed(input: {
 /** INV-1 终态棘轮的留痕锚串 (摘要与 result 都带它, 契约 GWT-1 `.includes('best-green')`)。 */
 export const BEST_GREEN_LABEL = 'best-green';
 
-/** L1 升档协议的留痕锚串 (摘要与 stages 都带它, 契约 GWT-5 `.includes('flat-escalate')`)。 */
-export const FLAT_ESCALATE_LABEL = 'flat-escalate';
 
-/**
- * **L1 平铺冲突证据检测** (SDD 2026-08-31, INV-4 / D-6)。
- *
- * L1 的论据是「平铺 = 无依赖并行」—— 跑出任何「叶子之间本不该有的耦合」证据 = 假设被破,
- * **整张图不该再被信任**, 升档 L2 重画。判据 = 引擎 `observations` 面里两类信号:
- *
- *   · `write-wall` (2026-08-30 闸门三角结 刀②) = leaf 对同一路径撞写域闸 ≥2 次,
- *     真撞 (一次可能是手滑, 两次是执行体坚持要写那里) ⇒ 该路径本来就在两个 leaf 的写集里,
- *     平铺把两个同写集的 leaf 摊开并行 = 写竞争结构面。平铺假设在这条写集上破。
- *   · `write-race` (2026-08-06) = 跑时两个 leaf 真在同一条路径上撞过写域。静态面静态判死、
- *     动态面事后汇报 —— 平铺本应保证无跨步产物依赖, 真撞 = 假设被破。
- *
- * 两条**互斥**: write-wall 是 leaf 自己撞闸, write-race 是执行窗口重叠且两侧都写过。一图里
- * 任一出现 = 一升档, 不合并、不重复。
- *
- * ⚠ **nullish 与空**: `observations === undefined` = 「没观测」(不是「零观测」), 一律
- *   视为无证据 —— 与仓规 NULL≠0 那条同源。把 undefined 读成「证据为空」会让早期版本的引擎
- *   (那字段根本还没接) 每次都升档, 那是另一个静默失效。
- *
- * ⚠ **判据的边界**: 这是**结构面**判据, **不**判业务正确性 —— 单 leaf 业务失败由 oracle
- *   闸管, 不进这一位。把业务失败也接进来会让 L1 路径对任何 plan 抖动都敏感, 整张图变无意义的
- *   「L1 必升 L2」形态。
- */
-export function detectL1Escalation(exec: ExecutorDagResult): {
-  escalate: boolean;
-  /** 证据原文 (进 stages 与日志, 契约 GWT-5 逐字要求)。 */
-  evidence: string | undefined;
-  /** 证据类别 (write-wall / write-race), 进 stage summary, 用于运行时分类。 */
-  kind: 'write-wall' | 'write-race' | undefined;
-} {
-  const obs = (exec.observations ?? []) as readonly DagObservation[];
-  for (const o of obs) {
-    if (o.kind === 'write-wall') return { escalate: true, evidence: o.message, kind: 'write-wall' };
-    if (o.kind === 'write-race') return { escalate: true, evidence: o.message, kind: 'write-race' };
-  }
-  return { escalate: false, evidence: undefined, kind: undefined };
-}
 
-/**
- * **L1 opt-in 开关的合并判据** (SDD 2026-08-31, INV-3 / D-5):
- *   · config 显式布尔值 (test / 装配层注入) ⇒ 直接用, 压过环境变量;
- *   · config 缺席 ⇒ 读环境变量 `OMD_FLAT_FIRST` (`'1'` / `'true'` 视为开, 余下视作关);
- *   · 两都缺席 ⇒ 关。
- *
- * 每次调用重读环境变量 —— 测试可在中途翻转 (`process.env.OMD_FLAT_FIRST = '1'`),
- * 不依赖模块级捕获。
- */
-export function flatFirstEnabled(config: { flatFirst?: boolean }, env: NodeJS.ProcessEnv = process.env): boolean {
-  if (config.flatFirst !== undefined) return config.flatFirst;
-  const v = env.OMD_FLAT_FIRST;
-  return v === '1' || v === 'true';
-}
 
 /**
  * **D4 切片 3: 阶段链路由开关的合并判据** (INV-4 零回归那一半)。
@@ -1145,13 +1048,6 @@ function withLoopConfig(
   };
 }
 
-export function chainEnabled(config: { chain?: boolean }, env: NodeJS.ProcessEnv = process.env): boolean {
-  if (config.chain !== undefined) return config.chain;
-  // P3 S7 / D-17 (2026-09-02): D4 路由**默认开** (此前 opt-in, batch 8 的 33 份 trace 零路由日志)。
-  // `OMD_CHAIN=0|false|off` 关; 其余含缺席 = 开。实际作用域 = 循环显式关闭时的回退路径 (loop 开时恒截胡)。
-  const v = (env.OMD_CHAIN ?? '').trim().toLowerCase();
-  return !(v === '0' || v === 'false' || v === 'off');
-}
 
 /** INV-1 棘轮的四个动作 —— 「不必动」「动不了」「真动了」不许压平。 */
 export type BestGreenAction = 'none' | 'already-green' | 'restore' | 'unrestorable';
@@ -1683,48 +1579,10 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
    * 但它**不**走升档协议 (契约已结晶, 无所谓升档); 升档只在 L1 (无 SDD ∧ flat-first opt-in
    * 走平铺) 上才需要。下面这一个是这两条路在「要不要升档」这步上的**唯一**区别。
    */
-  let usedFlatFirst = false;
-  const flatFirstOn = flatFirstEnabled(config);
-  const chainOn = chainEnabled(config);
-  const loopOn = orchestratingLoopEnabled(config);
-  /**
-   * P3 S6b: 编排循环路径走过的标 + 它的图 (回灌时按同一张图 append finding 重跑)。
-   * 与 `flatPlan` 刻意分开: 平铺图的下游 (frozenNodes / deterministicReplan / L1 升档 / S-46 缺片)
-   * 一条都不适用于循环 —— 循环没有切片、没有重规划轮、终审只打一次。
-   */
+  /** P3 S6b: 编排循环路径的图 (回灌时按同一张图 append finding 重跑)。v1 / chain / flat-first 梯子已退役 (owner 2026-09-03)。 */
   let loopPlan: ConductorPlan | undefined;
   /** R-1 账本 (循环路径才用; 两跑合并)。 */
   const loopLedger: ConductorCardLedger = createConductorCardLedger();
-  let chainHit = false;
-  /**
-   * P3 S7 (D-17 / D-19 / INV-12): D4 chain 默认开, 位次 = sdd-direct > loop > **chain** > flat-first > v1。
-   * 路由决策来自 classify 那**一次**结构化调用的 `route` 槽 (S7 把槽真实装进 classifyPrompt / normalize,
-   * 见 classify-acceptance.ts), 不再另调 `routeChain`。这里先算出 chainPlan, 下面的 if-链按 D-17 位次消费;
-   * 未命中 / 编译失败 → chainPlan 缺席, 自然落到 flat-first / v1 (fail-open 不吞证据, 两条日志分得开)。
-   * 只在 loop 关着时才算 (loop 开时循环恒截胡, 这一格结构上量不到 —— R-1 「D4 路由命中率」只在对照臂上量)。
-   */
-  let chainPlan: ConductorPlan | undefined;
-  if (!sdd && !loopOn && chainOn && runnable) {
-    const decision = classified.route ?? { kind: 'none' as const };
-    if (decision.kind === 'chain') {
-      try {
-        chainPlan = compileChain(decision.chain);
-        logger.info(
-          { stages: decision.chain.stages.length, name: chainPlan.name },
-          '[run-goal] D4 chain 路由命中 → compileChain 产物进 execPlan (conductor 无改拓扑权, D-6)',
-        );
-      } catch (err) {
-        const msg = String(err instanceof Error ? err.message : err).slice(0, 240);
-        logger.warn({ err: msg }, '[run-goal] D4 chain 路由/编译失败 → 降级 (走 flatFirst / v1 conductor, 不静默)');
-      }
-    } else {
-      // `routePresent` 分辨「classified.route 缺席 (老续跑状态/未分类)」与「真判过 none」(仓规静默坑 1: NULL ≠ 0)。
-      logger.info(
-        { decisionKind: decision.kind, routePresent: classified.route !== undefined },
-        '[run-goal] D4 chain 路由未命中 → 降级 (走 flatFirst / v1 conductor, 行为逐字节照旧)',
-      );
-    }
-  }
   if (sdd && runnable) {
     // INV-D3-1: 同一份判定 —— fatal / fallback 与 goal.ts `sddIgnitionDryRunGate` 共用。
     const ignition = dryRunSddIgnition(sdd.text);
@@ -1866,7 +1724,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
       );
       return bail(`sddPath worker 触发回落条件 (O-6 vacuous-verify 等): ${msg}`, 'not-converged');
     }
-  } else if (loopOn) {
+  } else {
     // ── P3 S6b 编排循环 (契约 D-1 / D-14 / D-17 / D-20; 2026-09-02) ─────────────────────
     //
     // 默认路径。图 = `conductor` (agent, 七张派工卡 + ≤8k 常驻 prompt, 只读手) → `accept` (冻结判据原文;
@@ -1887,99 +1745,10 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
       { nodes: Object.keys(compiledLoop.nodes), acceptance: runnable !== null },
       '[run-goal] P3 编排循环默认路径 → conductor 节点 + 机械 oracle (D-17; OMD_ORCHESTRATING_LOOP=0 回到下一档)',
     );
-  } else if (chainPlan !== undefined) {
-    flatPlan = chainPlan;
-    chainHit = true;
-  } else if (flatFirstOn && runnable) {
-    // ── L1 免仪式平铺 (SDD 2026-08-31, 片 3 接线位) ─────────────────────────
-    //
-    // 触发: opt-in 开关开 ∧ 无 SDD ∧ 有可执行判据 (runnable)。
-    // 路径: 轻规划 generate → parse → compileFlatPlan → 与 sdd-direct 同形进 `_runDag`
-    //       (D-2 「挂既有直执接缝, 不造新执行路」); 跑出冲突证据 → 升档 L2 重跑恰 1 次。
-    //
-    // L1 与 SDD-direct 同走 `flatPlan` 那一个变量 —— 两者下游 (loopOk / frozenNodes /
-    // deterministicReplan 等) 形状一致; 唯一区别是**来源**: SDD-direct 是从 SDD 全文编译,
-    // L1 是从模型轻规划输出编译。**来源**只影响升档协议要不要走 (只有 L1 走, SDD-direct
-    // 是契约已结晶, 无所谓升档), 下面用 `usedFlatFirst` 一位分开。
-    //
-    // 失败语义 (与 sdd-direct 的 INV-D3-4 同源):
-    //   · 轻规划 generate 抛 / parse 抛 / compile 抛 ⇒ **不静默降级回 v1 conductor**,
-    //     而是 fail-loud bail 成 infra-error。理由: opt-in 是显式的, 静默降级会让 owner
-    //     以为开了开关而实际没走平铺, 那是开关被忘记的开关的另一种形态 (与 D-7 路由权归
-    //     config 不在模型 的纪律同源: 用户说走哪条就走哪条, 不替你猜)。
-    //   · 跑出冲突证据 ⇒ 升档 L2, 不 bail (这是设计内路径, D-6)。
-    try {
-      // 与 conductor 路径同源 (config.dag.generate ?? makeDefaultGenerate(...)) ——
-      // 单发 generate, 无 tool-loop, 1 发 = 1 发。`traceName: 'conductor:plan'` 与既有
-      // conductor 规划同标签 (本调用也用 `config.dag.conductorModel`, 归座同为 conductor,
-      // 座位台账判 `[run-goal] L1 平铺跑出冲突证据 → 升档 L2 重画重跑 (D-6 / INV-4)` 同分类);
-      // 新加一个独立标签会撞 seat-usage.test.ts 的覆盖率闸 (`src/model/seat-usage.test.ts`
-      // 扫全仓 `traceName:` 字面量 — 不在 `TRACE_SEAT_RULES` / `KNOWN_UNATTRIBUTABLE` 内的
-      // 全部判红), 而那一格闸的写集不在本片。复用 `conductor:plan` 在台账上把 L1 与既有
-      // conductor 规划合并, 区分留给 `prompt` 头 (`buildFlatPlanPrompt` 里有「平铺规划」字样)
-      // 与 stages 摘要里的 escalate 段, 不进 traceName 这一格。
-      const generateFn = config.dag.generate ?? makeDefaultGenerate(config.dag.sessionId ?? randomUUID());
-      const prompt = buildFlatPlanPrompt(goal, { criteria: renderAcceptance(acceptance) });
-      const result = await generateFn({
-        model: config.dag.conductorModel,
-        messages: [{ role: 'user', content: prompt }],
-        traceName: 'conductor:plan',
-      });
-      const subtasks = parseFlatPlanOutput(result.text);
-      const compiled = compileFlatPlan(subtasks, {
-        acceptCommand: runnable.command,
-        ...(runnable.expectExit !== undefined ? { acceptExpectExit: runnable.expectExit } : {}),
-        name: 'goal-execute-flat-l1',
-      });
-      flatPlan = compiled;
-      usedFlatFirst = true;
-    } catch (err) {
-      const msg = String(err instanceof Error ? err.message : err).slice(0, 200);
-      logger.warn(
-        { err: msg },
-        '[run-goal] L1 轻规划/编译失败 → fail-loud (opt-in 显式开关, 不静默降级 v1)',
-      );
-      return bail(`L1 轻规划/编译失败 (opt-in 显式): ${msg}`, 'infra-error');
-    }
   }
-  const execPlan: ConductorPlan = loopPlan ?? flatPlan ?? {
-    name: 'goal-execute',
-    nodes: {
-      execute: {
-        executor: 'conductor',
-        max_rounds: config.maxRounds ?? 2,
-        // D-F 的兜底那一半: 撤了外层就没有别的层再问「整体目标成了吗」。这个开关让内环在
-        // **最后一轮也判一次**, 裁决经 LeafResult.converged 出来 —— 否则 `dag_goal` 只能拿
-        // "跑完了"当"成了", 那是谎报完成最舒服的入口。
-        judge_final: true,
-        goal: task,
-      },
-      // ── D-I 的冻结判据: **环外的确定性闸** (2026-07-30 第三次 live 冒烟补上) ──────────
-      //
-      // 此前判卷标准只进任务文本, 指望 conductor 把它连成图里一个 command 节点 —— 实测它没连:
-      // 冻结的是 `grep -qx "hello omd" notes/hello.md`, 它自己画的验证步是 `cat notes/hello.md`。
-      // 于是"执行型验收"这四个字在生产上从没被真跑过, D-J 整套防作弊的地基就只剩一句提醒。
-      //
-      // 放**环外**而不是让内环去跑, 是 D-I 方案 A 那条纪律的直接后果: 判卷标准必须是执行体动不了的
-      // 东西。环每轮重画子图, 判据进环就跟着能变; 挂在环外这一个 command 节点上, 它由 runGoal 构造、
-      // conductor 碰不到、内环 judge 也改不了它。
-      //
-      // 语义是**必要非充分**: 收敛 = 内环 judge 说成了 **且** 这条命令退出码对。judge 说成了而命令
-      // 没过 = 正是 D-I 要抓的那种"作弊达标"; 命令过了而 judge 说没成 = 任务里还有命令覆盖不到的
-      // 明确要求。两侧都 fail-closed。
-      ...(runnable
-        ? {
-            accept: {
-              executor: 'command',
-              command: runnable.command,
-              expect_exit: runnable.expectExit,
-              depends_on: ['execute'],
-              goal: '冻结判据 (环外确定性闸)',
-            },
-          }
-        : {}),
-    },
-  } as ConductorPlan;
+  // v1 规划式 conductor 回落图已退役 (owner 2026-09-03): solve 只剩 sdd-direct (flatPlan) 与编排循环 (loopPlan) 两条路。
+  if (loopPlan === undefined && flatPlan === undefined) return bail('没有可执行的图 (sdd-direct 与编排循环都没编出图)', 'infra-error');
+  const execPlan: ConductorPlan = (loopPlan ?? flatPlan)!;
   // ── D-1 (SDD cairness-distill): mode 感知基线 delta —— 跑批前存基线、跑后比对 ──────────
   // 基线 = 批前用同一份 commandRunner 跑一次验收命令 (与 accept 节点同 runner、同白名单闸);
   // 只把「新引入失败」判红, 基线里就在的老失败 (unchanged-failure) 单列不红 (INV-4)。
@@ -2134,68 +1903,12 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
       return bail(`D-14 回灌重跑抛错: ${String(err).slice(0, 200)}`, 'infra-error');
     }
   }
-  // ── L1 → L2 升档协议 (SDD 2026-08-31, INV-4 / D-6) ────────────────────────
-  //
-  // 只在 L1 路径走过 (usedFlatFirst=true) 时才问「要不要升档」—— SDD-direct 与 v1 conductor
-  // 都不走这一步。判据 = `detectL1Escalation(exec)`, 命中后:
-  //   · stages 追加一条 escalate 记录 (证据原文逐字进 summary, 留痕);
-  //   · **以现行 conductor 路径整图重跑恰 1 次**, 不递归升档 (D-6 「升档一次, append-only 留痕」);
-  //   · `exec` 被新结果替换, 下游 `loopOk / oracleOk / converged` 一律以**升档后**那份为准。
-  //
-  // 升档路径 = 与 `flatPlan === undefined` 时降到的那个 v1 conductor 铺图同形 —— 不另造
-  // 新执行路, 与 D-2 「挂既有直执接缝」同源。
-  if (usedFlatFirst) {
-    const conflict = detectL1Escalation(exec);
-    if (conflict.escalate) {
-      stages.push({
-        stage: 'escalate',
-        status: 'done',
-        outcome: 'success',
-        summary: `${FLAT_ESCALATE_LABEL}: L1→L2 升档 (${conflict.kind}) — ${conflict.evidence ?? '无证据原文'}`,
-      });
-      logger.warn(
-        { kind: conflict.kind, evidence: conflict.evidence },
-        '[run-goal] L1 平铺跑出冲突证据 → 升档 L2 重画重跑 (D-6 / INV-4)',
-      );
-      try {
-        const escalatedPlan: ConductorPlan = {
-          name: 'goal-execute',
-          nodes: {
-            execute: {
-              executor: 'conductor',
-              max_rounds: config.maxRounds ?? 2,
-              judge_final: true,
-              goal: task,
-            },
-            ...(runnable
-              ? {
-                  accept: {
-                    executor: 'command',
-                    command: runnable.command,
-                    expect_exit: runnable.expectExit,
-                    depends_on: ['execute'],
-                    goal: '冻结判据 (环外确定性闸)',
-                  },
-                }
-              : {}),
-          },
-        };
-        // 把 L1 那条 frozenNodes / deterministicReplan / freezeCriterion 都卸下来 —— 它们
-        // 是平铺图专用的钉子 (SDD 2026-08-22 「冻结判据在重规划轮里并不冻结」), conductor
-        // 路径不接这一套, 硬传会让 `accept` 节点变 freezeCriterion 的另一份影子。
-        const escalatedCfg: ExecutorDagConfig = { ...config.dag };
-        exec = await (config._runDag ?? runExecutorDagWithPlan)(escalatedPlan, escalatedCfg);
-      } catch (err) {
-        return bail(`L1→L2 升档重跑抛错: ${String(err).slice(0, 200)}`, 'infra-error');
-      }
-    }
-  }
   const flatUsed = flatPlan !== undefined;
   const loopUsed = loopPlan !== undefined;
   // P3 S6b: 循环路径的"执行叶"是 conductor 节点 —— 下游读 output (rubric 判官) / blocked / budgetStopped 的地方
   // 全部照旧, 只是换了个 id。
-  const execLeaf = loopUsed ? exec.results[CONDUCTOR_NODE_ID] : exec.results.execute;
-  if (!execLeaf && !flatUsed) return bail(`${loopUsed ? 'conductor' : 'execute'} 节点无结果 (引擎没跑到它)`, 'infra-error');
+  const execLeaf = loopUsed ? exec.results[CONDUCTOR_NODE_ID] : undefined;
+  if (!execLeaf && !flatUsed) return bail('conductor 节点无结果 (引擎没跑到它)', 'infra-error');
   // D-I 环外闸: 执行型才有这个节点。它**没跑**(引擎没走到 / 被 quorum 级联跳过)也算没过 ——
   // 冻结判据的意义就是"没被证明过就不算成", fail-closed 与 converged 缺席同一条纪律。
   const acceptLeaf = runnable ? exec.results.accept : undefined;
@@ -2544,10 +2257,10 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   // criteria.judge 恒等于 oracle, 「判词✅/判据❌打架」这个状态在平铺图上从型别消灭。
   // P3 S6b 循环路径 (D-14 「循环内以 oracle 为终止条件」): 有可执行判据 ⇒ 停止规则唯一 = 冻结判据, 与平铺同形;
   // 无判据 (探索型 / rubric) ⇒ 环的结论 = conductor 节点跑完 (status done), 判据轴由 rubric 判官 / 终审说话。
-  const loopOk = flatUsed ? oracleOk : loopUsed ? (runnable ? oracleOk : execLeaf!.status === 'done') : execLeaf!.converged === true;
+  const loopOk = flatUsed ? oracleOk : runnable ? oracleOk : execLeaf!.status === 'done';
   // judge 自己那一票 (判据轴观测位, 进 criteria.judge; 与裁决位分开 —— 「judge 太紧」那一格
   // 靠它才观测得到)。缺席 = 没走环内判据那条路, 环结论即 judge 说的。
-  const judgeSaidOk = flatUsed || loopUsed ? loopOk : ((execLeaf!.judgeConverged ?? execLeaf!.converged === true));
+  const judgeSaidOk = loopOk; // v1 内环 judge 已随 v1 退役; 环结论即 judge 说的
   // D-1 delta: after 侧 = accept 节点的实判 (done→pass / failed→fail / 没跑→缺席)。
   // 缺席 + 两侧都 full → 比对器判 new-failure (fail-closed, 与 oracleOk 同一条纪律:
   // 「没被证明过就不算成」—— 引擎没跑到 accept 节点, 覆盖就回退了)。
@@ -2835,7 +2548,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   const loop: LoopLedger | undefined = loopUsed
     ? {
         path: 'orchestrating-loop',
-        route: { kind: classified.route?.kind ?? 'none', chainHit },
+        route: { kind: classified.route?.kind ?? 'none', chainHit: false }, // chain 路径已退役, 恒 false (与老记录同形)
         preActionLlmCalls: classified.llmCalls === undefined ? null : classified.llmCalls,
         residentPromptChars: loopLedger.residentPromptChars,
         verifier: {
@@ -2871,7 +2584,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
     outcome,
     ...(loop ? { loop } : {}),
     // P3 S6b (D-1): 路径身份。判定顺序 = D-17 的优先级 (sdd-direct > loop > chain > flat-first > v1)。
-    path: sdd && runnable ? 'sdd-direct' : loopUsed ? 'orchestrating-loop' : chainHit ? 'chain' : usedFlatFirst ? 'flat-first' : 'v1',
+    path: sdd && runnable ? 'sdd-direct' : 'orchestrating-loop',
     ...(specPath ? { specPath } : {}),
     sources,
     repoContext,

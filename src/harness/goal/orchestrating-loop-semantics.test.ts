@@ -65,7 +65,6 @@ describe('循环路径 · 判据陈旧闸 (回灌 = 重规划过)', () => {
     const calls: string[] = [];
     const r = await runGoal('修 add()', {
       cwd,
-      orchestratingLoop: true,
       dag: {
         conductorModel: 'c:m', leafModel: 'l:m', verifier: failingVerifier,
         commandRunner: (async (req: { command: string }) => { calls.push(req.command); return { exitCode: 1, stdout: '', stderr: '', timedOut: false }; }) as never,
@@ -83,7 +82,6 @@ describe('循环路径 · 判据陈旧闸 (回灌 = 重规划过)', () => {
     const calls: string[] = [];
     const r = await runGoal('修 add()', {
       cwd,
-      orchestratingLoop: true,
       dag: {
         conductorModel: 'c:m', leafModel: 'l:m', verifier: failingVerifier,
         commandRunner: (async (req: { command: string }) => { calls.push(req.command); return { exitCode: 0, stdout: '', stderr: '', timedOut: false }; }) as never,
@@ -102,7 +100,6 @@ describe('循环路径 · 最佳绿底 (INV-1)', () => {
     const artifact = join(cwd, 'delivered.txt');
     const r = await runGoal('做一件事', {
       cwd,
-      orchestratingLoop: true,
       dag: { conductorModel: 'c:m', leafModel: 'l:m', verifier: failingVerifier } as ExecutorDagConfig,
       _classify: classify(EXEC_ACCEPT),
       _runDag: fakeEngine([
@@ -122,13 +119,13 @@ describe('循环路径 · 最佳绿底 (INV-1)', () => {
 describe('循环路径 · 板事件 verified', () => {
   test('executable + accept 绿 ⇒ 板含 verified pass; 探索型 ⇒ 不发 verified', async () => {
     const cwd1 = mkdtempSync(join(tmpdir(), 'omd-loop-board-exec-'));
-    await runGoal('修 add()', { cwd: cwd1, orchestratingLoop: true, dag: { conductorModel: 'c:m', leafModel: 'l:m', sessionId: 'loop-b1' } as ExecutorDagConfig, _classify: classify(EXEC_ACCEPT), _runDag: fakeEngine([{ acceptStatus: 'done' }]) });
+    await runGoal('修 add()', { cwd: cwd1, dag: { conductorModel: 'c:m', leafModel: 'l:m', sessionId: 'loop-b1' } as ExecutorDagConfig, _classify: classify(EXEC_ACCEPT), _runDag: fakeEngine([{ acceptStatus: 'done' }]) });
     const e1 = readBoard(cwd1);
     expect(e1.some((e) => e.runId === 'loop-b1' && e.event === 'verified' && (e as { verdict?: string }).verdict === 'pass')).toBe(true);
     expect(e1.some((e) => e.runId === 'loop-b1' && e.event === 'terminal')).toBe(true);
 
     const cwd2 = mkdtempSync(join(tmpdir(), 'omd-loop-board-explore-'));
-    await runGoal('研究一下', { cwd: cwd2, orchestratingLoop: true, dag: { conductorModel: 'c:m', leafModel: 'l:m', sessionId: 'loop-b2' } as ExecutorDagConfig, _classify: classify(EXPLORE_ACCEPT), _runDag: fakeEngine([{}]) });
+    await runGoal('研究一下', { cwd: cwd2, dag: { conductorModel: 'c:m', leafModel: 'l:m', sessionId: 'loop-b2' } as ExecutorDagConfig, _classify: classify(EXPLORE_ACCEPT), _runDag: fakeEngine([{}]) });
     const e2 = readBoard(cwd2);
     expect(e2.some((e) => e.runId === 'loop-b2' && e.event === 'verified')).toBe(false);
     expect(e2.some((e) => e.runId === 'loop-b2' && e.event === 'terminal')).toBe(true);
@@ -141,7 +138,6 @@ describe('循环路径 · rubric 终态 (INV-5)', () => {
     const seen: ConductorPlan[] = [];
     const r = await runGoal('写一份报告', {
       cwd,
-      orchestratingLoop: true,
       dag: { conductorModel: 'c:m', leafModel: 'l:m' } as ExecutorDagConfig,
       _classify: async () => ({ tier: 'complex', acceptance: { kind: 'rubric', checklist: freezeRubric([{ id: 'r1', requirement: '点名数据来源' }]) }, route: { kind: 'none' } }),
       _runDag: fakeEngine([{}], seen),
@@ -195,7 +191,6 @@ describe('D-14 基建守卫 (2026-09-03, code80-p3 首批停批根因)', () => {
     const seen: ConductorPlan[] = [];
     const r = await runGoal('修 add()', {
       cwd,
-      orchestratingLoop: true,
       dag: { conductorModel: 'c:m', leafModel: 'l:m', verifier: failingVerifier } as ExecutorDagConfig,
       _classify: classify(EXEC_ACCEPT),
       _runDag: fakeEngine([{ acceptStatus: 'done', conductorFailureKind: 'infra-error' }, { acceptStatus: 'done' }], seen),
@@ -213,7 +208,6 @@ describe('D-14 基建守卫 (2026-09-03, code80-p3 首批停批根因)', () => {
     const seen: ConductorPlan[] = [];
     await runGoal('修 add()', {
       cwd,
-      orchestratingLoop: true,
       dag: { conductorModel: 'c:m', leafModel: 'l:m', verifier: failingVerifier } as ExecutorDagConfig,
       _classify: classify(EXEC_ACCEPT),
       _runDag: fakeEngine([{ acceptStatus: 'done', conductorFailureKind: 'empty-artifact' }, { acceptStatus: 'done' }], seen),
@@ -230,7 +224,6 @@ describe('rubric 判官证据面含盘上产物 (2026-09-03)', () => {
     const prompts: string[] = [];
     await runGoal('写一份分析', {
       cwd,
-      orchestratingLoop: true,
       dag: {
         conductorModel: 'c:m', leafModel: 'l:m',
         generate: (async (req: { messages: { content: string }[]; traceName?: string }) => { if (req.traceName === 'judge:rubric') prompts.push(String(req.messages[0]!.content)); return { text: '{}', usage: { in: 0, out: 0 } }; }) as never,

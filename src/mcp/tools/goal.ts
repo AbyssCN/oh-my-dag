@@ -53,8 +53,6 @@ export interface GoalToolDeps {
       maxRounds?: number;
       researchRounds?: number;
       tier?: GoalTier;
-      /** D4 切片 3: 阶段链路由 + 编译 opt-in 开关 (R9 solve 曝面)。省略 / 未传 = 走 env OMD_CHAIN。 */
-      chain?: boolean;
       onClassified?: (classified: GoalClassification) => void;
       /** #209 spec 存盘记账钩子: 契约段收尾恰好一次 (worktree 还在的时候), 见 RunGoalConfig.onContract。 */
       onContract?: (specWrite: SpecWrite) => void;
@@ -720,11 +718,6 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
             '契约段自动展开撤销后, 唯一的读点 (旧 auto-generate 分支) 随之删除; 留待 S6b/S7 的' +
             '循环内环接回。',
         ),
-      // D4.1 切片 1: 阶段链路由 + 编译 opt-in 开关 (R9 solve 曝面)。owner 拍板 R9,
-      // **本片曝 MCP 入参面** —— capability-matrix 矩阵行同步 18→19 (scripts/
-      // omd-capability-matrix.ts §5 + capability-matrix.test.ts 结构绊线, 双层同改)。
-      // 行为优先级 = `chain` 入参 ?? env OMD_CHAIN (chainEnabled 读, run-goal.ts:936 同款);
-      // 未给且 env 关 = 行为逐字节照旧 (INV-2 零成本)。
       resume: z
         .string()
         .optional()
@@ -777,17 +770,6 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
             'this parameter does. Same repo as the server = explicit anchor confirmation (skips the foreign-path ' +
             'precheck). A different repo requires detached:true — state/logs/continuity land in the target repo via goal-worker.',
         ),
-      // D4.1 切片 1: 阶段链路由 + 编译 opt-in 开关 (R9 solve 曝面)。
-      // 优先级 = 本入参 ?? env OMD_CHAIN (run-goal.ts `chainEnabled` 读)。false / 未传 / env 关
-      // = 走老 flatFirst / v1 conductor 拓扑, 行为逐字节照旧 (INV-2 caller 关断零成本)。
-      chain: z
-        .boolean()
-        .optional()
-        .describe(
-          'D4 阶段链路由开关 (P3 S7, 2026-09-02 起**默认开**; false / OMD_CHAIN=0 关)。路由决策来自 classify 那一次' +
-            '结构化调用的 route 槽 (不另发第二次调用)。位次 = sddPath > 编排循环 (默认) > chain > flat-first > v1: ' +
-            '编排循环开着时它是回退档, 只在 OMD_ORCHESTRATING_LOOP=0 的对照臂上真的路由 (R-1 「D4 路由命中率」只在那里量)。',
-        ),
     },
     handler: async (args) => {
       const raw = args as {
@@ -805,7 +787,6 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         force?: boolean;
         slug?: string;
         cwd?: string;
-        chain?: boolean;
       };
       // ── 续跑恢复入参 (2026-08-23, owner 现场报) ────────────────────────────────
       // `resume` 只带 runId, 其余入参由**本次调用**给 —— 漏传一个就按缺省跑, 而缺省未必是
@@ -831,7 +812,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           '[omd/goal] 续跑没找到点火档案且本次也没给这几位 → 按缺省跑 (本模块之前的老 run 会这样)',
         );
       }
-      const { goal, tier, maxRounds, researchRounds, resume, detached, budgetTokens, budgetMinutes, branchStrategy, resultOut, sddPath, force, slug, cwd, chain } =
+      const { goal, tier, maxRounds, researchRounds, resume, detached, budgetTokens, budgetMinutes, branchStrategy, resultOut, sddPath, force, slug, cwd } =
         resolvedArgs as typeof raw;
 
       if (!goal?.trim()) {
@@ -943,9 +924,6 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         // 同一个 dag_goal handler (进程内路径, --cwd 是主仓 → 同一张图), 挂票与散雾出口在那边一次性
         // 接上; 母进程抢先开票会开出两张 (幂等锚 suggestedBy=runId 能救回来, 但那是靠运气不是靠设计)。
         // 留账已清 (cb4a129 → 2026-08-11): slug 随 spawn 参数直通 worker, 隔离后台 run 与前台同等挂票。
-        // D4.1 切片 1: chain 已曝 MCP 入参面 (R9 拍板); 入参 ?? env OMD_CHAIN, 不转发
-        //   --chain (worker 与母进程同源 env OMD_CHAIN → 装配层透传 env 后两边语义一致,
-        //   转发会成"母进程 override, worker 用 env"两条路并存, 漂)。
         if (force) {
           // 与 slug 同款纪律 (不预留死参数): worker 不认 `--force`, 转发了就是死参数 —— 不转发, 但要念出来,
           // 否则 owner 以为越闸已生效, 而 worker 侧会在写集相交时硬闸拒绝。
@@ -1285,10 +1263,6 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           ...(researchRounds ? { researchRounds } : {}),
           ...(tier ? { tier } : {}),
           ...(sddPath ? { sddPath } : {}),
-          // D4.1 切片 1: chain 入参 ?? env OMD_CHAIN (run-goal.ts `chainEnabled` 读, 同入参面优先级)。
-          // undefined 入参 + env 关 ⇒ chainEnabled 返 false ⇒ 不挂 routeChain, 走老 flatFirst / v1
-          // conductor 拓扑, 行为逐字节照旧 (INV-2 caller 关断零成本, GWT-2 测面)。
-          ...(chain !== undefined ? { chain } : {}),
           // ── 盘点表 #3: D-2 写集对账的生产注入面 ─────────────────────────────────
           // 判据全在 `sddWriteSetFace` 的注里 (为什么只在有 SDD 时注、为什么必须显式给 declared)。
           // 注入这一个字段同时点亮三个读数: 归属阶梯 (谁写的) · writeScope (该不该写) ·
