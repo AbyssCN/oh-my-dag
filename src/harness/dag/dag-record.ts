@@ -25,6 +25,7 @@ import type { AcceptanceProbe } from '../goal/acceptance-gate';
 import { isSpecWrite, type SpecWrite } from '../goal/spec-write';
 import type { RollbackAnchor } from '../writeset/rollback-anchor';
 import type { BlameRetryLedger } from './types';
+import type { LoopLedger } from '../goal/loop-ledger';
 
 export interface DagRunNode {
   id: string;
@@ -154,8 +155,8 @@ export interface DagRunNode {
    * 来源 (C-1, 写入函数见 `record()` 的构造处):
    *   · `tokensIn` / `tokensOut`: `LeafResult.usage.in/out` (ModelUsage 必填, 几乎总有)。
    *   · `cacheHitTokens`: `LeafResult.usage.cacheHit` (ModelUsage 可选, provider 不报则 NULL)。
-   *   · `durationMs` / `turns`: LeafResult 上**当前没接** —— 写入函数一律写 NULL, 等源头接上
-   *     再说 (不留 0 当占位)。
+   *   · `durationMs` / `turns`: 引擎 settle 时写 (engine.ts C-1 段, `nodeStartedAt` 墙钟 / conductor rounds);
+   *     拿不到 (早退分支 / 非 conductor) 写 NULL, 不留 0 当占位。(2026-09-03 核: 此前注释说「源头没接」已过时。)
    */
   tokensIn?: number | null;
   tokensOut?: number | null;
@@ -475,6 +476,8 @@ export interface DagRunRecord {
    * 不是"命令给出了红判词"。零新列: 复用这个既有的 JSON 列, 不新开表结构。
    */
   criteria?: { judge: boolean; oracle: boolean; oracleInconclusive?: boolean };
+  /** R-1 (2026-09-03): 编排循环父行的读数 (见 goal/loop-ledger.ts)。缺席 = NULL = 没走循环 / 老记录 / 子 run 行。 */
+  loop?: LoopLedger;
   /**
    * **这次 goal 的验收探针结论**(entry:'solve' 专列, 历史行为 'dag_goal';词表在 `goal/acceptance.ts` 的
    * `AcceptanceProbe`, 这里不重写)。存的是它的**逐字 JSON** —— 五条分支怎么判出来的、
@@ -542,6 +545,11 @@ export interface DagRecorder {
    * 这张表里是"没记", 会被读数板念成缺数。回填补前一行, `record` 的 meta 管后一行, 两行同值。
    */
   updateSpecWrite(runId: string, specWrite: SpecWrite): void;
+  /**
+   * R-1 (2026-09-03): 回填编排循环的读数列到该 runId 的**父行** (`planName` 点名, 一般是 `goal-orchestrating-loop`)。
+   * 子 run 行同 runId 但 plan_name 不同, 不被碰 —— 读侧按 plan_name 前缀分父子。
+   */
+  updateLoop(runId: string, planName: string, loop: LoopLedger): void;
   close(): void;
 }
 
@@ -568,6 +576,7 @@ interface Row {
   reused: number | null;
   blame_retry: string | null;
   criteria: string | null;
+  loop: string | null;
   acceptance_probe: string | null;
   spec_write: string | null;
   // C-1 节点级五位列 (2026-08-19): nullable INTEGER, 缺席 = 来源链没接 / 老行 (NULL ≠ 0, INV-1)。
@@ -635,6 +644,18 @@ function parseRequires(raw: unknown): 'all' | 'any' | number | undefined {
   return undefined;
 }
 
+function loopOf(raw: string | null): LoopLedger | null {
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw) as LoopLedger;
+    return v && typeof v === 'object' && v.path === 'orchestrating-loop' ? v : null;
+  } catch (err) {
+    // 坏 JSON = 没记 (读侧不编一个形状); 写侧永远写 JSON.stringify 的产物, 这里坏只可能是手改 —— 留一行证据 (仓规静默坑 ②)。
+    console.warn(`[dag-record] loop 列坏 JSON → 按 NULL 读: ${String(err).slice(0, 120)}`);
+    return null;
+  }
+}
+
 function rowToRecord(row: Row): DagRunRecord {
   // 探针列按**五条终局的确切形状**校验后读: 坏 JSON / 词表外 kind / 形状不对 / JSON null → undefined
   // (= 未记录) —— 一条写坏的记录不许让整张读数板崩, 也不许读出一个编造的分支。
@@ -674,6 +695,8 @@ function rowToRecord(row: Row): DagRunRecord {
     // 两格语义不同, 与 `reused` 那条同款纪律 —— 见 DagRunRecord.blameRetry 的注。
     ...(row.blame_retry ? { blameRetry: JSON.parse(row.blame_retry) } : {}),
     ...(row.criteria ? { criteria: JSON.parse(row.criteria) } : {}),
+    // R-1: NULL = 没走循环 / 老记录 / 子 run 行 (不适用); 坏 JSON 按 NULL 读, 不编。
+    ...(loopOf(row.loop) ? { loop: loopOf(row.loop)! } : {}),
     // 取值矩阵见 DagRunRecord.acceptanceProbe 的注: NULL = 没记 (非 goal / 探针没跑 / 老行); 坏 JSON 已按 NULL 读。
     ...(probe ? { acceptanceProbe: probe } : {}),
     // 同上 (#209): NULL = 没记 / 非 solve 入口不适用。词表外形状按 NULL 读, 不编一个 kind。
@@ -831,6 +854,8 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
   if (!cols.includes('shape_id')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN shape_id TEXT`);
   if (!cols.includes('duration_ms')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN duration_ms INTEGER`);
   if (!cols.includes('turns')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN turns INTEGER`);
+  // R-1 (2026-09-03): 编排循环父行的读数列 (JSON, 见 goal/loop-ledger.ts)。老行 / 非循环 run / 子 run 行 = NULL (没记 / 不适用)。
+  if (!cols.includes('loop')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN loop TEXT`);
   db.run(`CREATE INDEX IF NOT EXISTS omd_dag_runs_run_id ON omd_dag_runs (run_id)`);
   const ins = db.query(
     `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, entry, levels, nodes, usage, observations, claim_check, artifact_move, write_race, rollback, outcome, verification, reused, blame_retry, criteria, acceptance_probe, spec_write, shape_id, tokens_in, tokens_out, cache_hit_tokens, duration_ms, turns)
@@ -840,6 +865,8 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
   const recent = db.query(`SELECT * FROM omd_dag_runs ORDER BY created_at DESC LIMIT ?`);
   const byRun = db.query(`SELECT * FROM omd_dag_runs WHERE run_id = ? ORDER BY created_at ASC`);
   const upd = db.query(`UPDATE omd_dag_runs SET criteria = ? WHERE run_id = ?`);
+  // R-1: 只回填**父行** (plan_name 点名), 派发出的子 run 行 (plan_name 以 lead- 开头) 这一列保持 NULL —— 它们是分母来源, 不是持有者。
+  const updLoop = db.query(`UPDATE omd_dag_runs SET loop = ? WHERE run_id = ? AND plan_name = ?`);
   const updSpec = db.query(`UPDATE omd_dag_runs SET spec_write = ? WHERE run_id = ?`);
 
   return {
@@ -1008,6 +1035,9 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
     },
     updateSpecWrite(runId, specWrite) {
       updSpec.run(JSON.stringify(specWrite), runId);
+    },
+    updateLoop(runId, planName, loop) {
+      updLoop.run(JSON.stringify(loop), runId, planName);
     },
     get(id) {
       const row = byId.get(id) as Row | null;

@@ -31,6 +31,7 @@ import type { CheckpointManager } from '../../harness/continuity/checkpoint-mana
 import type { RunRegistry } from '../run-registry';
 import type { HudRunRecordLike } from '../../hud/mirror';
 import { recordDagRun, type DagRecorder } from '../../harness/dag/dag-record';
+import { ORCHESTRATING_LOOP_PLAN_NAME } from '../../harness/goal/orchestrating-loop';
 import type { AcceptanceProbe } from '../../harness/goal/acceptance-gate';
 import type { SpecWrite } from '../../harness/goal/spec-write';
 import { isDeliveredOutcome, RUN_OUTCOME_INFO } from '../../harness/run-outcome';
@@ -1258,6 +1259,8 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           // N9 判据轴: 两条判据回填到这个 runId 的全部记录。**在这里而不是随 record 一起写** ——
           // 冻结判据的结论要整趟收尾才有, 而 record 是每张图跑完就落的 (执行段存盘时验收还没判)。
           if (r.criteria) deps.recorder?.updateCriteria(runId, r.criteria);
+          // R-1 (2026-09-03): 循环路径的读数回填父行 (plan_name 点名, 子 run 行不碰)。
+          if (r.loop) deps.recorder?.updateLoop(runId, ORCHESTRATING_LOOP_PLAN_NAME, r.loop);
           // #165② 收编闸: 隔离档 ∧ 机器判据绿 (success / delivered-with-red) → worktree 内自动
           // commit (留 run 锚)。判据红不 commit (shouldAutoCommit 单点判, 反向自检在 run-worktree
           // 测试)。detached 同 handler 同路。合回主树仍由 owner 扣扳机 —— 收编 ≠ 合入。

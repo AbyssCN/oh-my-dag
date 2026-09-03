@@ -70,7 +70,7 @@ export const READONLY_SHELL_BLOCKED_HEAD = '[BLOCKED · lead 只读 bash]';
  * 把一只 bash 工具包成只读: 拒的走 tool result (带原因 + 正确出口), 放行的原样透传。
  * 不改 schema, 不改 execute 的返回形状 —— 与交互 bash 的 BASH_SCHEMA 零改动 (契约 INV-13)。
  */
-export function wrapReadOnlyShell(tool: AnyOmdTool): AnyOmdTool {
+export function wrapReadOnlyShell(tool: AnyOmdTool, onBlocked?: () => void): AnyOmdTool {
   return {
     ...tool,
     description: `${tool.description} READ-ONLY for the lead: commands that write files or mutate the repo are rejected; dispatch work() to change files.`,
@@ -78,6 +78,7 @@ export function wrapReadOnlyShell(tool: AnyOmdTool): AnyOmdTool {
       const command = params && typeof params === 'object' ? String((params as { command?: unknown }).command ?? '') : '';
       const reason = readOnlyShellBlockReason(command);
       if (reason) {
+        onBlocked?.();
         return {
           content: [{ type: 'text', text: `${READONLY_SHELL_BLOCKED_HEAD} ${reason} —— lead 不写文件 (D-20)。要改文件就派 work(); 要看结果用只读命令。` }],
           details: { blocked: reason },

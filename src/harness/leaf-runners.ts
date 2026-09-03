@@ -150,6 +150,8 @@ export interface LeafFace {
    * 见 `lead/readonly-shell.ts`。缺省 false = bash 原样。
    */
   readOnlyShell?: boolean;
+  /** R-1: 只读闸每拒一次调一次 (计数进 loop 账本)。缺席 = 不计。 */
+  onReadOnlyBlocked?: () => void;
 }
 
 /**

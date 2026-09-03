@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagConfig, ExecutorDagResult } from '../dag/types';
-import { classifyPrompt, normalizeClassification, type GoalClassification } from './classify-acceptance';
+import { classifyGoal, classifyPrompt, normalizeClassification, type GoalClassification } from './classify-acceptance';
 import { chainEnabled, runGoal, type RunGoalConfig } from './run-goal';
 import type { StageChain } from './stage-chain';
 
@@ -123,5 +123,17 @@ describe('classify route 槽 — 同一发结构化调用带出, parseRouteRaw �
     // 证伪: 去掉 parseRouteRaw → 下面两条原样透传, 红。
     expect(normalizeClassification({ ...base, route: { kind: 'bogus' } }).route).toEqual({ kind: 'none' });
     expect(normalizeClassification({ ...base, route: { kind: 'chain', chain: { stages: [] } } }).route).toEqual({ kind: 'none' });
+  });
+});
+
+describe('R-1: classifyGoal 记动手前 LLM 调用数', () => {
+  test('一发即成 ⇒ llmCalls 1; 缺 generate ⇒ null', async () => {
+    let n = 0;
+    const generate = (async () => { n++; return { text: '{"tier":"simple","acceptance_kind":"exploratory","learning_goal":"x","affordable_loss":"y"}', usage: { in: 0, out: 0 } }; }) as never;
+    const c = await classifyGoal('研究一下', { generate, model: 'c:m' });
+    expect(c.llmCalls).toBe(1);
+    expect(n).toBe(1);
+    const none = await classifyGoal('研究一下', {});
+    expect(none.llmCalls).toBeNull();
   });
 });

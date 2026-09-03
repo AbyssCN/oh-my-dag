@@ -2030,7 +2030,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     const faceTools = face
       ? [
           // P3 D-20 (2026-09-03): face.readOnlyShell → 名单里的 bash 包成只读闸 (lead/readonly-shell.ts), 其它手原样。
-          ...availableTools.filter((t) => face.toolNames.includes(t.name)).map((t) => (face.readOnlyShell && t.name === 'bash' ? wrapReadOnlyShell(t) : t)),
+          ...availableTools.filter((t) => face.toolNames.includes(t.name)).map((t) => (face.readOnlyShell && t.name === 'bash' ? wrapReadOnlyShell(t, face.onReadOnlyBlocked) : t)),
           ...(face.customTools ?? []),
         ]
       : null;

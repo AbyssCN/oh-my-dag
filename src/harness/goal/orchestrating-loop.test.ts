@@ -24,6 +24,7 @@ import { parsePlan, type ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagConfig, ExecutorDagResult } from '../dag/types';
 import { LEAD_TOOL_NAMES } from '../lead/tools/index';
 import { renderManual } from '../lead/render-manual';
+import { briefHasRepro, createLeadCardLedger } from './loop-ledger';
 import { LEAD_PROMPT_RESIDENT_MAX } from '../lead/lead-prompt';
 import type { LeadCtx } from '../lead/types';
 import type { GoalClassification } from './classify-acceptance';
@@ -401,5 +402,69 @@ describe('D-14 — 终审恰一次 + 单次回灌不复审 (INV-7)', () => {
     expect(vcalls.n).toBe(0);
     expect(r.outcome).toBe('not-converged');
     expect(r.criteria?.oracle).toBe(false);
+  });
+});
+
+describe('R-1 账本: 卡调用计数 / 派发台账 / 常驻字符数 / briefHasRepro', () => {
+  test('★ zod 拒 + help + ok 各计一次; dispatches 带 briefHasRepro; residentPromptChars 由 buildLeadFace 写', async () => {
+    const ledger = createLeadCardLedger();
+    const face = buildLeadFace(FACTS, { ctx: CTX, runChild: async (p) => fakeExec(p), ledger });
+    expect(ledger.residentPromptChars).toBe(face.systemPrompt.length);
+    const work = face.customTools!.find((t) => t.name === 'work')!;
+    await work.execute('t', { goal: 'g' }); // zod 拒 (brief 缺)
+    await work.execute('t', { help: true });
+    await work.execute('t', { goal: 'fix add()', brief: 'repro: pytest -q tests/x.py → 1 failed, exit 1. scope src/a.ts; do not touch b.' });
+    await work.execute('t', { goal: 'polish docs', brief: 'please tidy the README wording and keep the headings as they are, nothing else.' });
+    // 证伪: adaptCard 不计数 → calls 0, 红。
+    expect(ledger.calls).toBe(4);
+    expect(ledger.ok).toBe(2);
+    expect(ledger.rejectedSchema).toBe(1);
+    expect(ledger.help).toBe(1);
+    expect(ledger.byCard).toEqual({ work: 2 });
+    expect(ledger.dispatches.map((d) => d.briefHasRepro)).toEqual([true, false]);
+    expect(ledger.dispatches[0]!.failed).toBe(0);
+    const explore = face.customTools!.find((t) => t.name === 'explore')!;
+    await explore.execute('t', { questions: ['where?'] });
+    expect(ledger.dispatches.at(-1)!.briefHasRepro).toBeNull(); // 无 brief 槽 = null, 不是 false
+    expect(ledger.readOnlyShellBlocked).toBe(0);
+    face.onReadOnlyBlocked!();
+    expect(ledger.readOnlyShellBlocked).toBe(1);
+  });
+
+  test('briefHasRepro 启发式矩阵', () => {
+    for (const b of ['exit 1', 'Traceback (most recent call last)', '3 failed, 2 passed', 'AssertionError: x', '$ bun test\n1 fail', 'Expected: 2\nReceived: 3']) expect(briefHasRepro(b), b).toBe(true);
+    for (const b of ['fix the bug in add()', 'run pytest first', '']) expect(briefHasRepro(b), b).toBe(false);
+  });
+});
+
+describe('R-1 账本: runGoal 结果上的 loop', () => {
+  test('★ 回灌绿的 run: verifier {calls 1, fail, reinjected, green}; v1 路径无 loop', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omd-loop-ledger-'));
+    const seen: Observed[] = [];
+    const vcalls = { n: 0 };
+    const r = await runGoal('修 add()', {
+      ...baseCfg(cwd, { orchestratingLoop: true, _classify: async () => ({ tier: 'complex', acceptance: EXEC_ACCEPT, route: { kind: 'none' }, llmCalls: 1 }), _runDag: fakeEngine(seen) }),
+      dag: { conductorModel: 'c:m', leafModel: 'l:m', verifier: async () => { vcalls.n++; return { pass: false, reason: 'criterion not independent', target: 'criterion' as const, usage: { in: 0, out: 0 } }; } } as ExecutorDagConfig,
+    });
+    expect(r.loop).toMatchObject({
+      path: 'orchestrating-loop',
+      route: { kind: 'none', chainHit: false },
+      preActionLlmCalls: 1,
+      verifier: { calls: 1, firstVerdict: 'fail', target: 'criterion', reinjected: true, afterReinject: 'green' },
+    });
+    expect(r.loop!.residentPromptChars).toBeGreaterThan(1000);
+    expect(r.loop!.cards.calls).toBe(0);
+    const v1 = await runGoal('修 add()', baseCfg(cwd, { orchestratingLoop: false, _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: async (plan) => ({ plan, sessionId: 's', levels: [], results: { execute: { id: 'execute', status: 'done', kind: 'conductor', output: 'ok', deps: [], usage: { in: 1, out: 1 }, rounds: 1, converged: true }, accept: { id: 'accept', status: 'done', kind: 'command', output: '', deps: ['execute'], usage: { in: 0, out: 0 } } }, usage: { conductor: { in: 0, out: 0 }, leavesIn: 0, leavesOut: 0, leavesCacheHit: 0 }, reusedNodes: [], observations: [] }) as unknown as ExecutorDagResult }));
+    expect(v1.loop).toBeUndefined();
+  });
+
+  test('没回灌 (verifier 过) ⇒ afterReinject skipped, firstVerdict pass; 注入式分类器无 llmCalls ⇒ null', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omd-loop-ledger2-'));
+    const r = await runGoal('修 add()', {
+      ...baseCfg(cwd, { orchestratingLoop: true, _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: fakeEngine([]) }),
+      dag: { conductorModel: 'c:m', leafModel: 'l:m', verifier: async () => ({ pass: true, reason: 'ok', usage: { in: 0, out: 0 } }) } as ExecutorDagConfig,
+    });
+    expect(r.loop!.verifier).toEqual({ calls: 1, firstVerdict: 'pass', target: null, reinjected: false, afterReinject: 'skipped' });
+    expect(r.loop!.preActionLlmCalls).toBeNull();
   });
 });

@@ -111,6 +111,8 @@ describe('分类调用 —— 挂了就往保守档落, 不抛 (分类是路由�
       // D-19 / INV-12: classifyGoal 对外恒带一份路由决策 (与 tier/acceptance 同一发合成) ——
       // v1 无模板可命中, 恒 'none' (chain-router.ts 头注 CHAIN_TEMPLATE_IDS 空集)。
       route: { kind: 'none' },
+      // R-1 (2026-09-03): 没走 LLM = null (不是 0, 也不是缺席 —— 缺席留给注入式分类器 / 老对象)。
+      llmCalls: null,
     });
   });
 

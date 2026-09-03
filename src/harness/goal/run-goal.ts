@@ -97,6 +97,7 @@ import {
   withReinjectedFinding,
 } from './orchestrating-loop';
 import type { LeadCtx } from '../lead/types';
+import { createLeadCardLedger, type LeadCardLedger, type LoopLedger } from './loop-ledger';
 import { allowlistForRoot } from '../command-leaf';
 import { tryResolveSeatModel } from '../../model/role-models';
 import { AGENT_DEFAULT_FANOUT } from '../fleet';
@@ -431,6 +432,8 @@ export interface RunGoalResult {
    * 契约段就结束(没跑 execute)→ 缺席, 不编 —— 那时两条判据一条都没判过。
    */
   criteria?: { judge: boolean; oracle: boolean; oracleInconclusive?: boolean };
+  /** R-1 (2026-09-03): 编排循环父 run 的读数 (回填 omd_dag_runs.loop)。缺席 = 没走循环。 */
+  loop?: LoopLedger;
   /**
    * **BLOCKED 异步出口** (D-Q): 环判定"没有外部输入推不动"而提前退出的原因。
    * 与 `converged: false` 的区别是**该怎么办**: 未收敛 = 轮数用尽/judge 说没达标, 再给几轮可能就成;
@@ -1100,6 +1103,8 @@ function withLoopConfig(
   config: RunGoalConfig,
   runnable: { command: string; expectExit?: number } | null,
   task: string,
+  /** R-1 账本; 回灌第二跑传同一个对象 (两跑合并计数)。 */
+  ledger?: LeadCardLedger,
 ): ExecutorDagConfig {
   const ctx = leadCtxOf(config, runnable);
   const { verifier: _v, maxEscalations: _m, leafFace: _f, freezeCriterion: _c, frozenNodes: _n, deterministicReplan: _d, ...childBase } = base;
@@ -1123,7 +1128,7 @@ function withLoopConfig(
       maxFanout: ctx.maxFanout,
       researchAvailable: ctx.researchAvailable,
     },
-    { ctx, runChild },
+    { ctx, runChild, ...(ledger ? { ledger } : {}) },
   );
   return {
     ...base,
@@ -1680,6 +1685,8 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
    * 一条都不适用于循环 —— 循环没有切片、没有重规划轮、终审只打一次。
    */
   let loopPlan: ConductorPlan | undefined;
+  /** R-1 账本 (循环路径才用; 两跑合并)。 */
+  const loopLedger: LeadCardLedger = createLeadCardLedger();
   let chainHit = false;
   /**
    * P3 S7 (D-17 / D-19 / INV-12): D4 chain 默认开, 位次 = sdd-direct > loop > **chain** > flat-first > v1。
@@ -2058,7 +2065,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
     //   · 卡的 `runChild` = 同一个 `_runDag` 注入口跑派发出的子图 (D-5 唯一执行入口), 子 run 剥掉
     //     verifier / maxEscalations / leafFace / freezeCriterion (子图节点各自带 self_check), 派生 runId。
     //   平铺图那几颗钉子 (frozenNodes / deterministicReplan) 不挂: 循环没有重规划轮。
-    const loopCfg = loopPlan !== undefined ? withLoopConfig(tappedCfg, loopPlan, config, runnable, task) : tappedCfg;
+    const loopCfg = loopPlan !== undefined ? withLoopConfig(tappedCfg, loopPlan, config, runnable, task, loopLedger) : tappedCfg;
     exec = await (config._runDag ?? runExecutorDagWithPlan)(execPlan, loopCfg);
   } catch (err) {
     return bail(`execute 抛错: ${String(err).slice(0, 200)}`, 'infra-error');
@@ -2093,7 +2100,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
     const replanted = withReinjectedFinding(loopPlan, finding);
     try {
       // 基座 = 第一跑的 execCfg (同一份 freezeCriterion / waiveRed / 预算), 只是 verifier 不在 (INV-7 机械保证)。
-      const { verifier: _noVerifier, ...noVerifierCfg } = withLoopConfig(loopBase, replanted, config, runnable, task);
+      const { verifier: _noVerifier, ...noVerifierCfg } = withLoopConfig(loopBase, replanted, config, runnable, task, loopLedger);
       void _noVerifier;
       exec = await (config._runDag ?? runExecutorDagWithPlan)(replanted, noVerifierCfg);
       reinjected = true;
@@ -2796,12 +2803,41 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
       `${criterionRebuild ? ` · ${CRITERION_REBUILD_LABEL}: ${criterionRebuild.admitted ? `候选判据过了全部自证门 \`${criterionRebuild.proposed}\`` : `未采纳 (${criterionRebuild.why.slice(0, 160)})`}` : ''}`,
   });
 
+  // R-1 (2026-09-03): 编排循环父 run 的读数 (设计 docs/plan/2026-09-03-r1-ledger-columns.md)。只在循环路径组装; 其它路径缺席 = NULL。
+  const loop: LoopLedger | undefined = loopUsed
+    ? {
+        path: 'orchestrating-loop',
+        route: { kind: classified.route?.kind ?? 'none', chainHit },
+        preActionLlmCalls: classified.llmCalls === undefined ? null : classified.llmCalls,
+        residentPromptChars: loopLedger.residentPromptChars,
+        verifier: {
+          calls: verifierCalls,
+          firstVerdict: lastVerdict ? (lastVerdict.pass ? 'pass' : 'fail') : null,
+          target: lastVerdict && !lastVerdict.pass ? lastVerdict.target : null,
+          reinjected,
+          afterReinject: !reinjected ? 'skipped' : runnable ? (oracleOk ? 'green' : 'red') : 'no-oracle',
+        },
+        ...(leadInfraFailure !== undefined ? { leadInfraFailure } : {}),
+        cards: {
+          calls: loopLedger.calls,
+          ok: loopLedger.ok,
+          rejectedSchema: loopLedger.rejectedSchema,
+          help: loopLedger.help,
+          rejectedCompile: loopLedger.rejectedCompile,
+          childRunError: loopLedger.childRunError,
+          byCard: loopLedger.byCard,
+          readOnlyShellBlocked: loopLedger.readOnlyShellBlocked,
+        },
+        dispatches: loopLedger.dispatches,
+      }
+    : undefined;
   const result: RunGoalResult = {
     goal,
     tier,
     acceptance,
     stages,
     outcome,
+    ...(loop ? { loop } : {}),
     // P3 S6b (D-1): 路径身份。判定顺序 = D-17 的优先级 (sdd-direct > loop > chain > flat-first > v1)。
     path: sdd && runnable ? 'sdd-direct' : loopUsed ? 'orchestrating-loop' : chainHit ? 'chain' : usedFlatFirst ? 'flat-first' : 'v1',
     ...(specPath ? { specPath } : {}),

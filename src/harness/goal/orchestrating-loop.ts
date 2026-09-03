@@ -42,6 +42,7 @@ import { buildLeadSystemPrompt, LEAD_PROMPT_RESIDENT_MAX, type LeadFacts } from 
 import { createLeadTools, formatRejection, invokeLeadTool } from '../lead/tools/index';
 import type { LeadCtx, LeadTool } from '../lead/types';
 import { logger } from '../logger';
+import { briefHasRepro, type LeadCardLedger, type LeadCardName } from './loop-ledger';
 
 /** plan 名 —— run-goal 的 `_runDag` 注入口与测试靠它认路径 (与 `goal-execute` / `goal-execute-flat` 同一约定)。 */
 export const ORCHESTRATING_LOOP_PLAN_NAME = 'goal-orchestrating-loop';
@@ -214,6 +215,8 @@ export interface LeadRuntimeDeps {
    * 入口 (D-5); 第二个参数是派发序号 (从 1 起), 调用方据它派生子 runId / 前缀。
    */
   runChild: (plan: ConductorPlan, seq: number) => Promise<ExecutorDagResult>;
+  /** R-1 账本 (可变计数器, run-goal 造一个, 回灌第二跑沿用同一个)。缺席 = 不记 (测试 / 非 run-goal 调用方)。 */
+  ledger?: LeadCardLedger;
 }
 
 function toTypebox(schema: z.ZodType): ReturnType<typeof Type.Unsafe> {
@@ -242,8 +245,17 @@ function adaptCard(card: LeadTool, deps: LeadRuntimeDeps, nextSeq: () => number,
     parameters: toTypebox(card.schema),
     executionMode: 'sequential',
     async execute(_id: string, params: unknown) {
+      const ledger = deps.ledger;
+      if (ledger) ledger.calls++;
+      const isHelp = !!params && typeof params === 'object' && (params as { help?: unknown }).help === true;
       const compiled = invokeLeadTool(card, params, deps.ctx);
       if (!compiled.ok) {
+        // R-1: 三种拒分开数 —— help 是 lead 主动要 manual, 不是"没直达"; zod 拒与编译拒的修法不同 (读 manual vs 换形状)。
+        if (ledger) {
+          if (isHelp) ledger.help++;
+          else if (card.schema.safeParse(params).success) ledger.rejectedCompile++;
+          else ledger.rejectedSchema++;
+        }
         // D-3: 拒因 + 完整 manual 只在这里出现 (tool result), 常驻 prompt 永远不含它。
         return { content: [{ type: 'text', text: formatRejection(compiled) }], details: { ok: false, card: card.name } };
       }
@@ -258,6 +270,15 @@ function adaptCard(card: LeadTool, deps: LeadRuntimeDeps, nextSeq: () => number,
         else logger.warn({ resumeOf }, '[orchestrating-loop] resume_of 指向的 id 本 run 没跑过 → 不回灌 (fresh 派发, 留证)');
       }
       logger.info({ card: card.name, seq: n, plan: plan.name, nodes: Object.keys(plan.nodes).length }, '[orchestrating-loop] lead 派发 → 嵌套 run');
+      // R-1 派发台账: brief 有没有粘运行输出 (启发式, 只对有 brief 槽的卡判)。
+      const briefRaw = params && typeof params === 'object' ? (params as { brief?: unknown }).brief : undefined;
+      const dispatch = {
+        seq: n,
+        card: card.name as LeadCardName,
+        nodes: Object.keys(plan.nodes).length,
+        briefHasRepro: typeof briefRaw === 'string' ? briefHasRepro(briefRaw) : null,
+        ...(typeof resumeOf === 'string' ? { resumeOf } : {}),
+      };
       let exec: ExecutorDagResult;
       try {
         exec = await deps.runChild(plan, n);
@@ -265,9 +286,18 @@ function adaptCard(card: LeadTool, deps: LeadRuntimeDeps, nextSeq: () => number,
         // 嵌套 run 抛错 = 引擎侧事故, 不是 lead 的错: 原文回给 lead (它据此决定换形状还是上报), 不吞。
         const msg = String(err instanceof Error ? err.message : err).slice(0, 600);
         logger.warn({ card: card.name, seq: n, err: msg }, '[orchestrating-loop] 嵌套 run 抛错 (原文回给 lead)');
+        if (ledger) {
+          ledger.childRunError++;
+          ledger.dispatches.push({ ...dispatch, error: msg.slice(0, 200) });
+        }
         return { content: [{ type: 'text', text: `[${label} · 引擎抛错, 未产出]\n${msg}` }], details: { ok: false, card: card.name, seq: n, error: msg } };
       }
       for (const r of Object.values(exec.results)) priorById.set(r.id, r);
+      if (ledger) {
+        ledger.ok++;
+        ledger.byCard[card.name as LeadCardName] = (ledger.byCard[card.name as LeadCardName] ?? 0) + 1;
+        ledger.dispatches.push({ ...dispatch, failed: Object.values(exec.results).filter((r) => r.status !== 'done').length });
+      }
       const summary = summarizeChildRun(exec, label);
       const failed = Object.values(exec.results).filter((r) => r.status !== 'done').map((r) => r.id);
       return {
@@ -288,12 +318,14 @@ export function buildLeadFace(facts: LeadFacts, deps: LeadRuntimeDeps): LeafFace
   if (systemPrompt.length > LEAD_PROMPT_RESIDENT_MAX) {
     logger.warn({ chars: systemPrompt.length, max: LEAD_PROMPT_RESIDENT_MAX }, '[orchestrating-loop] lead 常驻 prompt 超 INV-8 上限 (照跑, 留证)');
   }
+  if (deps.ledger) deps.ledger.residentPromptChars = systemPrompt.length;
   return {
     toolNames: [...LEAD_HAND_TOOLS],
     customTools: createLeadRuntimeTools(deps),
     systemPrompt,
     // D-20 机械面 (2026-09-03, smoke8-p3 repo_understanding 那题 lead 用 heredoc 写了 22KB 产物): bash 只读, 改文件只能派 work()。
     readOnlyShell: true,
+    ...(deps.ledger ? { onReadOnlyBlocked: () => { deps.ledger!.readOnlyShellBlocked++; } } : {}),
   };
 }
 

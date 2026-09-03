@@ -97,6 +97,8 @@ export interface GoalClassification {
    * 恒填 (见其函数头), 缺席只发生在读老状态或测试没给的场景, 消费侧一律 `?? {kind:'none'}`。
    */
   route?: RouteDecision;
+  /** R-1 (2026-09-03): 这次分类打了几发 LLM (含 P2b 重推 / E-T1b 追问)。null = 没走 LLM (缺 generate); 缺席 = 注入式分类器 / 老对象。 */
+  llmCalls?: number | null;
 }
 
 /**
@@ -470,8 +472,14 @@ export async function classifyGoal(
   goal: string,
   deps: Parameters<typeof classifyGoalCore>[1],
 ): Promise<GoalClassification> {
-  const result = await classifyGoalCore(goal, deps);
-  return { ...result, route: result.route ?? { kind: 'none' } };
+  // R-1 (2026-09-03): 动手前 LLM 调用数 —— 在 generate 外面数, 不改 core 的任何返回路径 (它有六条)。
+  // 缺 generate = 分类器没走 LLM → null (不是 0: 0 是"走了 LLM 且一发没打", 不存在这种事)。
+  let llmCalls = 0;
+  const counted: typeof deps = deps.generate
+    ? { ...deps, generate: async (req) => { llmCalls++; return deps.generate!(req); } }
+    : deps;
+  const result = await classifyGoalCore(goal, counted);
+  return { ...result, route: result.route ?? { kind: 'none' }, llmCalls: deps.generate ? llmCalls : null };
 }
 
 async function classifyGoalCore(

@@ -204,6 +204,8 @@ describe('D-14 基建守卫 (2026-09-03, code80-p3 首批停批根因)', () => {
     expect(seen).toHaveLength(1);
     expect(r.outcome).toBe('infra-error');
     expect(r.stages.at(-1)!.summary).toContain('529');
+    expect(r.loop!.leadInfraFailure).toContain('infra-error');
+    expect(r.loop!.verifier.afterReinject).toBe('skipped');
   });
 
   test('判别力: lead 语义类败因 (empty-artifact) 照常回灌', async () => {

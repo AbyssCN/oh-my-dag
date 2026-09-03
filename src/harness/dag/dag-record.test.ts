@@ -936,3 +936,46 @@ describe('外环重修半径 (blameRetry) 进留痕', () => {
     rec.close();
   });
 });
+
+describe('R-1 · loop 列: 只回填父行, 子 run 行与老行 NULL', () => {
+  const graph = (name: string) =>
+    ({
+      plan: { name, nodes: { a: { goal: 'x' } } },
+      levels: [['a']],
+      results: { a: { id: 'a', kind: 'agent', status: 'done', deps: [], output: '', usage: { in: 1, out: 1 } } },
+      usage: { conductor: { in: 1, out: 1 }, leavesIn: 1, leavesOut: 1, leavesCacheHit: 0 },
+    }) as unknown as ExecutorDagResult;
+  const loop = {
+    path: 'orchestrating-loop' as const,
+    route: { kind: 'none' as const, chainHit: false },
+    preActionLlmCalls: 1,
+    residentPromptChars: 7900,
+    verifier: { calls: 1, firstVerdict: 'fail' as const, target: 'criterion' as const, reinjected: true, afterReinject: 'green' as const },
+    cards: { calls: 3, ok: 2, rejectedSchema: 1, help: 0, rejectedCompile: 0, childRunError: 0, byCard: { work: 2 }, readOnlyShellBlocked: 1 },
+    dispatches: [{ seq: 1, card: 'work' as const, nodes: 1, briefHasRepro: true, failed: 0 }],
+  };
+
+  test('★ 父行 (plan_name 点名) 拿到 loop; 同 runId 的子 run 行 (lead-*) 仍缺席; 别的 runId 不串', () => {
+    const rec = createDagRecorder({ db: new Database(':memory:') });
+    const parent = rec.record(graph('goal-orchestrating-loop'), { runId: 'g1', entry: 'solve' });
+    const child = rec.record(graph('lead-work-fix-add'), { runId: 'g1', entry: 'solve' });
+    const other = rec.record(graph('goal-orchestrating-loop'), { runId: 'g2', entry: 'solve' });
+    rec.updateLoop('g1', 'goal-orchestrating-loop', loop);
+    // 证伪: updateLoop 的 WHERE 去掉 plan_name → 子行也拿到 loop, 第二条红。
+    expect(rec.get(parent)!.loop).toEqual(loop);
+    expect(rec.get(child)!.loop).toBeUndefined();
+    expect(rec.get(other)!.loop).toBeUndefined();
+    rec.close();
+  });
+
+  test('老库无 loop 列 → 建 recorder 时 ALTER 补列, 老行读成缺席; 坏 JSON 也读成缺席 (不编形状)', () => {
+    const db = new Database(':memory:');
+    const rec0 = createDagRecorder({ db });
+    const id = rec0.record(graph('goal-orchestrating-loop'), { runId: 'g3', entry: 'solve' });
+    db.run(`UPDATE omd_dag_runs SET loop = '{not json' WHERE id = ?`, [id]);
+    expect(rec0.get(id)!.loop).toBeUndefined();
+    const cols = (db.query('PRAGMA table_info(omd_dag_runs)').all() as { name: string }[]).map((c) => c.name);
+    expect(cols).toContain('loop');
+    rec0.close();
+  });
+});
