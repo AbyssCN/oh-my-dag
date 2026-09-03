@@ -1879,6 +1879,8 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
         ? { acceptance: { command: runnable.command, expect_exit: runnable.expectExit ?? 0 } }
         : {}),
       ctx: leadCtxOf(config, runnable),
+      // 编排节点坐 conductor 座 (owner 2026-09-03): 它就是 conductor, 不是 worker。
+      ...(config.dag.conductorModel ? { conductorModel: config.dag.conductorModel } : {}),
     });
     loopPlan = compiledLoop;
     logger.info(

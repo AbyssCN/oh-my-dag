@@ -76,6 +76,12 @@ export interface OrchestratingLoopInput {
   goal: string;
   acceptance?: { command: string; expect_exit: number };
   ctx: LeadCtx;
+  /**
+   * 编排节点的座位 (owner 2026-09-03): 它就是 conductor —— 编排 + 对话循环的那个角色, 该坐 conductor 座 (SOTA 档),
+   * 不跟 worker 同座。给了 → 节点 `model` 显式钉死 (TPL-3 最高优先, 引擎 per-node 路由); 缺席 → 落回 agent 叶静态座
+   * (agentLeafModel / leafModel, 即 worker 座) —— 那是 2026-09-03 之前的实况, 也是 code80-p3 两批与 dsw 首批的条件。
+   */
+  conductorModel?: string;
 }
 
 /**
@@ -89,6 +95,7 @@ export function compileOrchestratingLoop(input: OrchestratingLoopInput): Conduct
       executor: 'agent',
       goal: input.goal,
       write_set: [LEAD_READONLY_SENTINEL],
+      ...(input.conductorModel ? { model: input.conductorModel } : {}),
     },
   };
   if (input.acceptance) {

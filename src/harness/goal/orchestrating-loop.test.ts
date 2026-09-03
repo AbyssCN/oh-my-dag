@@ -91,6 +91,9 @@ describe('compileOrchestratingLoop — 形状 (D-1)', () => {
     expect(plan.name).toBe(ORCHESTRATING_LOOP_PLAN_NAME);
     expect(Object.keys(plan.nodes)).toEqual([LEAD_NODE_ID, LOOP_ACCEPT_NODE_ID]);
     expect(plan.nodes[LEAD_NODE_ID]).toMatchObject({ executor: 'agent', goal: 'G', write_set: [LEAD_READONLY_SENTINEL] });
+    expect(plan.nodes[LEAD_NODE_ID]!.model).toBeUndefined(); // 没给座 → 不钉 (落回 agent 叶静态座)
+    // owner 2026-09-03: 编排节点就是 conductor, 给了座就显式钉在节点上 (TPL-3 最高优先)。证伪: 删掉 compile 里那行 spread → 红。
+    expect(compileOrchestratingLoop({ goal: 'G', ctx: CTX, conductorModel: 'c:sota' }).nodes[LEAD_NODE_ID]!.model).toBe('c:sota');
     // 证伪: 把 accept 的 depends_on 去掉 → 这条红 (oracle 会与 lead 并行跑, 判的是改前的树)。
     expect(plan.nodes[LOOP_ACCEPT_NODE_ID]).toMatchObject({ executor: 'command', command: 'bun test src/a.test.ts', expect_exit: 0, depends_on: [LEAD_NODE_ID] });
     // 格式闸: 编译产物必须过 parsePlan (D-5: parsePlan 是格式闸, 执行面只经 executePlan(applyPlanFilters))。
@@ -270,6 +273,7 @@ describe('runGoal — 缺省走编排循环 (D-17), 显式关回 v1', () => {
     expect(plan.name).toBe(ORCHESTRATING_LOOP_PLAN_NAME);
     expect(Object.keys(plan.nodes)).toEqual([LEAD_NODE_ID, LOOP_ACCEPT_NODE_ID]);
     expect(plan.nodes[LEAD_NODE_ID]!.goal).toContain('## 判卷标准');
+    expect(plan.nodes[LEAD_NODE_ID]!.model).toBe('c:m'); // 编排节点坐 conductor 座 (baseCfg 的 conductorModel), 不是 leafModel 'l:m'
     // 证伪: 把 withLoopConfig 里 leafFace 的 id 判断去掉 → 'other' 也拿到面, 第二条红。
     expect(cfg.leafFace?.({ id: LEAD_NODE_ID, executor: 'agent' })).toBeDefined();
     expect(cfg.leafFace?.({ id: 'other', executor: 'agent' })).toBeUndefined();

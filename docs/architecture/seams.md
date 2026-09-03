@@ -15,7 +15,7 @@
 
 | 字段 | 必填 | 类型 | 一句话 | 消费方 (前3) |
 |---|---|---|---|---|
-| `conductorModel` | **是** | `string` | conductor 模型 'provider:modelId' (规划用, 我们=mimo:mimo-v2.5-pro)。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/dag-tools.ts`<br>`src/eval/oracles/conductor-modelmix.ts` (17 文件) |
+| `conductorModel` | **是** | `string` | conductor 模型 'provider:modelId' (规划用, 我们=mimo:mimo-v2.5-pro)。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/dag-tools.ts`<br>`src/eval/oracles/conductor-modelmix.ts` (18 文件) |
 | `leafModel` | **是** | `string` | inproc leaf 模型 'provider:modelId' (生成/判断单发)。 | `src/mcp/tools/dag-tools.ts`<br>`src/harness/dag/engine.ts`<br>`src/eval/oracles/conductor-modelmix.ts` (14 文件) |
 | `agentLeafModel` |  | `string` | agent leaf 模型 (带工具改文件)。 | `src/mcp/tools/pathfinder.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/execute-slice.ts` (10 文件) |
 | `judgeModel` |  | `string` | 收敛 judge 的模型坐标。 | `src/harness/plan/best-of-n.ts`<br>`src/harness/research/fanout.ts`<br>`src/harness/research/web-fanout.ts` (9 文件) |
