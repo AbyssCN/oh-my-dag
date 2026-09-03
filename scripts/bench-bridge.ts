@@ -316,6 +316,9 @@ if (import.meta.main) {
   const { minimaxApiKey } = await import('../src/model/minimax-native');
   const { resolvePiApiKey } = await import('../src/model/pi-transport');
   const passthroughKey = minimaxApiKey() ?? (await resolvePiApiKey('minimax-cn'));
+  // deepseek 透传凭证: 同引擎 providers.ts 的来源 (DEEPSEEK_API_KEY, bun 自动读 cwd 的 .env)。缺 = deepseek 路由退回 translate, 响亮打一行。
+  const deepseekKey = process.env.DEEPSEEK_API_KEY?.trim() || undefined;
+  if (!deepseekKey) process.stderr.write('[bench-bridge] ⚠ DEEPSEEK_API_KEY 缺失 → deepseek 路由退回 translate (agent 工具面将蒸发)\n');
   if (!passthroughKey) {
     process.stderr.write('[bench-bridge] ⚠ minimax 凭证缺失 → 透传道不可用, minimax 路由退回 translate (agent 工具面将蒸发)\n');
   }
@@ -333,7 +336,8 @@ if (import.meta.main) {
       }
       if (req.method === 'POST' && url.pathname === '/v1/chat/completions') {
         const body = (await req.json().catch(() => ({}))) as OpenAiChatBody & Record<string, unknown>;
-        // 工具座路由: minimax 坐标走字节级透传 (tools/tool_calls 原生往返); 其余走 translate。
+        // 工具座路由: minimax / deepseek 坐标走字节级透传 (tools/tool_calls 原生往返); 其余走 translate。
+        // deepseek (2026-09-03, smoke8-dsw 根因): 它是 OpenAI 形状端点, 走 translate 时 tools 被剥, lead 一发文字就结束 (8/8 零派发)。
         const coordForRoute = body.model ? map.get(body.model.trim()) : undefined;
         const r = coordForRoute?.startsWith('minimax-cn:') && passthroughKey
           ? await handlePassthrough(body, {
@@ -341,7 +345,13 @@ if (import.meta.main) {
               apiKey: passthroughKey,
               modelId: coordForRoute.slice('minimax-cn:'.length),
             })
-          : await handleChatCompletions(body, deps);
+          : coordForRoute?.startsWith('deepseek:') && deepseekKey
+            ? await handlePassthrough(body, {
+                url: `${(process.env.DEEPSEEK_BASE_URL?.replace(/\/$/, '') ?? 'https://api.deepseek.com')}/chat/completions`,
+                apiKey: deepseekKey,
+                modelId: coordForRoute.slice('deepseek:'.length),
+              })
+            : await handleChatCompletions(body, deps);
         // 调试观测位 (env 开): 每笔请求/响应原文写入磁盘 —— 桥是唯一能看见"容器侧模型到底
         // 说了什么"的位置 (任务容器随 trial 回收, 容器内 .omd 现场拿不回来)。
         const logDir = process.env.OMD_BRIDGE_LOG_DIR?.trim();
