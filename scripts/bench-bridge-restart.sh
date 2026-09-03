@@ -19,7 +19,8 @@ PIDFILE="$HOME/.omd/bench-bridge.pid"
 if [[ -f $PIDFILE ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
   kill "$(cat "$PIDFILE")"
 else
-  pgrep -f 'bun scripts/bench-bridge\.ts' | xargs -r kill
+  # 旧桥根本不在时 pgrep 返 1, set -o pipefail 让整条管道把脚本静默杀掉 (2026-09-03 实测: 零输出退出) —— 所以 || true。
+  pgrep -f 'bun scripts/bench-bridge\.ts' | xargs -r kill || true
 fi
 for _ in $(seq 1 50); do
   pgrep -f 'bun scripts/bench-bridge\.ts' >/dev/null || break
