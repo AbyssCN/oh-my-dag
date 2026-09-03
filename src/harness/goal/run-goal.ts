@@ -45,6 +45,7 @@ import {
   checklistDiscriminationReason,
   isPytestHarnessInconclusive,
   type ProbeItemOutcome,
+  missingPathArgs,
 } from './acceptance-gate';
 // P2b-runtime (2026-09-02): 冻结判据 harness-inconclusive 的运行尾巴要落进人读的 receipt,
 // 但必须有界 —— 复用既有的头+尾裁剪, 不新写第二份。
@@ -95,6 +96,8 @@ import {
   compileOrchestratingLoop,
   orchestratingLoopEnabled,
   withReinjectedFinding,
+  checkCriterionFreeze,
+  renderCriterionFreezeTruth,
 } from './orchestrating-loop';
 import type { LeadCtx } from '../lead/types';
 import { createLeadCardLedger, type LeadCardLedger, type LoopLedger } from './loop-ledger';
@@ -1117,18 +1120,23 @@ function withLoopConfig(
     return (config._runDag ?? runExecutorDagWithPlan)(childPlan, childCfg);
   };
   const budgetMs = base.loopBudget?.ms;
+  // 1-A (2026-09-03): 判据引用、此刻不存在的文件 → lead 第一个派发只准写它们, 之后冻结 (闸在 orchestrating-loop)。
+  // 回灌第二跑时文件已存在 → 这里算出 [], 但 ledger.criterionFreeze 里已有 hashes → 工具面从那里恢复保护 (initFreezeState)。
+  const criterionFiles = runnable ? missingPathArgs(runnable.command, config.cwd) : [];
+  const freezeFiles = criterionFiles.length ? criterionFiles : ledger?.criterionFreeze?.files ?? [];
   const face = buildLeadFace(
     {
       goal: plan.nodes[LEAD_NODE_ID]?.goal ?? task,
       writeRoot: config.cwd,
       protectedPaths: extractProtectedPaths(task),
       ...(ctx.acceptance ? { acceptance: ctx.acceptance } : {}),
+      ...(criterionFiles.length ? { criterionFiles } : {}),
       minutesLeft: budgetMs !== undefined ? Math.max(0, Math.floor(budgetMs / 60_000)) : null,
       tokensLeft: base.loopBudget?.tokens ?? null,
       maxFanout: ctx.maxFanout,
       researchAvailable: ctx.researchAvailable,
     },
-    { ctx, runChild, ...(ledger ? { ledger } : {}) },
+    { ctx, runChild, ...(ledger ? { ledger } : {}), ...(freezeFiles.length ? { criterionFreeze: { files: freezeFiles, root: config.cwd } } : {}) },
   );
   return {
     ...base,
@@ -2009,7 +2017,10 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   let verifierCalls = 0;
   const tapVerifier = (inner: VerifierFn): VerifierFn => async (req) => {
     verifierCalls++;
-    const verdict = await inner(req);
+    // 1-A: 判据文件冻结的引擎记录随卷 (D-5 按调用真值): 判卷时刻重算 hash 对照冻结值, 判卷官据此不再把
+    // 「测试文件是本 run 写的」读成 target=criterion。没冻过 → 不注入, 卷面同旧。
+    const freezeTruth = loopLedger.criterionFreeze ? renderCriterionFreezeTruth(loopLedger.criterionFreeze, config.cwd) : null;
+    const verdict = await inner(freezeTruth ? { ...req, truths: { ...(req.truths ?? {}), criterionFreeze: freezeTruth } } : req);
     try {
       const acc = req.results.accept;
       const green = acc?.status === 'done';
@@ -2093,7 +2104,17 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   if (leadInfraFailure !== undefined && lastVerdict !== undefined && !lastVerdict.pass) {
     logger.warn({ why: leadInfraFailure }, '[run-goal] D-14: lead 节点基建类败因 → 不回灌, 终态 infra-error (不是 verifier-rejected)');
   }
-  if (loopPlan !== undefined && lastVerdict !== undefined && !lastVerdict.pass && leadInfraFailure === undefined) {
+  /**
+   * 1-B (2026-09-03): 终审否决**判据** (target=criterion) 不回灌 lead —— smoke8 与主批实测 37/50 打回是这一型, 回灌后 lead 零新派发、
+   * oracle 绿即 success, finding 原地蒸发。判据量不出对错时重跑实装没有意义; 这一格的下一步是 INV-4 判据重建 (下方 rebuildTrigger
+   * 对 target=criterion 恒触发), 终态按 verifier-rejected 记 (oracle 绿在被否决的判据上不构成证据)。
+   */
+  const criterionVeto =
+    loopPlan !== undefined && lastVerdict !== undefined && !lastVerdict.pass && lastVerdict.target === 'criterion' && leadInfraFailure === undefined;
+  if (criterionVeto) {
+    logger.warn({ reason: lastVerdict!.reason.slice(0, 200) }, '[run-goal] 1-B: 终审否决判据 (target=criterion) → 不回灌 lead, 走 INV-4 判据重建');
+  }
+  if (loopPlan !== undefined && lastVerdict !== undefined && !lastVerdict.pass && leadInfraFailure === undefined && !criterionVeto) {
     const finding = lastVerdict.reason;
     logger.warn(
       { chars: finding.length, target: lastVerdict.target },
@@ -2643,7 +2664,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   // 只把终态词从「交付没达标」换成 delivered-with-red。
   // P3 S6b / D-14: 回灌过 ∧ (回灌后机械 oracle 仍红 ∨ 本 run 无机械 oracle) ⇒ 终审的否决没被证伪, 这趟不算成。
   // 回灌后 oracle 绿 ⇒ 照常 (success / delivered-with-red), 摘要里注记「finding 回灌 1 次, 未复审」。
-  const verifierRejected = loopUsed && reinjected && (runnable ? !oracleOk : true);
+  const verifierRejected = loopUsed && ((reinjected && (runnable ? !oracleOk : true)) || criterionVeto);
   // lead 死于基建 (2026-09-03): 哪怕 accept 复用了一份绿, 这趟也不算成 —— 引擎侧停 (infra-error), 不是交付达标。
   const converged = loopOk && oracleOk && !verifierRejected && leadInfraFailure === undefined;
   // judge 异议 (判据绿收敛而 judge 判没成): **只报不翻终态** —— 这一格是判据轴「judge 太紧 /
@@ -2764,7 +2785,9 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
         // 字的跑输出尾) 已经由本行下面 INV-2/INV-1/INV-4 那句 `· ${criterionRed.detail}` 统一
         // 追加一次, 两处都印会把同一段 pytest 输出在同一行里印两遍。
         : criterionInconclusiveTerminal ? TERMINAL_CRITERION_INCONCLUSIVE
-        : outcome === 'verifier-rejected' ? `终审判红, finding 回灌 lead 1 次后${runnable ? '机械判据仍红' : '无机械判据可证明修复'} (D-14; 终审不复审, 读 verifierDissent, **别加轮数**)`
+        : outcome === 'verifier-rejected' ? (criterionVeto
+            ? `终审否决判据 (target=criterion, 1-B): 不回灌 lead, 走 INV-4 判据重建 (见 ${CRITERION_REBUILD_LABEL}); 被否决的判据上 oracle 绿不算证据, 本 run 不算成`
+            : `终审判红, finding 回灌 lead 1 次后${runnable ? '机械判据仍红' : '无机械判据可证明修复'} (D-14; 终审不复审, 读 verifierDissent, **别加轮数**)`)
         : outcome === 'oracle-failed' ? '环说成了但冻结判据(环外)没过 (D-I: 以判据为准)'
         // 两条路都落 delivered-with-red, 摘要必须说清是哪一条 —— 混着念就是在编现场:
         // converged=true 那条 accept **真跑真绿**, 照抄「accept 被级联压死没跑」会让读的人
@@ -2833,6 +2856,9 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
         },
         dispatches: loopLedger.dispatches,
         ...(dispatchesBeforeReinject !== undefined ? { dispatchesBeforeReinject } : {}),
+        ...(loopLedger.criterionFreeze
+          ? { criterionFreeze: { ...loopLedger.criterionFreeze, ...(loopLedger.criterionFreeze.hashes ? { tampered: checkCriterionFreeze(loopLedger.criterionFreeze, config.cwd) } : {}) } }
+          : {}),
       }
     : undefined;
   const result: RunGoalResult = {

@@ -34,7 +34,9 @@
  */
 import { Type } from '@sinclair/typebox';
 import { z } from 'zod';
-import type { AnyOmdTool } from '../agent-tools';
+import { withProtectedPaths, type AnyOmdTool } from '../agent-tools';
+import { join } from 'node:path';
+import { hashArtifact } from '../continuity/checkpoint-manager';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagResult, LeafResult } from '../dag/types';
 import type { LeafFace } from '../leaf-runners';
@@ -42,7 +44,7 @@ import { buildLeadSystemPrompt, LEAD_PROMPT_RESIDENT_MAX, type LeadFacts } from 
 import { createLeadTools, formatRejection, invokeLeadTool } from '../lead/tools/index';
 import type { LeadCtx, LeadTool } from '../lead/types';
 import { logger } from '../logger';
-import { briefHasRepro, type LeadCardLedger, type LeadCardName } from './loop-ledger';
+import { briefHasRepro, type CriterionFreeze, type LeadCardLedger, type LeadCardName } from './loop-ledger';
 
 /** plan 名 —— run-goal 的 `_runDag` 注入口与测试靠它认路径 (与 `goal-execute` / `goal-execute-flat` 同一约定)。 */
 export const ORCHESTRATING_LOOP_PLAN_NAME = 'goal-orchestrating-loop';
@@ -217,6 +219,14 @@ export interface LeadRuntimeDeps {
   runChild: (plan: ConductorPlan, seq: number) => Promise<ExecutorDagResult>;
   /** R-1 账本 (可变计数器, run-goal 造一个, 回灌第二跑沿用同一个)。缺席 = 不记 (测试 / 非 run-goal 调用方)。 */
   ledger?: LeadCardLedger;
+  /**
+   * 1-A (2026-09-03) 判据先落盘冻结: `files` = 判据命令引用、run 开始时不存在的文件 (相对 `root`)。
+   * 非空 → 第一个派成的派发必须是一张 work() 且写集被强制为这些文件; 派发回来引擎记 hash 进 ledger.criterionFreeze,
+   * 之后每次派发的子 run 都在 withProtectedPaths(已冻住的文件) 里跑 (工具写当场拒)。缺席 / 空 = 不适用, 行为逐字节同旧。
+   */
+  criterionFreeze?: { files: readonly string[]; root: string };
+  /** 路径禁令的注入口 (测试用 spy); 缺省 = agent-tools 的 withProtectedPaths。 */
+  withProtected?: typeof withProtectedPaths;
 }
 
 function toTypebox(schema: z.ZodType): ReturnType<typeof Type.Unsafe> {
@@ -228,15 +238,53 @@ function toTypebox(schema: z.ZodType): ReturnType<typeof Type.Unsafe> {
  * 七张卡 → agent 叶工具。`executionMode: 'sequential'`: 一次派发就是一次子 run, 并发由卡内的图宽与
  * 进程级 cap 管 (S8), 不由 lead 同时按两张卡。
  */
+/** 1-A 冻结的运行期状态 (每副工具面一份; 回灌第二跑从 ledger 里已有的 hashes 恢复)。 */
+interface FreezeState {
+  files: string[];
+  root: string;
+  /** 已冻住 (≥1 个文件在派发后存在)。冻住之前每次派发都强制写集; 冻住之后每次派发都走路径禁令。 */
+  frozen: boolean;
+  protectedFiles: string[];
+}
+
+function initFreezeState(deps: LeadRuntimeDeps): FreezeState | undefined {
+  const prior = deps.ledger?.criterionFreeze;
+  const files = deps.criterionFreeze?.files.length ? [...deps.criterionFreeze.files] : prior?.files ?? [];
+  if (files.length === 0) return undefined;
+  const root = deps.criterionFreeze?.root ?? deps.ctx.writeRoot;
+  const protectedFiles = prior?.hashes ? Object.entries(prior.hashes).filter(([, h]) => h !== null).map(([f]) => f) : [];
+  if (deps.ledger && !deps.ledger.criterionFreeze) deps.ledger.criterionFreeze = { files: [...files] };
+  return { files, root, frozen: protectedFiles.length > 0, protectedFiles };
+}
+
+/** 收尾 / 判卷时刻重算: 冻结时存在的文件里, 现在 hash 不同或缺席的 (有人绕过闸改了它)。没冻过 → []。 */
+export function checkCriterionFreeze(freeze: CriterionFreeze, root: string): string[] {
+  if (!freeze.hashes) return [];
+  return Object.entries(freeze.hashes)
+    .filter(([f, h]) => h !== null && hashArtifact(join(root, f)) !== h)
+    .map(([f]) => f);
+}
+
+/** 给 verifier 的判卷真值一行 (D-5 注入面): 没冻过 → null (不编)。hash 是**判卷时刻**重算后对照冻结值的结论。 */
+export function renderCriterionFreezeTruth(freeze: CriterionFreeze, root: string): string | null {
+  if (freeze.frozenAtDispatch === undefined || !freeze.hashes) return null;
+  const tampered = checkCriterionFreeze(freeze, root);
+  const parts = Object.entries(freeze.hashes).map(([f, h]) =>
+    h === null ? `${f} (派发后仍不存在)` : `${f} (${h}, 判卷时${tampered.includes(f) ? '已变' : '未变'})`,
+  );
+  return `派发 #${freeze.frozenAtDispatch} 单独产出并冻结: ${parts.join(' · ')}`;
+}
+
 export function createLeadRuntimeTools(deps: LeadRuntimeDeps): AnyOmdTool[] {
   const cards = createLeadTools(deps.ctx);
   let seq = 0;
   /** 2-C: 本 run 里每个子节点最后一次的结果 (键 = 带前缀的节点 id), resume_of 回灌的来源。 */
   const priorById = new Map<string, LeafResult>();
-  return cards.map((card) => adaptCard(card, deps, () => ++seq, priorById));
+  const freeze = initFreezeState(deps);
+  return cards.map((card) => adaptCard(card, deps, () => ++seq, priorById, freeze));
 }
 
-function adaptCard(card: LeadTool, deps: LeadRuntimeDeps, nextSeq: () => number, priorById: Map<string, LeafResult>): AnyOmdTool {
+function adaptCard(card: LeadTool, deps: LeadRuntimeDeps, nextSeq: () => number, priorById: Map<string, LeafResult>, freeze?: FreezeState): AnyOmdTool {
   return {
     name: card.name,
     label: card.name,
@@ -259,9 +307,23 @@ function adaptCard(card: LeadTool, deps: LeadRuntimeDeps, nextSeq: () => number,
         // D-3: 拒因 + 完整 manual 只在这里出现 (tool result), 常驻 prompt 永远不含它。
         return { content: [{ type: 'text', text: formatRejection(compiled) }], details: { ok: false, card: card.name } };
       }
+      // 1-A: 冻住之前, 第一个派成的派发必须是一张 work() 单独产出判据文件 —— 写集被强制为这些文件 (闸, 不是提示)。
+      let compiledPlan = compiled.plan;
+      if (freeze && !freeze.frozen) {
+        const ids = Object.keys(compiledPlan.nodes);
+        if (card.name !== 'work' || ids.length !== 1) {
+          if (ledger) ledger.rejectedCompile++;
+          const text =
+            `[1-A 判据先落盘] 判据引用的文件还不存在: ${freeze.files.join(', ')}。第一个派发必须是**一张 work()** 单独把它们写出来 ` +
+            `(写集 = 这些文件), 引擎随后冻结它们; 你派的是 ${card.name} × ${ids.length} 节点, 已拒。先派 work() 写判据文件, 再派实装。`;
+          return { content: [{ type: 'text', text }], details: { ok: false, card: card.name, criterionFreeze: 'first-dispatch-rejected' } };
+        }
+        const only = ids[0]!;
+        compiledPlan = { ...compiledPlan, nodes: { [only]: { ...compiledPlan.nodes[only]!, write_set: [...freeze.files] } } } as ConductorPlan;
+      }
       const n = nextSeq();
       const label = `dispatch d${n} (${card.name})`;
-      let plan = prefixPlanIds(compiled.plan, `d${n}`);
+      let plan = prefixPlanIds(compiledPlan, `d${n}`);
       // 2-C: work(resume_of) —— 同 id 重派, 上一次的结果由引擎机械回灌进 goal (不靠 lead 复制)。
       const resumeOf = card.name === 'work' && params && typeof params === 'object' ? (params as { resume_of?: unknown }).resume_of : undefined;
       if (typeof resumeOf === 'string') {
@@ -280,8 +342,11 @@ function adaptCard(card: LeadTool, deps: LeadRuntimeDeps, nextSeq: () => number,
         ...(typeof resumeOf === 'string' ? { resumeOf } : {}),
       };
       let exec: ExecutorDagResult;
+      // 1-A: 冻住之后, 子 run 在路径禁令里跑 —— 工具写到冻结文件当场拒 (agent-tools:664)。没冻 / 不适用 → 直接跑, 逐字节同旧。
+      const guarded = (): Promise<ExecutorDagResult> =>
+        freeze && freeze.frozen ? (deps.withProtected ?? withProtectedPaths)(freeze.protectedFiles, () => deps.runChild(plan, n)) : deps.runChild(plan, n);
       try {
-        exec = await deps.runChild(plan, n);
+        exec = await guarded();
       } catch (err) {
         // 嵌套 run 抛错 = 引擎侧事故, 不是 lead 的错: 原文回给 lead (它据此决定换形状还是上报), 不吞。
         const msg = String(err instanceof Error ? err.message : err).slice(0, 600);
@@ -293,6 +358,19 @@ function adaptCard(card: LeadTool, deps: LeadRuntimeDeps, nextSeq: () => number,
         return { content: [{ type: 'text', text: `[${label} · 引擎抛错, 未产出]\n${msg}` }], details: { ok: false, card: card.name, seq: n, error: msg } };
       }
       for (const r of Object.values(exec.results)) priorById.set(r.id, r);
+      // 1-A: 第一个派成的派发回来 → 记 hash 冻结 (存在的那些); 一个都没写出来 = 没冻住, 下一次派发继续强制。
+      let freezeNote = '';
+      if (freeze && !freeze.frozen) {
+        const hashes: Record<string, string | null> = {};
+        for (const f of freeze.files) hashes[f] = hashArtifact(join(freeze.root, f));
+        freeze.protectedFiles = freeze.files.filter((f) => hashes[f] !== null);
+        freeze.frozen = freeze.protectedFiles.length > 0;
+        if (ledger) ledger.criterionFreeze = { files: [...freeze.files], ...(freeze.frozen ? { frozenAtDispatch: n, hashes } : {}) };
+        freezeNote = freeze.frozen
+          ? `\n[1-A 判据文件已冻结: ${freeze.files.map((f) => `${f} ${hashes[f] ? `(${hashes[f]})` : '(仍不存在 — 没冻住, 判据对它仍恒红)'}`).join(' · ')}; 之后的派发不得改它们 (工具写当场拒)]`
+          : `\n[1-A 判据文件一个都没写出来 (${freeze.files.join(', ')}); 下一个派发仍必须是单独写它们的 work()]`;
+        logger.info({ seq: n, hashes, frozen: freeze.frozen }, '[orchestrating-loop] 1-A 判据文件冻结');
+      }
       if (ledger) {
         ledger.ok++;
         ledger.byCard[card.name as LeadCardName] = (ledger.byCard[card.name as LeadCardName] ?? 0) + 1;
@@ -301,7 +379,7 @@ function adaptCard(card: LeadTool, deps: LeadRuntimeDeps, nextSeq: () => number,
       const summary = summarizeChildRun(exec, label);
       const failed = Object.values(exec.results).filter((r) => r.status !== 'done').map((r) => r.id);
       return {
-        content: [{ type: 'text', text: summary }],
+        content: [{ type: 'text', text: `${summary}${freezeNote}` }],
         details: { ok: true, card: card.name, seq: n, plan: exec.plan.name, nodes: Object.keys(exec.results).length, failed },
       };
     },

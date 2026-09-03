@@ -40,7 +40,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { acceptanceCommandBlockReason, missingPathArgBlockReason } from './acceptance-gate';
+import { acceptanceCommandBlockReason, missingPathArgBlockReason, missingPathArgs } from './acceptance-gate';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -245,5 +245,16 @@ describe('接线: acceptanceCommandBlockReason 的第四道 (root-aware 那条�
       declaredArtifacts: [],
     });
     expect(why).toContain('missing-bin');
+  });
+});
+
+describe('1-A (2026-09-03): missingPathArgs —— 判据在等谁产出 (只列不拒)', () => {
+  test('★ 不存在的路径参数按序去重列出; 存在的 / flag / root 外 / 子命令词 / 无仓根 都不列', () => {
+    const root = freshRoot();
+    touch(root, 'src/a.py');
+    expect(missingPathArgs('python3 -m pytest -q tests/test_a.py tests/test_a.py src/a.py --tb=short', root)).toEqual(['tests/test_a.py']);
+    expect(missingPathArgs('bun test src/x.test.ts && bun test src/y.test.ts', root)).toEqual(['src/x.test.ts', 'src/y.test.ts']);
+    expect(missingPathArgs('pytest -q ../outside/test_b.py /abs/test_c.py', root)).toEqual([]); // root 外不判
+    expect(missingPathArgs('bun test src/x.test.ts', '')).toEqual([]); // 无仓根 = 没有"存不存在"这回事
   });
 });

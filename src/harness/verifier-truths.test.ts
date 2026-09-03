@@ -121,3 +121,18 @@ describe('G-4 后半: 随卷 → 判词里逐字符比对可见', () => {
     expect(seenOne().replace(renderJudgingTruths({ trustToken: NONCE }), '')).toBe(seenNone());
   });
 });
+
+describe('1-A (2026-09-03): 按调用真值 (req.truths) 随卷', () => {
+  test('★ criterionFreeze 逐字进模型真收到的 prompt, 带卷面写法; 装配期 truths 仍在', async () => {
+    const [verifier, seen] = capturing({ trustToken: NONCE });
+    await verifier({ task: 't', plan, results, truths: { criterionFreeze: '派发 #1 单独产出并冻结: tests/test_a.py (deadbeefdeadbeef, 判卷时未变)' } });
+    expect(seen()).toContain('deadbeefdeadbeef');
+    expect(seen()).toContain('判据文件冻结 (1-A)');
+    expect(seen()).toContain(NONCE);
+  });
+  test('阴性对照: 不传 req.truths → 卷面没有冻结段 (卷面同旧)', async () => {
+    const [verifier, seen] = capturing();
+    await verifier({ task: 't', plan, results });
+    expect(seen()).not.toContain('判据文件冻结');
+  });
+});

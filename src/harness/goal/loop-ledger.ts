@@ -25,6 +25,19 @@ export interface LoopDispatch {
   error?: string;
 }
 
+/**
+ * 1-A (2026-09-03) 判据先落盘冻结的台账。判据命令引用、run 开始时不存在的文件: lead 的第一个派发只准产出它们,
+ * 引擎在实装派发之前记下 hash, 之后的派发走路径禁令 (agent-tools withProtectedPaths)。
+ * 三态: 整格缺席 = 判据不引用未存在文件 (不适用); `frozenAtDispatch` 缺席 = 还没派成过; `hashes[f] === null` = 派发回来
+ * 文件仍不存在 (没冻住, 不受保护); `tampered` 缺席 = 没核过, `[]` = 核过全同。
+ */
+export interface CriterionFreeze {
+  files: string[];
+  frozenAtDispatch?: number;
+  hashes?: Record<string, string | null>;
+  tampered?: string[];
+}
+
 /** 运行期计数器 (可变)。字段语义与 {@link LoopLedger.cards} 逐字相同。 */
 export interface LeadCardLedger {
   calls: number;
@@ -38,6 +51,8 @@ export interface LeadCardLedger {
   dispatches: LoopDispatch[];
   /** lead 常驻 system prompt 真跑的字符数 (含 RUN FACTS); 由 buildLeadFace 写, 回灌第二跑覆盖为同值。 */
   residentPromptChars: number | null;
+  /** 1-A 冻结台账 (可变; 回灌第二跑沿用, 那时 hashes 已在 → 直接受保护)。缺席 = 不适用。 */
+  criterionFreeze?: CriterionFreeze;
 }
 
 export function createLeadCardLedger(): LeadCardLedger {
@@ -64,8 +79,10 @@ export interface LoopLedger {
   };
   /** lead 节点基建类败因 (D-14 守卫); 缺席 = 没发生。 */
   leadInfraFailure?: string;
-  cards: Omit<LeadCardLedger, 'dispatches' | 'residentPromptChars'>;
+  cards: Omit<LeadCardLedger, 'dispatches' | 'residentPromptChars' | 'criterionFreeze'>;
   dispatches: LoopDispatch[];
+  /** 1-A 冻结台账 (收尾时 `tampered` 已核)。缺席 = 判据不引用未存在文件。 */
+  criterionFreeze?: CriterionFreeze;
   /**
    * D-14 回灌第二跑开始那一刻 `dispatches` 的长度 (两跑合并计数, 这是分界线)。只在 `verifier.reinjected` 时有值;
    * 缺席 = 没回灌 / 老记录。读侧「回灌蒸发率」= 回灌后零新派发 (`dispatches.length === dispatchesBeforeReinject`)

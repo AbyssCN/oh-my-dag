@@ -92,3 +92,17 @@ describe('lead prompt', () => {
     expect(toolSection).toContain('bash(command)');
   });
 });
+
+describe('1-A (2026-09-03): 判据文件先落盘的事实行', () => {
+  test('criterionFiles 非空 → 判据行尾接 "Missing now: …" (≤ 140 字符; 满槽夹具 7967 已贴着 8000, 真 bench 事实约 7780); 缺席 / 空 → 无', () => {
+    const tools = createLeadTools(ctx);
+    const base = buildLeadSystemPrompt(FULL_FACTS, tools);
+    const withFiles = buildLeadSystemPrompt({ ...FULL_FACTS, criterionFiles: ['tests/test_tz.py'] }, tools);
+    expect(withFiles).toContain('Missing now: tests/test_tz.py — dispatch #1 must be ONE work()');
+    console.log(`lead resident with criterionFiles=${withFiles.length} chars (+${withFiles.length - base.length})`);
+    // 满槽夹具 (900 字 goal + protectedPaths + upstream) 本就贴着 8000; 真 bench 事实没有 upstream / protectedPaths, 约 7780 + 这段。
+    expect(withFiles.length - base.length).toBeLessThanOrEqual(140);
+    expect(base).not.toContain('Missing now:');
+    expect(buildLeadSystemPrompt({ ...FULL_FACTS, criterionFiles: [] }, tools)).not.toContain('Missing now:');
+  });
+});

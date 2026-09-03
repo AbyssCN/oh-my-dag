@@ -218,6 +218,29 @@ export function missingPathArgBlockReason(
 }
 
 /**
+ * 1-A (2026-09-03): 判据命令里**现在还不存在**的路径参数 (相对 root, 去重保序)。
+ * 形状判定与 root 内判定跟 {@link missingPathArgBlockReason} 同一套 (looksLikePathArg / 解析后仍在 root 内),
+ * 但它**不拒**: 它回答的是「判据在等谁产出」—— 编排循环用它冻结判据文件 (lead 的第一个派发只准写这些,
+ * 之后禁改)。root 为空 → [] (没有仓根就没有"存不存在"这回事)。
+ */
+export function missingPathArgs(command: string, root: string): string[] {
+  if (!root) return [];
+  const out: string[] = [];
+  for (const link of command.split('&&').map((s) => s.trim())) {
+    for (const token of link.split(/\s+/).slice(1)) {
+      if (!looksLikePathArg(token)) continue;
+      const abs = resolve(root, token);
+      const rel = relative(root, abs);
+      if (!rel || rel.startsWith('..') || isAbsolute(rel)) continue;
+      if (existsSync(abs)) continue;
+      const norm = rel.split('\\').join('/');
+      if (!out.includes(norm)) out.push(norm);
+    }
+  }
+  return out;
+}
+
+/**
  * 一条验收命令是否**真跑得起来** = 过 command-leaf 的 fail-closed 闸 (白名单 / 元字符 / git 只读 /
  * 危险命令)。判据借的是执行期那一份 (`commandBlockReason`), 不是这里另抄一份 —— 抄一份早晚先漂,
  * 而漂的后果恰是「假红」。

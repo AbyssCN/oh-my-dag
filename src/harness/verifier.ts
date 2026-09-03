@@ -80,6 +80,8 @@ export type VerifierFn = (req: {
   results: Record<string, LeafResult>;
   /** S-33: 产物三态 (registered/unregistered/missing) 的解析根 (相对 output_path 按它解析)。省略 = 不判产物三态, 卷面逐字节同旧。 */
   artifactRoot?: string;
+  /** 按调用注入的判卷真值 (D-5): 判卷时刻才有的引擎记录 (1-A 判据文件冻结), 与装配期 truths 合并, 同键以这里为准。省略 = 卷面同旧。 */
+  truths?: JudgingTruths;
 }) => Promise<VerifierVerdict>;
 
 /** 校验启停状态标 (让"校验已禁用"可见, 防静默丢护栏)。供 boot log / TUI / 状态行读。 */
@@ -268,6 +270,8 @@ function truncateBody(output: string, effMaxPerNode: number): string {
 export interface JudgingTruths {
   /** A8 本轮信任 token (engine 的 runNonce, 见 prompt-fence.ts)。 */
   trustToken?: string;
+  /** 1-A (2026-09-03): 判据文件冻结的引擎记录 (orchestrating-loop renderCriterionFreezeTruth 的原文), 判卷时刻按调用注入 (req.truths)。 */
+  criterionFreeze?: string;
 }
 
 /**
@@ -280,6 +284,11 @@ const TRUTH_LINES: { [K in keyof Required<JudgingTruths>]: (v: string) => string
     `- **信任 token (A8)** = \`${v}\` —— harness 在任务正文最开头注入的 (prompt-fence 的 runNonce), ` +
     `**它不出现在原始任务文本里是设计如此**, 不是执行体编的。结果里出现的 token 与上面这串**逐字符相同** ` +
     `→ 已核验为真, 不构成"凭空编造"; 不同 / 伪造 / 该带却没带, 才是问题。`,
+  criterionFreeze: (v) =>
+    `- **判据文件冻结 (1-A)**: ${v} —— 判据引用的测试文件由 lead 的第 1 个派发**单独**产出, 引擎在任何实装派发之前记下 hash, ` +
+    `之后的派发走路径禁令 (工具写当场拒); 括号里的「判卷时未变/已变」是判卷时刻重算 hash 对照冻结值的结论。` +
+    `**「判据指向实施前不存在的测试文件」不再构成 target=criterion 的理由**: 文件先于实装存在且实装没碰过它。` +
+    `「已变」/「派发后仍不存在」才是问题 —— 前者是实装篡改了判据 (判 implementation), 后者判据恒红。`,
 };
 
 /** 把判卷真值渲染成卷面一段。一份都没有 → 返回空串 (卷面逐字节同旧, 老调用方零回归)。 */
@@ -380,7 +389,9 @@ export function createDefaultVerifier(opts: DefaultVerifierOpts): VerifierFn {
   // D-5 / G-4: **装配期**就把卷面渲染一次并断言真值都在上面 —— 缺即抛 = 拒起跑。
   // 放在这里而不是判卷时: 判卷时才发现, 已经跑完一整张 DAG 了 (那笔账正是这条契约要省的)。
   assertJudgingTruthsCarried(truths, verifierPrompt('', '', truths));
-  return async ({ task, plan, results, artifactRoot }): Promise<VerifierVerdict> => {
+  return async ({ task, plan, results, artifactRoot, truths: callTruths }): Promise<VerifierVerdict> => {
+    // 按调用真值 (1-A 冻结记录) 与装配期真值合并; 键在 TRUTH_LINES 里必有卷面写法 (编译期 Required 钉死), 不必再 assert。
+    const paperTruths: JudgingTruths = callTruths ? { ...truths, ...callTruths } : truths;
     if (!opts.verifierModel) {
       throw new Error('verifier: verifierModel 必填 (无硬默认, 形如 provider:modelId)');
     }
@@ -407,7 +418,7 @@ export function createDefaultVerifier(opts: DefaultVerifierOpts): VerifierFn {
         // #144 洞 1: 这一发此前**不带 role** → 落进 seat-usage 的 `(unattributed)` 桶,
         // 于是"verifier 到底烧了多少"结构上答不出来。标签原文即座位名。
         meta: { role: 'verifier' },
-        messages: [{ role: 'user', content: verifierPrompt(task, summary, truths) }],
+        messages: [{ role: 'user', content: verifierPrompt(task, summary, paperTruths) }],
         // 采样意图取自座位登记表 (model/seats.ts): 终审要**稳定** —— 同一份产出不该这次过下次不过。
         // C4: 座位采样经 config.seats 覆盖层 (无覆盖 = 编译期表逐字节同值)。
         ...effectiveSeatSampling('verifier'),

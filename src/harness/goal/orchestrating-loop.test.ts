@@ -17,7 +17,8 @@
  *    仍红 → verifier-rejected, 无 oracle → verifier-rejected; verifier 过 → 只跑一次。
  */
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { withProtectedPaths } from '../agent-tools';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parsePlan, type ConductorPlan } from '../conductor-plan';
@@ -42,6 +43,8 @@ import {
   orchestratingLoopEnabled,
   prefixPlanIds,
   withReinjectedFinding,
+  checkCriterionFreeze,
+  renderCriterionFreezeTruth,
 } from './orchestrating-loop';
 
 const CTX: LeadCtx = {
@@ -444,13 +447,14 @@ describe('R-1 账本: runGoal 结果上的 loop', () => {
     const vcalls = { n: 0 };
     const r = await runGoal('修 add()', {
       ...baseCfg(cwd, { orchestratingLoop: true, _classify: async () => ({ tier: 'complex', acceptance: EXEC_ACCEPT, route: { kind: 'none' }, llmCalls: 1 }), _runDag: fakeEngine(seen) }),
-      dag: { conductorModel: 'c:m', leafModel: 'l:m', verifier: async () => { vcalls.n++; return { pass: false, reason: 'criterion not independent', target: 'criterion' as const, usage: { in: 0, out: 0 } }; } } as ExecutorDagConfig,
+      // 1-B 之后 target=criterion 不再回灌 (见下一组用例); 回灌路径的样本改用 target=implementation。
+      dag: { conductorModel: 'c:m', leafModel: 'l:m', verifier: async () => { vcalls.n++; return { pass: false, reason: 'add() still returns wrong sum', target: 'implementation' as const, usage: { in: 0, out: 0 } }; } } as ExecutorDagConfig,
     });
     expect(r.loop).toMatchObject({
       path: 'orchestrating-loop',
       route: { kind: 'none', chainHit: false },
       preActionLlmCalls: 1,
-      verifier: { calls: 1, firstVerdict: 'fail', target: 'criterion', reinjected: true, afterReinject: 'green' },
+      verifier: { calls: 1, firstVerdict: 'fail', target: 'implementation', reinjected: true, afterReinject: 'green' },
     });
     expect(r.loop!.residentPromptChars).toBeGreaterThan(1000);
     expect(r.loop!.cards.calls).toBe(0);
@@ -469,5 +473,111 @@ describe('R-1 账本: runGoal 结果上的 loop', () => {
     expect(r.loop!.verifier).toEqual({ calls: 1, firstVerdict: 'pass', target: null, reinjected: false, afterReinject: 'skipped' });
     expect(r.loop!.preActionLlmCalls).toBeNull();
     expect(r.loop!.dispatchesBeforeReinject).toBeUndefined(); // 没回灌 = 没有分界线 (缺席, 不是 0)
+  });
+});
+
+describe('1-B (2026-09-03): 终审否决判据 (target=criterion) → 不回灌 lead, 走 INV-4 判据重建', () => {
+  test('★ 只跑一次; outcome verifier-rejected; loop.verifier {fail, criterion, reinjected false, skipped}; criterionRebuild 触发 (重建者缺席 → 未采纳, 照记); 摘要含 1-B', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omd-1b-'));
+    const seen: Observed[] = [];
+    const r = await runGoal('修 add()', {
+      ...baseCfg(cwd, { orchestratingLoop: true, _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: fakeEngine(seen) }),
+      dag: { conductorModel: 'c:m', leafModel: 'l:m', verifier: async () => ({ pass: false, reason: '冻结判据指向实施前不存在的测试文件', target: 'criterion' as const, usage: { in: 0, out: 0 } }) } as ExecutorDagConfig,
+    });
+    expect(seen).toHaveLength(1); // 证伪: 去掉 D-14 条件里的 `!criterionVeto` → 2 (回灌了), 红
+    expect(r.outcome).toBe('verifier-rejected');
+    expect(r.loop!.verifier).toEqual({ calls: 1, firstVerdict: 'fail', target: 'criterion', reinjected: false, afterReinject: 'skipped' });
+    expect(r.loop!.dispatchesBeforeReinject).toBeUndefined();
+    expect(r.criterionRebuild).toBeDefined();
+    expect(r.criterionRebuild!.admitted).toBe(false);
+    expect(r.criterionRebuild!.trigger).toContain('target=criterion');
+    expect(r.stages.some((s) => s.summary.includes('1-B'))).toBe(true);
+  });
+});
+
+describe('1-A (2026-09-03): 判据先落盘冻结', () => {
+  test('★ runGoal 接线: 判据引用的文件在 cwd 下不存在 → 判据行尾有 "Missing now: src/a.test.ts"; 文件已存在 → 无', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omd-1a-wire-'));
+    const seen: Observed[] = [];
+    await runGoal('修 add()', baseCfg(cwd, { orchestratingLoop: true, _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: fakeEngine(seen) }));
+    expect(seen[0]!.cfg.leafFace!({ id: LEAD_NODE_ID })!.systemPrompt!).toContain('Missing now: src/a.test.ts');
+    const cwd2 = mkdtempSync(join(tmpdir(), 'omd-1a-wire2-'));
+    mkdirSync(join(cwd2, 'src'), { recursive: true });
+    writeFileSync(join(cwd2, 'src/a.test.ts'), 'test');
+    const seen2: Observed[] = [];
+    await runGoal('修 add()', baseCfg(cwd2, { orchestratingLoop: true, _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: fakeEngine(seen2) }));
+    expect(seen2[0]!.cfg.leafFace!({ id: LEAD_NODE_ID })!.systemPrompt!).not.toContain('Missing now:');
+  });
+
+  test('★ 工具面: 冻住前非 work 拒 (计 rejectedCompile); 第一张 work 写集被强制为判据文件; 回来记 hash; 之后派发在路径禁令里跑; 改动后 tampered 可见', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'omd-1a-face-'));
+    const ledger = createLeadCardLedger();
+    const guarded: (readonly string[])[] = [];
+    const plans: ConductorPlan[] = [];
+    const ctx = { ...CTX, cwd: root, writeRoot: root, acceptance: { command: 'bun test tests/a.test.ts', expect_exit: 0 } };
+    const face = buildLeadFace(
+      { ...FACTS, writeRoot: root, criterionFiles: ['tests/a.test.ts'] },
+      {
+        ctx,
+        ledger,
+        criterionFreeze: { files: ['tests/a.test.ts'], root },
+        withProtected: ((paths, fn) => { guarded.push(paths ?? []); return fn(); }) as typeof withProtectedPaths,
+        runChild: async (p) => {
+          plans.push(p);
+          // 模拟 worker: 第一张 work 真把判据文件写出来。
+          if (!existsSync(join(root, 'tests/a.test.ts'))) {
+            mkdirSync(join(root, 'tests'), { recursive: true });
+            writeFileSync(join(root, 'tests/a.test.ts'), 'expect(1).toBe(1)');
+          }
+          return fakeExec(p);
+        },
+      },
+    );
+    const work = face.customTools!.find((t) => t.name === 'work')!;
+    const explore = face.customTools!.find((t) => t.name === 'explore')!;
+    // 冻住前派 explore → 拒, 文案指明先派 work 写判据文件。
+    const rej = await explore.execute('t', { questions: ['where?'] });
+    expect((rej as { content: { text: string }[] }).content[0]!.text).toContain('[1-A 判据先落盘]');
+    expect(ledger.rejectedCompile).toBe(1);
+    expect(plans).toHaveLength(0);
+    // 第一张 work 带了别的写集 → 被强制成判据文件。
+    const ok1 = await work.execute('t', { goal: 'write the acceptance test', brief: 'repro: none yet; create tests/a.test.ts covering add(); do not touch src.', write_set: ['src/add.ts'] });
+    expect(Object.values(plans[0]!.nodes)[0]!.write_set).toEqual(['tests/a.test.ts']); // 证伪: 去掉强制 → ['src/add.ts'], 红
+    expect(guarded).toHaveLength(0); // 第一张不在禁令里跑 (它就是来写这些文件的)
+    expect(ledger.criterionFreeze!.frozenAtDispatch).toBe(1);
+    expect(ledger.criterionFreeze!.hashes!['tests/a.test.ts']).toMatch(/^[0-9a-f]{16}$/);
+    expect((ok1 as { content: { text: string }[] }).content[0]!.text).toContain('[1-A 判据文件已冻结');
+    // 第二张 work: 写集不再被改, 但子 run 在路径禁令里跑。
+    await work.execute('t', { goal: 'implement add', brief: 'repro: bun test tests/a.test.ts → 1 fail exit 1. scope src/add.ts only.', write_set: ['src/add.ts'] });
+    expect(Object.values(plans[1]!.nodes)[0]!.write_set).toEqual(['src/add.ts']);
+    expect(guarded).toEqual([['tests/a.test.ts']]); // 证伪: 不包 withProtected → [], 红
+    // 判卷真值: 未变 → "未变"; 有人绕过闸改了 → tampered + "已变"。
+    expect(renderCriterionFreezeTruth(ledger.criterionFreeze!, root)).toContain('判卷时未变');
+    expect(checkCriterionFreeze(ledger.criterionFreeze!, root)).toEqual([]);
+    writeFileSync(join(root, 'tests/a.test.ts'), 'expect(1).toBe(2)');
+    expect(checkCriterionFreeze(ledger.criterionFreeze!, root)).toEqual(['tests/a.test.ts']);
+    expect(renderCriterionFreezeTruth(ledger.criterionFreeze!, root)).toContain('判卷时已变');
+  });
+
+  test('第一张 work 回来文件仍不存在 → 没冻住 (hashes 缺席), 下一次派发继续强制; 回灌第二跑从 ledger 恢复保护', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'omd-1a-miss-'));
+    const ledger = createLeadCardLedger();
+    const plans: ConductorPlan[] = [];
+    const ctx = { ...CTX, cwd: root, writeRoot: root };
+    const face = buildLeadFace({ ...FACTS, writeRoot: root, criterionFiles: ['tests/a.test.ts'] }, { ctx, ledger, criterionFreeze: { files: ['tests/a.test.ts'], root }, runChild: async (p) => { plans.push(p); return fakeExec(p); } });
+    const work = face.customTools!.find((t) => t.name === 'work')!;
+    const r1 = await work.execute('t', { goal: 'g', brief: 'b'.repeat(40) });
+    expect((r1 as { content: { text: string }[] }).content[0]!.text).toContain('一个都没写出来');
+    expect(ledger.criterionFreeze).toEqual({ files: ['tests/a.test.ts'] }); // 没冻住 = frozenAtDispatch / hashes 缺席, 不编
+    await work.execute('t', { goal: 'g2', brief: 'c'.repeat(40), write_set: ['src/x.ts'] });
+    expect(Object.values(plans[1]!.nodes)[0]!.write_set).toEqual(['tests/a.test.ts']); // 第二次仍强制
+    // 回灌第二跑: 新工具面, deps 不带 criterionFreeze, 只靠 ledger 里已有 hashes 恢复。
+    mkdirSync(join(root, 'tests'), { recursive: true });
+    writeFileSync(join(root, 'tests/a.test.ts'), 'x');
+    ledger.criterionFreeze = { files: ['tests/a.test.ts'], frozenAtDispatch: 2, hashes: { 'tests/a.test.ts': 'abc' } };
+    const guarded: (readonly string[])[] = [];
+    const face2 = buildLeadFace({ ...FACTS, writeRoot: root }, { ctx, ledger, withProtected: ((paths, fn) => { guarded.push(paths ?? []); return fn(); }) as typeof withProtectedPaths, runChild: async (p) => fakeExec(p) });
+    await face2.customTools!.find((t) => t.name === 'work')!.execute('t', { goal: 'g3', brief: 'd'.repeat(40) });
+    expect(guarded).toEqual([['tests/a.test.ts']]);
   });
 });

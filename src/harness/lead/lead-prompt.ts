@@ -21,6 +21,8 @@ export interface LeadFacts {
   writeRoot: string;
   protectedPaths?: readonly string[];
   acceptance?: { command: string; expect_exit: number };
+  /** 1-A (2026-09-03): 判据命令引用、run 开始时**不存在**的文件 (相对写根)。非空 → 第 1 个派发只准产出它们, 引擎随后冻结。 */
+  criterionFiles?: readonly string[];
   minutesLeft: number | null;
   tokensLeft: number | null;
   maxFanout: number;
@@ -110,8 +112,13 @@ export function renderLeadPrefix(tools: readonly LeadTool[]): string {
 export function renderLeadFacts(f: LeadFacts): string {
   const lines = [
     `- Goal: ${f.goal}`,
+    // 1-A: 判据文件先落盘 —— 并进判据那一行 (INV-8 满槽只剩几十字符余量, 单开一行会顶出 8000)。这是散文, 闸在
+    // orchestrating-loop (第一个派发强制写集 + 之后路径禁令), 散文只是让 lead 别撞闸。
     f.acceptance
-      ? `- Acceptance command: \`${f.acceptance.command}\`, expected exit ${f.acceptance.expect_exit}. Workers run it with run_acceptance().`
+      ? `- Acceptance command: \`${f.acceptance.command}\`, expected exit ${f.acceptance.expect_exit}. Workers run it with run_acceptance().` +
+        (f.criterionFiles && f.criterionFiles.length
+          ? ` Missing now: ${f.criterionFiles.join(', ')} — dispatch #1 must be ONE work() that writes exactly these (write_set forced), then they are frozen.`
+          : '')
       : '- Acceptance command: none. The verifier decides.',
     `- Work root: ${f.writeRoot.replace(/\\/g, '/')}. Protected paths: ${f.protectedPaths && f.protectedPaths.length ? f.protectedPaths.join(', ') : 'none declared'}.`,
     `- Budget: ${f.minutesLeft === null ? 'no minute budget' : `${f.minutesLeft} minutes`}, ${f.tokensLeft === null ? 'no token budget' : `${f.tokensLeft} tokens`}. Concurrency cap: ${f.maxFanout} workers at once.`,
