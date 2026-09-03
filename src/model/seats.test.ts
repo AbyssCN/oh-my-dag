@@ -69,7 +69,7 @@ describe('派生视图与真源一致 (别在别处写第二份)', () => {
   });
 
   it('seatSpec / seatSampling 查得到; 未知 id 不炸', () => {
-    expect(seatSpec('gate')?.tier).toBe('judge_synth');
+    expect(seatSpec('judge')?.tier).toBe('judge_synth');
     expect(seatSpec('nope')).toBeUndefined();
     expect(seatSampling('nope')).toEqual({});
   });
@@ -92,37 +92,11 @@ describe('★ 三层旋钮的分工没有被违反', () => {
 });
 
 describe('角色分工 (这一版的分类学)', () => {
-  it('★ 闸与择优是两个座位 —— 判"达成没有" ≠ 判"哪个更好"', () => {
-    const gate = seatSpec('gate')!;
-    const judge = seatSpec('judge')!;
-    expect(gate.id).not.toBe(judge.id);
-    // 闸要稳定可复现 → 必须给个低温; 没给就是把裁决交给了 provider 的默认随机性。
-    expect(gate.sampling.temperature).toBeDefined();
-    expect(gate.sampling.temperature!).toBeLessThanOrEqual(judge.sampling.temperature ?? 1);
-  });
 
   it('★ 需要跨家族对抗的座位标了 required (INV-3 的可读形式)', () => {
     expect(seatSpec('verifier')!.crossFamily).toBe('required');
     // 执行/蒸馏类与家族无关 —— 标 required 只会制造假约束。
     expect(seatSpec('leaf')!.crossFamily).toBe('no');
     expect(seatSpec('distill')!.crossFamily).toBe('no');
-  });
-});
-
-describe('★ 闸的档位是实测定的, 不是猜的 (2026-08-01)', () => {
-  it('gate 不开思考 —— 开了会把 temperature 吃掉, 而闸要的是不跑偏不是深想', () => {
-    // 实测: 关思考 `捏造执行确认` 15/15, 开思考 8/15 (掷硬币)。数据与理由在 seats.ts 的 gate 条目。
-    // 这条断言不是在锁一个偏好, 是在锁一个**被量过的结论** —— 想改它, 先重跑那组对照。
-    expect(seatSpec('gate')!.thinking).toBe('off');
-    // 两个旋钮互斥: 关思考才有采样, 所以闸的 temperature 必须在场 (否则等于两个都没要)。
-    expect(seatSpec('gate')!.sampling.temperature).toBeDefined();
-  });
-
-  it('★ 闸的档由登记表驱动 —— 不是"什么都不传碰巧关着"', async () => {
-    // 此前 llm-judge 根本不传 thinkingLevel, 于是 seats 里写什么都没用 (空旋钮)。
-    // 这条钉的是那根线还接着: 改 seats.ts 的 gate.thinking 必须能传到调用上。
-    const src = await Bun.file(new URL('../harness/plan/llm-judge.ts', import.meta.url)).text();
-    expect(src).toContain("seatSpec('gate')");
-    expect(src).toContain('thinkingLevel:');
   });
 });

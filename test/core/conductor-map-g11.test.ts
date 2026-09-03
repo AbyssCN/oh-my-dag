@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { conductorSystemPrompt, PlanSchema } from '../../src/harness/conductor-plan';
+import { PlanSchema } from '../../src/harness/conductor-plan';
 import { RESEARCH_LENS_TEMPLATE, RESEARCH_LENS_STAGES } from '../../src/harness/research/lens-template';
 import { expandMapNode, type MapSpecLike } from '../../src/harness/plan/map-expand';
 
@@ -45,29 +45,6 @@ const t2MapPlan = {
 };
 
 const t2MapSpec = t2MapPlan.nodes.audit.map as unknown as MapSpecLike;
-
-describe('G11-a · system prompt 教 map (根因修: conductor 知道能 emit map)', () => {
-  const prompt = conductorSystemPrompt();
-
-  test('output schema executor 枚举含 "map"', () => {
-    expect(prompt).toContain('"leaf"|"agent"|"command"|"map"');
-  });
-
-  test('显式警告"勿把扇出塌进编造命令" + 给出 map 替代', () => {
-    expect(prompt).toContain('executor:"map"');
-    expect(prompt).toMatch(/hallucinate|fabricat/i); // 反幻觉措辞在场
-    expect(prompt).toContain('lister'); // map 形状 (lister → 运行时数组)
-  });
-
-  test('研究镜头情形具名引用 RESEARCH_LENS_TEMPLATE (引用不现推 · 防丢质量)', () => {
-    expect(prompt).toContain('RESEARCH_LENS_TEMPLATE');
-  });
-
-  test('回归: 旧的 leaf/agent/command 教学仍在 (未破坏自由 node-graph 路径)', () => {
-    expect(prompt).toContain('You are the CONDUCTOR');
-    expect(prompt).toContain('executor:"agent"');
-  });
-});
 
 describe('G11-b · T2 正解 map plan 校验通过 (非幻觉造工具)', () => {
   test('map-over-模块 plan 过 PlanSchema (conductor 现在能合法 emit 它)', () => {

@@ -12,7 +12,6 @@
 import { describe, expect, test } from 'bun:test';
 import { type GenerateFn } from '../../src/harness/dag/engine';
 import { runExecutorDag } from '../helpers/legacy-plan-entry';
-import { makeLlmConvergenceJudge } from '../../src/harness/plan/llm-judge';
 
 const CONDUCTOR = 'mimo:mimo-v2.5-pro';
 const LEAF = 'deepseek:deepseek-v4-flash';
@@ -37,45 +36,6 @@ async function runFanin(bad: Record<string, unknown>, cfg: Record<string, unknow
   const res = await runExecutorDag('t', { conductorModel: CONDUCTOR, leafModel: LEAF, generate, ...cfg });
   return { res, downPrompt: prompts.find((p) => p.includes('下游综合')) ?? '' };
 }
-
-describe('A5 · judge 这条通道: 引擎侧事故不许被读成"你的方案不行"', () => {
-  const judgeWith = (parsed: unknown) =>
-    makeLlmConvergenceJudge<null>({
-      judgeModel: 'x:y',
-      task: '目标',
-      extract: () => ({ status: 'done', summary: '一段产出' }),
-      callModelFn: async () => ({ text: '', parsed, usage: { in: 1, out: 1 } }) as never,
-    });
-
-  test('judge 没产出结构化裁决 → 第一句先撇清这是引擎侧事故, 并说"没被判过"', async () => {
-    const v = await judgeWith(undefined)(null, 1);
-    expect(v.converged).toBe(false); // fail-closed 不变 (零回归)
-    expect(v.failureReason).toContain('引擎侧事故');
-    expect(v.failureReason).toContain('没有被判过'); // ← 读者最需要知道的那句
-    expect(v.failureReason).toContain('原样再交一次'); // ← 它做得了的事
-    // 旧文案 "judge 未结构化输出" 报得对但读者做不了事 —— 别退回去
-    expect(v.failureReason).not.toBe('judge 未结构化输出');
-  });
-
-  test('judge 判未收敛却没给理由 → 不替它编理由, 但要给一条做得了的事', async () => {
-    const v = await judgeWith({ converged: false, score: 3 })(null, 1);
-    expect(v.failureReason).toContain('没有给出理由'); // 如实说"没说"
-    expect(v.failureReason).toContain('不要去猜'); // 而不是让它瞎改
-    expect(v.failureReason).toContain('回到目标本身');
-    expect(v.failureReason).not.toBe('未达收敛标准'); // 旧兜底: 对, 但读者做不了事
-  });
-
-  test('judge 给了理由就原样用 —— 兜底不许盖掉真判词', async () => {
-    const v = await judgeWith({ converged: false, score: 3, failureReason: '缺少验收步骤' })(null, 1);
-    expect(v.failureReason).toBe('缺少验收步骤');
-  });
-
-  test('收敛时不带 failureReason (兜底只管没过的)', async () => {
-    const v = await judgeWith({ converged: true, score: 9 })(null, 1);
-    expect(v.converged).toBe(true);
-    expect(v.failureReason).toBeUndefined();
-  });
-});
 
 describe('A5 · 没过的前驱进下游 prompt 时必须带可执行告示', () => {
   test('命令断言失败的前驱: 下游认得出它没过, 而不是"产出为空"', async () => {

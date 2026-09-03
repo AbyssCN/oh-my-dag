@@ -23,7 +23,7 @@ import { join } from 'node:path';
 import { recordSupportsVerification, renderShellRunFact } from './claimed-actions';
 import { runExecutorDagWithPlan } from '../dag/engine';
 import { createShellRunCollector } from '../agent-leaf';
-import { PLAN_BOUNDARY } from '../conductor-plan';
+import { PLAN_BOUNDARY } from '../../../test/helpers/legacy-plan-entry';
 import { CheckpointManager } from '../continuity/checkpoint-manager';
 import type { ContentPart } from '../../model/gateway';
 import type { ConductorPlan } from '../conductor-plan';

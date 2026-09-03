@@ -220,7 +220,7 @@ describe('机械附录 (D-7)', () => {
         cards: [
           {
             cardId: 'c1',
-            substrate: 'S1',
+            substrate: 'S3',
             stopReason: 'plateau',
             wallMs: 3000,
             curve: [

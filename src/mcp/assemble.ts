@@ -808,15 +808,6 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       ...(stampPools.mid.length >= 2 ? { primitiveCandidates: stampPools.mid } : {}),
       ...(Object.keys(channelFanout).length ? { channelFanout } : {}),
       ...conductorTuning,
-      // **内环收敛 judge 的座位** (2026-08-01 接上)。此前这里不给, 引擎便落回
-      // `config.judgeModel ?? config.conductorModel` —— 于是「判这一轮收敛没有」的那一发
-      // 一直骑在 **conductor 座位**上, 而 `judge` 座位只喂 research 择优与 halt-judge。
-      // 症状今天看不见 (两个座位都是 codex), 但那正是它危险的地方: 改 judge 座位不生效,
-      // 而配置面明明写着有这个座位 —— INV-MODEL-1 要杀的正是这个形态。
-      // 2026-08-01 再拆一步: 它用的是 **`gate` 座**而不是 `judge` 座 —— 两者是不同角色
-      // (闸判"达成没有" / judge 判"哪个更好"), 且频率差一个量级 (每节点每轮 vs 每次 research 若干发)。
-      // 一个座位一个经济学, 这正是分档存在的意义。全部说明在 `model/seats.ts`。
-      judgeModel: roleCoord('gate'),
       // 校验闸 (verifier + conductor 静默升级 + maxEscalations)。**排在 configOverrides 之前** ——
       // 调用方显式传 verifier/escalation 时仍然压得过默认装配 (测试注入假 verifier 靠这条)。
       ...(verification.verifier ? { verifier: verification.verifier } : {}),

@@ -16,7 +16,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { runExecutorDagWithPlan } from './engine';
 import { setCoreLogger, type CoreLogger } from '../logger';
-import { PLAN_BOUNDARY } from '../conductor-plan';
+import { PLAN_BOUNDARY } from '../../../test/helpers/legacy-plan-entry';
 import type { ConductorPlan } from '../conductor-plan';
 import { registerProvider } from '../../model/providers';
 import type { GenerateFn } from './types';

@@ -7,7 +7,7 @@
 **有哪些接缝 · 每个字段谁在消费 · 换实现该去哪换**。消费方是 token 级扫描的上界
 (只扫代码 —— 注释与字符串字面量里提到字段名不算消费), 列出命中最多的前 3 个文件。
 
-> 8 个 seam · 50 个字段 · 扫描范围 src/**/*.ts (排除测试)
+> 8 个 seam · 49 个字段 · 扫描范围 src/**/*.ts (排除测试)
 
 ## DagSeatsSeam
 
@@ -18,7 +18,6 @@
 | `conductorModel` | **是** | `string` | conductor 模型 'provider:modelId' (规划用, 我们=mimo:mimo-v2.5-pro)。 | `src/mcp/tools/dag-tools.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/goal/loop-run.ts` (18 文件) |
 | `leafModel` | **是** | `string` | inproc leaf 模型 'provider:modelId' (生成/判断单发)。 | `src/mcp/tools/dag-tools.ts`<br>`src/harness/dag/engine.ts`<br>`src/eval/oracles/fullstack-dag.ts` (13 文件) |
 | `agentLeafModel` |  | `string` | agent leaf 模型 (带工具改文件)。 | `src/mcp/tools/pathfinder.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/execute-slice.ts` (10 文件) |
-| `judgeModel` |  | `string` | 收敛 judge 的模型坐标。 | `src/harness/plan/best-of-n.ts`<br>`src/harness/research/fanout.ts`<br>`src/harness/research/web-fanout.ts` (7 文件) |
 | `conductorEscalationModel` |  | `string` | conductor 升级模型 'provider:modelId' (verifier fail 时用更强模型重规划重跑)。 | `src/harness/dag/engine.ts`<br>`src/harness/execute-slice.ts`<br>`src/mcp/assemble.ts` (6 文件) |
 
 ## DagThinkingSeam
@@ -37,7 +36,7 @@
 
 | 字段 | 必填 | 类型 | 一句话 | 消费方 (前3) |
 |---|---|---|---|---|
-| `generate` |  | `GenerateFn` | 注入式模型调用 (inproc leaf, 默认 callModel)。 | `src/harness/dag/engine.ts`<br>`src/harness/goal/classify-acceptance.ts`<br>`src/harness/goal/rubric-judge.ts` (9 文件) |
+| `generate` |  | `GenerateFn` | 注入式模型调用 (inproc leaf, 默认 callModel)。 | `src/harness/dag/engine.ts`<br>`src/harness/goal/classify-acceptance.ts`<br>`src/harness/goal/rubric-judge.ts` (7 文件) |
 | `agentRunner` |  | `AgentLeafRunner` | agent-kind leaf 的执行器 (带工具子 agent, 能改文件)。 | `src/mcp/assemble.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/goal/run-goal.ts` (7 文件) |
 | `commandRunner` |  | `CommandLeafRunner` | command-kind leaf 的执行器 (确定性 CLI, 零 LLM, 方案 A)。 | `src/harness/goal/run-goal.ts`<br>`src/mcp/assemble.ts`<br>`src/harness/dag/engine.ts` (8 文件) |
 | `researchRunner` |  | `ResearchLeafRunner` | research-kind leaf 的执行器 (真 web 检索 + 有界内环, D-6)。 | `src/mcp/assemble.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/goal/loop-run.ts` (3 文件) |
@@ -51,7 +50,7 @@
 
 | 字段 | 必填 | 类型 | 一句话 | 消费方 (前3) |
 |---|---|---|---|---|
-| `agents` |  | `string[]` | 限定 conductor 可派的 agent roster (进规划 system prompt)。 | `src/harness/pack/pack.ts`<br>`src/harness/conductor-plan.ts`<br>`src/harness/inspect-tool.ts` (3 文件) |
+| `agents` |  | `string[]` | 限定 conductor 可派的 agent roster (进规划 system prompt)。 | `src/harness/pack/pack.ts`<br>`src/harness/inspect-tool.ts` (2 文件) |
 | `agentTemplates` |  | `ReadonlyMap<string, AgentTemplate>` | Agent 模板注册表 (name → 角色卡, 见 agent-templates.ts)。 | `src/harness/dag/engine.ts` (1 文件) |
 | `conductorPromptProfile` |  | `'full' \| 'lean' \| 'full-kb' \| 'lean-kb' \| 'bare'` | conductor system prompt 档位 (SDD v2, 2026-07-25): 'full' (默认, 弱 conductor 教练全量) \| 'lean' (只留环境事实, 顶级 conductor 如 k3 用 … | `src/mcp/assemble.ts` (1 文件) |
 | `oracleCmd` |  | `string` | oracle 命令 (如 "bun run typecheck && bun test"): plan 中 command 与之等价的节点 在执行前被确定性过滤 (空白规范化后精确匹配, 最小无害边重连)。 | `src/mcp/tools/fleet.ts`<br>`src/eval/oracles/agent-leaf-prompt.ts`<br>`src/eval/oracles/fullstack-dag.ts` (7 文件) |
@@ -110,7 +109,7 @@ leaf prompt 整形 seam: 注入 leaf 上下文/前缀/压缩级与档位闸 (省
 
 | 字段 | 必填 | 类型 | 一句话 | 消费方 (前3) |
 |---|---|---|---|---|
-| `sessionId` |  | `string` | 本次 run 的 Langfuse trace 分组 session id (conductor+leaf 全部经 send 归此 session)。 | `src/tui/tui.ts`<br>`src/tui/backend-embedded.ts`<br>`src/harness/chat/agent.ts` (35 文件) |
+| `sessionId` |  | `string` | 本次 run 的 Langfuse trace 分组 session id (conductor+leaf 全部经 send 归此 session)。 | `src/tui/tui.ts`<br>`src/tui/backend-embedded.ts`<br>`src/harness/chat/agent.ts` (33 文件) |
 | `onComplete` |  | `(result: ExecutorDagResult) => void \| Promise<void>` | 运行完成钩子 (留痕层接口)。 | `src/mcp/tools/dag-tools.ts`<br>`src/harness/dag/engine.ts`<br>`src/mcp/tools/compose.ts` (5 文件) |
 | `onNodeEvent` |  | `(e: DagNodeEvent) => void` | 节点级进度事件 (2026-07-20, MCP 派发简报/活体 status 的数据源): planned = 图定型 (全部节点 id+kind, 每轮 plan/escalation 重规划各发一次) start = 节点起跑 … | `src/mcp/tools/dag-tools.ts`<br>`src/mcp/tools/fleet.ts`<br>`src/mcp/assemble.ts` (6 文件) |
-| `continuity` |  | `{ manager: CheckpointManager; runId: string; resume?: boo…` | W2 continuity (SDD C4): 节点级 checkpoint 写入磁盘 + 崩溃恢复跳过。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/dag-tools.ts`<br>`src/mcp/tools/goal.ts` (8 文件) |
+| `continuity` |  | `{ manager: CheckpointManager; runId: string; resume?: boo…` | W2 continuity (SDD C4): 节点级 checkpoint 写入磁盘 + 崩溃恢复跳过。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/dag-tools.ts`<br>`src/mcp/tools/goal.ts` (7 文件) |

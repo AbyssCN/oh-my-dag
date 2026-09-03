@@ -20,7 +20,8 @@ import { InvariantViolationError, listInvariants, registerInvariant, type Invari
 import { expandMapNode } from './plan/map-expand';
 import { runDiscoveryLoop } from './plan/discovery';
 import { runExecutorDagWithPlan } from './dag/engine';
-import { PLAN_BOUNDARY, type ConductorPlan } from './conductor-plan';
+import { type ConductorPlan } from './conductor-plan';
+import { PLAN_BOUNDARY } from '../../test/helpers/legacy-plan-entry';
 import type { ContentPart } from '../model/gateway';
 import type { DagNodeEvent, ExecutorDagConfig, GenerateFn } from './dag/types';
 import { OmdMemory } from './memory/store';

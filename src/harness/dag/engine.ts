@@ -83,13 +83,9 @@ import type { ModelUsage } from '../../model/gateway';
 import { escalationProviderReady, type VerifierVerdict } from '../verifier';
 import type { AgentEvent } from '@earendil-works/pi-agent-core';
 import {
-  conductorPatchSystemPrompt,
   parsePlan,
   mergeMcpAllow,
-  PLAN_BOUNDARY,
-  conductorPromptProfileFromEnv,
   type ConductorPlan,
-  type ConductorProfileRosterEntry,
   type SelfCheckSpec,
 } from '../conductor-plan';
 // SDD 2026-08-11-leaf-profile库 D-3: 节点 profile 字段经此解析成 LeafProfile, 复用既有注入口
@@ -170,7 +166,7 @@ import { topoLevels, buildLeafPrompt, addUsage, filterOracleCommandNodes, vetSel
 // ready-set 调度器 (拓扑推进 + 三层并发闸 + quorum 判定; 纯同步零 IO, 见 dag-scheduler.ts)。
 import { DagScheduler, type SchedKind, type QuorumVerdict } from './dag-scheduler';
 import { nodeExecKind, type NodeExecKind } from './node-kind';
-import { loadAgentTemplates, templateRoster, type AgentTemplate } from '../agent-templates';
+import { loadAgentTemplates, type AgentTemplate } from '../agent-templates';
 import { expandMapNode, mapSpecHash } from '../plan/map-expand';
 // SDD 0013 S1 约束选择: primitive 节点 → compile(复用 primitives.ts)→ run。
 import { compilePrimitive, type PrimitiveCtx } from '../primitive-registry';
@@ -279,7 +275,7 @@ import { ModelError, isTransientModelFault } from '../../model';
 import { classifyCommandExit, withFailureKind, upstreamFailureNotice, type NodeFailureKind } from '../node-failure';
 import { collectRepairGuidance, loadRepairFingerprints } from './repair-guidance';
 import { livePin } from '../../model/provider-health';
-import { makeRunNonce, fenceUntrusted, trustHeader } from '../prompt-fence';
+import { makeRunNonce, fenceUntrusted } from '../prompt-fence';
 import type { ContentPart } from '../../model/gateway';
 // D-1 责备集 (SDD 2026-08-10-blame-scoped-node-retry): verifier 打回的结构化点名 → 失效闭包。
 // 单一住处 (blame.ts, 与冻结的 blame.test.ts 同源); 引擎只接线不重实现 (INV-2)。

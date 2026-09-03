@@ -61,7 +61,6 @@ describe('seatOfTrace —— 派生的那一列', () => {
     expect(seatOfTrace('conductor:plan')).toBe('conductor');
     expect(seatOfTrace('conductor:repair')).toBe('conductor');
     expect(seatOfTrace('judge:n3')).toBe('judge');
-    expect(seatOfTrace('halt-judge')).toBe('gate');
     // 三个都读 config.leafModel —— 名字不同不代表座位不同 (engine.ts 2204/2327/3135)
     expect(seatOfTrace('leaf:n1')).toBe('leaf');
     expect(seatOfTrace('map-lister:n1')).toBe('leaf');
@@ -197,11 +196,10 @@ describe('★ 覆盖率闸: src 里的每个 traceName 字面量都核过', () =
 describe('★ #144 洞 1: 八个"从未出现过一次"的座位', () => {
   // 全账本 78KB / 6 个 runId 里, 这八座**一发都没有**, 而 owner 想量的恰好是它们。
   // 补法分两类, 这条闸把两类都钉住 —— 少任何一条, 那个座位又变回账上的空白。
-  test('经网关的六座: 标签落地即归座', () => {
+  test('经网关的五座: 标签落地即归座 (gate:convergence 随 gate 座 2026-09-04 删除)', () => {
     // 证伪方式: 把对应调用点的 `meta: { role: … }` 删掉 → 那一发回到 traceName=null,
     // 上面那道覆盖率闸不会红 (它只查已有标签), 但这一条会。
     expect(seatOfTrace('verifier')).toBe('verifier'); // verifier.ts:302
-    expect(seatOfTrace('gate:convergence')).toBe('gate'); // plan/llm-judge.ts
     expect(seatOfTrace('review:spec')).toBe('review-spec'); // review/run.ts (spec 维度)
     expect(seatOfTrace('review:security')).toBe('review'); // review/run.ts (其余维度)
     expect(seatOfTrace('review:verify-verdict')).toBe('review'); // review/verify.ts

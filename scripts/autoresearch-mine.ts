@@ -24,14 +24,12 @@ import {
   CANDIDATES_VERSION,
   mineFailedRuns,
   mineReadout,
-  mineSessions,
   mineTestHealth,
   mineTickets,
   type CandidateItem,
   type Candidates,
   type FailedRunRow,
   type ReadoutSummary,
-  type SessionRecord,
   type TicketMapLike,
 } from '../src/eval/replay/miners';
 import { goalDispatchedPath } from '../src/harness/pathfinder/dispatch';
@@ -47,7 +45,6 @@ export type { CandidateItem, Candidates } from '../src/eval/replay/miners';
 /** 五个矿源的取料口 —— 测试注入替身, 零进程零磁盘。 */
 export interface MineIO {
   failedRuns(): { ok: true; rows: FailedRunRow[] } | { ok: false; error: string };
-  sessions(): { ok: true; records: SessionRecord[] } | { ok: false; error: string };
   readout(): { ok: true; summary: ReadoutSummary } | { ok: false; error: string };
   tickets():
     | { ok: true; maps: TicketMapLike[]; inFlight: Set<string> }
@@ -65,7 +62,6 @@ export interface MineIO {
  */
 export const READOUT_DB_PATH = '.omd/dag-runs.db';
 /** 进化 session 根目录 (与 autoresearch-session.ts 的默认值同)。 */
-export const SESSIONS_DIR = 'runs/autoresearch/sessions';
 
 /** `--since` 支持 `<N>d` 相对写法与 ISO 绝对写法。返回 ISO 串 (与 omd_runs.updated_at 同域)。 */
 export function parseSince(spec: string, now: Date): string {
@@ -104,21 +100,6 @@ export function defaultMineIO(cwd: string): MineIO {
       }
     },
 
-    sessions: () => {
-      const dir = join(cwd, SESSIONS_DIR);
-      if (!existsSync(dir)) return { ok: false, error: `sessions 目录不在: ${dir}` };
-      try {
-        const records: SessionRecord[] = [];
-        for (const name of readdirSync(dir).sort()) {
-          const f = join(dir, name, 'session.json');
-          if (!existsSync(f)) continue;
-          records.push(JSON.parse(readFileSync(f, 'utf8')) as SessionRecord);
-        }
-        return { ok: true, records };
-      } catch (e) {
-        return { ok: false, error: `session.json 读取失败: ${(e as Error).message}` };
-      }
-    },
 
     readout: () => {
       const p = join(cwd, READOUT_DB_PATH);
@@ -185,9 +166,6 @@ export function collectCandidates(io: MineIO, sinceIso: string, generatedAt: str
   if (runs.ok) items.push(...mineFailedRuns(runs.rows, sinceIso));
   else errors.push({ source: 'failed-runs', error: runs.error });
 
-  const sess = io.sessions();
-  if (sess.ok) items.push(...mineSessions(sess.records));
-  else errors.push({ source: 'sessions', error: sess.error });
 
   const ro = io.readout();
   if (ro.ok) items.push(...mineReadout(ro.summary));

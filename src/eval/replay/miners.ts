@@ -118,100 +118,7 @@ export function mineFailedRuns(
 
 // ── ② 进化 session 台账 ────────────────────────────────────────────────────
 
-/**
- * `runs/autoresearch/sessions/<id>/session.json` 里判题要用的那几列。
- *
- * ✎ 刻意只声明用得着的字段 (结构最小面): `scripts/autoresearch-session.ts` 的
- * `SessionCheckpoint` 天然可赋给它, 而这里不对 `AggregatedFitness` 的字段集合做穷举断言 ——
- * 那边加一维不该让这里编不过。
- */
-export interface SessionRecord {
-  sessionId: string;
-  stopReason: string;
-  generations: readonly {
-    genIdx: number;
-    frontFitnessSignature: string;
-    fitnessByChild: Record<string, { main: { speedupTheoreticalMedian: number | null } }>;
-  }[];
-}
 
-/** 前沿签名连续不动多少代算「冻住」(小于平台期阈值 5 —— 要在收束之前就看见)。 */
-export const FRONT_FROZEN_GENERATIONS = 3;
-
-/** 一条 session 里前沿签名的最长连续相同长度 (0 代 → 0)。 */
-function longestFrozenRun(rec: SessionRecord): number {
-  let best = 0;
-  let cur = 0;
-  let prev: string | null = null;
-  for (const g of rec.generations) {
-    cur = g.frontFitnessSignature === prev ? cur + 1 : 1;
-    prev = g.frontFitnessSignature;
-    if (cur > best) best = cur;
-  }
-  return best;
-}
-
-/**
- * 三个信号各一条题 (跨 session 聚合 —— 提案席要的是「哪一类塌了」, 不是逐条流水):
- *   主尺 null 率 · 平台期收束 · 前沿签名连续不动。
- * 三个信号都不成立 → `[]` (不出题)。
- */
-export function mineSessions(sessions: readonly SessionRecord[]): CandidateItem[] {
-  const items: CandidateItem[] = [];
-
-  // 主尺 null 率: 分母 = 所有代的所有 child, 分子 = main.speedupTheoreticalMedian 为 null 的。
-  let total = 0;
-  let nulls = 0;
-  const nullSessions: string[] = [];
-  for (const s of sessions) {
-    let sessionHasNull = false;
-    for (const g of s.generations) {
-      for (const f of Object.values(g.fitnessByChild)) {
-        total += 1;
-        if (f.main.speedupTheoreticalMedian === null) {
-          nulls += 1;
-          sessionHasNull = true;
-        }
-      }
-    }
-    if (sessionHasNull) nullSessions.push(s.sessionId);
-  }
-  if (total > 0 && nulls > 0) {
-    items.push({
-      id: 'sessions:main-objective-null',
-      source: 'sessions',
-      summary: `主尺 speedupTheoreticalMedian 在 ${nulls}/${total} 个 child 上读作 null —— 尺子缺席时选择在盲跑`,
-      evidence: sample(nullSessions),
-      metrics: { nullCount: nulls, total, rate: nulls / total },
-    });
-  }
-
-  // 平台期收束。
-  const plateaued = sessions.filter((s) => s.stopReason === 'plateau');
-  if (plateaued.length > 0) {
-    items.push({
-      id: 'sessions:plateau',
-      source: 'sessions',
-      summary: `${plateaued.length} 个 session 以 plateau 收束 —— 变异算子在当前基质上已无增量`,
-      evidence: sample(plateaued.map((s) => s.sessionId)),
-      metrics: { count: plateaued.length },
-    });
-  }
-
-  // 前沿签名连续不动 (平台期之外的另一面: 还没收束但已经不动了)。
-  const frozen = sessions.filter((s) => longestFrozenRun(s) >= FRONT_FROZEN_GENERATIONS);
-  if (frozen.length > 0) {
-    items.push({
-      id: 'sessions:front-frozen',
-      source: 'sessions',
-      summary: `${frozen.length} 个 session 的 Pareto 前沿签名连续 ≥ ${FRONT_FROZEN_GENERATIONS} 代不动`,
-      evidence: sample(frozen.map((s) => s.sessionId)),
-      metrics: { count: frozen.length, threshold: FRONT_FROZEN_GENERATIONS },
-    });
-  }
-
-  return items;
-}
 
 // ── ③ 引擎读数 ────────────────────────────────────────────────────────────
 
@@ -273,7 +180,7 @@ export function mineReadout(readout: ReadoutSummary | null): CandidateItem[] {
  * 判题要用的地图最小面 (`src/harness/pathfinder/types.ts` 的 `PathMap` 天然可赋)。
  *
  * ✎ 契约把参数名写作 `PathfinderMap`; 仓里的真名是 `PathMap`。这里用结构最小面而不是
- * 直接收 `PathMap`, 理由与 `SessionRecord` 同 —— 判题只用三列, 收全量会把票 schema 的
+ * 直接收 `PathMap`, 理由同 (2026-09-04 前的 `SessionRecord` 也这样) —— 判题只用三列, 收全量会把票 schema 的
  * 每次演进都变成本文件的编译错。
  */
 export interface TicketMapLike {

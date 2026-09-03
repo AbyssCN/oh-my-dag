@@ -27,10 +27,9 @@ import {
 
 const ROOT = join(import.meta.dir, '..');
 
-/** 全塌的取料口 (五段各给一句原文)。 */
+/** 全塌的取料口 (四段各给一句原文)。 */
 const DEAD_IO: MineIO = {
   failedRuns: () => ({ ok: false, error: 'runs.db 不在: /nowhere/.omd/runs.db' }),
-  sessions: () => ({ ok: false, error: 'sessions 目录不在' }),
   readout: () => ({ ok: false, error: 'readout 摘要不在' }),
   tickets: () => ({ ok: false, error: '地图读取失败' }),
   testLog: () => ({ ok: false, error: '没有 /tmp/omd-test-run-*.txt' }),
@@ -84,12 +83,11 @@ describe('parseMineArgs', () => {
 });
 
 describe('collectCandidates fail-open', () => {
-  test('五源全塌: items 空, errors 五条带原文, 不抛', () => {
+  test('四源全塌: items 空, errors 四条带原文, 不抛', () => {
     const c = collectCandidates(DEAD_IO, '2026-08-26T00:00:00.000Z', '2026-09-02T00:00:00.000Z');
     expect(c.items).toEqual([]);
     expect(c.errors.map((e) => e.source)).toEqual([
       'failed-runs',
-      'sessions',
       'readout',
       'tickets',
       'test-health',
@@ -107,13 +105,12 @@ describe('collectCandidates fail-open', () => {
       '2026-09-02T00:00:00.000Z',
     );
     expect(c.items.map((i) => i.id)).toEqual(['failed-runs:not-converged']);
-    expect(c.errors).toHaveLength(4);
+    expect(c.errors).toHaveLength(3);
   });
 
   test('全活且都无题 → items 空 errors 也空 (空 ≠ 塌, 靠 errors 分辨)', () => {
     const quiet: MineIO = {
       failedRuns: () => ({ ok: true, rows: [] }),
-      sessions: () => ({ ok: true, records: [] }),
       readout: () => ({
         ok: true,
         summary: { speedupMedian: 2.1, measurable: 100, excludedMissing: 3, shapeDeclRate: 0.8 },
@@ -146,9 +143,9 @@ describe('CLI (GWT-3b: runs.db 不存在仍写出 candidates.json 并退 0)', ()
     );
     expect(failed).toBeDefined();
     expect(failed!.error).toContain('runs.db');
-    // sessions / readout 两源在空 cwd 下同样缺席 —— 三条都在, 才说明拼装没有短路
+    // readout 源在空 cwd 下同样缺席 —— 两条都在, 才说明拼装没有短路 (sessions 源随 S1/S2 于 2026-09-04 删除)
     expect((c.errors as { source: string }[]).map((e) => e.source)).toEqual(
-      expect.arrayContaining(['failed-runs', 'sessions', 'readout']),
+      expect.arrayContaining(['failed-runs', 'readout']),
     );
   });
 });

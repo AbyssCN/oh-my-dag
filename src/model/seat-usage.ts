@@ -119,8 +119,6 @@ const TRACE_SEAT_RULES: readonly [RegExp, string][] = [
   [/^primitive-leaf:/, 'leaf'], // engine.ts:2380 → 同 leaf 档
   [/^map-lister:/, 'leaf'], // engine.ts:2257 → config.leafModel
   [/^fanin-summary:/, 'leaf'], // engine.ts:3186 → faninCfg.model ?? config.leafModel(显式覆盖时会错归, model 列可查)
-  [/^halt-judge$/, 'gate'], // continuity/halt-judge.ts:241 → resolveSeatModel('gate')
-  [/^gate:convergence$/, 'gate'], // plan/llm-judge.ts:139 → 采样/档位取 seatSpec('gate')
   [/^verifier$/, 'verifier'], // verifier.ts:302 → opts.verifierModel(verifier 座)
   [/^review:spec$/, 'review-spec'], // review/run.ts:250 → specModel ⚠ 必须排在 /^review:/ 前面
   [/^review:/, 'review'], // review/run.ts:264 维度召回 + verify.ts:60/148 证伪两发, 都吃 review 座
@@ -373,7 +371,6 @@ function addTo(buckets: Record<string, SeatUsageBucket>, key: string, e: SeatUsa
 export const PLANNING_SEATS: ReadonlySet<string> = new Set([
   'conductor',
   'escalation',
-  'gate',
   'verifier',
   'judge',
   'review',

@@ -7,7 +7,7 @@
  *   - src/harness/plan-critic.ts    PP-M01 / PP-M02 升级钩子
  *   - src/harness/skill-manifest.ts loadSkillManifest / listSkills / intersectToolPool
  *   - src/harness/post-leaf-gate.ts 三态 (OK | FAIL | UNVERIFIED) + reason + oracleFaults
- *   - src/harness/prompt-lint.ts    DECISION_EDUCATION_CANONICAL + lintDecisionEducation
+ *   - (src/harness/prompt-lint.ts 随 v1 prompt 于 2026-09-04 删除; 原 14/15 两组用例一并删)
  *
  * ## 纪律 (GP-1/2 / R6)
  *
@@ -29,12 +29,6 @@
 import { describe, test, expect } from 'bun:test';
 import { resolve, join } from 'node:path';
 
-import {
-  DECISION_EDUCATION_CANONICAL,
-  DECISION_EDUCATION_CANONICAL_CHARS,
-  LINT_MAX_DECISION_EDUCATION_CHARS,
-  lintDecisionEducation,
-} from '../src/harness/prompt-lint';
 
 // ─── 路径 ─────────────────────────────────────────────────────────────────
 
@@ -465,32 +459,4 @@ describe('13. 绿路径 — valid-plan.json 全绿, exit 0, stdout toolRefs 全 
   }, 30_000);
 });
 
-describe('14. prompt-lint canonical — lintDecisionEducation(DECISION_EDUCATION_CANONICAL) → ok:true', () => {
-  test('canonical 文本 Unicode 字符数 = 导出常量, 且 ≤ LINT_MAX_DECISION_EDUCATION_CHARS', () => {
-    // sanity: 导出常量与实测一致 (这层若漂移, 编译期 prompt-lint.ts:46 throw 已拦, 这里只是数字落地)
-    expect(Array.from(DECISION_EDUCATION_CANONICAL).length).toBe(DECISION_EDUCATION_CANONICAL_CHARS);
-    expect(DECISION_EDUCATION_CANONICAL_CHARS).toBeLessThanOrEqual(LINT_MAX_DECISION_EDUCATION_CHARS);
-  });
 
-  test('canonical 文本 lintDecisionEducation → {ok:true}', () => {
-    const out = lintDecisionEducation(DECISION_EDUCATION_CANONICAL);
-    expect(out.ok).toBe(true);
-  });
-});
-
-describe('15. prompt-lint 双倍复制 — 超 LINT_MAX_DECISION_EDUCATION_CHARS 必返 ok:false', () => {
-  test('canonical 串接自身 → 长度 > LINT_MAX_DECISION_EDUCATION_CHARS 且 lintDecisionEducation → ok:false', () => {
-    const doubled = DECISION_EDUCATION_CANONICAL + DECISION_EDUCATION_CANONICAL;
-    expect(Array.from(doubled).length).toBeGreaterThan(LINT_MAX_DECISION_EDUCATION_CHARS);
-    const out = lintDecisionEducation(doubled);
-    expect(out.ok).toBe(false);
-    if (!out.ok) {
-      // reason 必含上限值, 必不含 "truncated" 字眼 (永不运行期截断的纪律, prompt-lint.ts:75)
-      expect(out.reason).toContain(String(LINT_MAX_DECISION_EDUCATION_CHARS));
-      expect(out.reason.toLowerCase()).not.toContain('truncated');
-      // length 字段 = 原文字符数 (原文未动)
-      expect(out.length).toBe(Array.from(doubled).length);
-      expect(out.limit).toBe(LINT_MAX_DECISION_EDUCATION_CHARS);
-    }
-  });
-});

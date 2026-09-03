@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadAgentTemplates, templateRoster, type AgentTemplate } from '../../src/harness/agent-templates';
 import { BUILTIN_AGENT_TEMPLATES } from '../../src/harness/agent-templates-builtin';
-import { conductorSystemPrompt, parsePlan } from '../../src/harness/conductor-plan';
+import { parsePlan } from '../../src/harness/conductor-plan';
 import { buildLeafPrompt } from '../../src/harness/dag/planner';
 import { type GenerateFn } from '../../src/harness/dag/engine';
 import { runExecutorDag } from '../helpers/legacy-plan-entry';
@@ -101,17 +101,8 @@ describe('S1 evidence 证据类字段 (S2 证据闸的绑定点, SDD 2026-07-25)
   });
 });
 
-describe('conductor prompt + parsePlan (规划层)', () => {
+describe('parsePlan (规划层; 注册表段随 v1 prompt 于 2026-09-04 删除)', () => {
   const registry: AgentTemplate[] = [{ name: 'card-a', description: 'does A', body: 'BODY-A' }];
-
-  test('注册表段: 只进 description 行, body 不进规划上下文', () => {
-    const sys = conductorSystemPrompt({ templates: registry.map((t) => ({ name: t.name, description: t.description })) });
-    expect(sys).toContain('- "card-a": does A');
-    expect(sys).toContain('"template"?: string'); // 输出契约含 template 字段
-    expect(sys).not.toContain('BODY-A');
-    // 无注册表 → 无该段 (宿主路径 BC)
-    expect(conductorSystemPrompt({})).not.toContain('Agent template cards');
-  });
 
   test('TPL-2: 未知 template 名整 plan 拒 (含 map 子模板), 已知/无 opts 通过', () => {
     const mk = (tpl: string) => JSON.stringify({ name: 'p', nodes: { n: { agent: 'x', goal: 'g', template: tpl } } });

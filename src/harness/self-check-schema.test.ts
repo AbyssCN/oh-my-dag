@@ -90,13 +90,13 @@ describe('GWT-1a: self_check 字段 + schema + registry 同步 (INV-1-1)', () =>
     expect(parsePlan(text, { knownServers: new Set() }).ok).toBe(true);
   });
 
-  test('registry: self_check 有条目, declared=true, 指真实消费点 (INV-1-1)', () => {
+  test('registry: self_check 有条目, declared=false (v1 prompt 已删, 无明示面), 指真实消费点 (INV-1-1)', () => {
     const e = REGISTRY['self_check'];
     expect(e).toBeDefined();
     expect(e!.consumer).not.toBe('—');
     expect(e!.consumer).toContain('executor-dag'); // 引擎消费点 (slice 3 接线)
     expect(e!.consumer).toContain('vetSelfCheck'); // 规划期闸 (本切片)
-    expect(e!.declared).toBe(true);
+    expect(e!.declared).toBe(false); // 2026-09-04: 明示它的 v1 conductor prompt 已删, 没有任何 prompt 再邀请写它
     expect(e!.fingerprint).toBe('fields'); // 改 self_check = 不同执行 = 入键
   });
 });

@@ -10,12 +10,12 @@
  * 于是按卡序跑, 每张卡烧自己那份预算, 夜帽是**总闸**: 超了的卡不起跑, 记 `night-budget`
  * 而不是记失败 —— 「没轮到」与「跑了没成」是两件事。
  *
- * ## 两种基质两条路
+ * ## 只剩一种基质 (2026-09-04)
  *
- *  - S1/S2 (进化卡): 进程内调 `runSession` (autoresearch-session.ts 已导出);
- *  - S3   (代码卡): 子进程 `bun run src/harness/cli.ts solve …`, 走 worktree 分支。
+ *  - S3 (代码卡): 子进程 `bun run src/harness/cli.ts solve …`, 走 worktree 分支。
+ *  - S1/S2 (进化卡: 变异 v1 conductor prompt 再回放) 随 v1 规划式 conductor 退役删除 —— 被试对象已不存在。
  *
- * 两条路都由 `SessionsDeps` 注入 —— 测试跑完整条编排, 零 LLM 零子进程。
+ * 执行路由 `SessionsDeps` 注入 —— 测试跑完整条编排, 零 LLM 零子进程。
  *
  * ## 无卡不是失败 (D-3 / GWT-4)
  *
@@ -25,34 +25,12 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
-import type { AggregatedFitness } from '../src/eval/replay/fitness';
-import type {
-  CodeCard,
-  EvolveCard,
-  FitnessField,
-  SessionCard,
-  Substrate,
-} from '../src/eval/replay/session-card';
-import type { MutationProvider } from '../src/eval/replay/mutate';
-import { defaultLiveProvider, loadCorpusFromPath, type LiveProvider } from './autoresearch-replay';
-import {
-  SESSION_BASELINE_VARIANT,
-  runSession,
-  type GenerationRecord,
-  type SessionResult,
-} from './autoresearch-session';
+import type { CodeCard, FitnessField, SessionCard, Substrate } from '../src/eval/replay/session-card';
 
-/** 一代的曲线点。主目标那一维本来就可能读作 null (主尺缺席), 原样带出去不补 0。 */
+/** 一代的曲线点 (S1/S2 的遗产字段; S3 卡恒空数组, 附录渲染仍认这个形状)。 */
 export interface CurvePoint {
   gen: number;
   main: number | null;
-  /**
-   * 该代赢家的 planValidityRate。
-   *
-   * ✎ 契约冻结接口写的是 `validity: number`。改成可空的理由与主尺同: 赢家的 fitness 记录
-   * 取不到时 (记录残缺), 「合格率是 0」与「合格率没读到」是两件事, 编一个 0 事后分不开
-   * (仓规 §静默坑 1)。正常路径上永不为 null —— baseline 从第 0 代取, 子代从本代取。
-   */
   validity: number | null;
 }
 
@@ -95,121 +73,16 @@ export const NIGHT_BUDGET_STOP = 'night-budget';
 
 export interface SessionsOpts {
   cwd: string;
-  /** 冻结语料 manifest (座位与语料 hash 的真源)。 */
-  manifestPath: string;
-  /** 本夜目录, variant / journal / session 落点都挂在它下面。 */
+  /** 本夜目录, result-out 落点挂在它下面。 */
   nightDir: string;
   /** 夜墙钟总闸 (分钟)。超了的卡不起跑。 */
   nightBudgetMinutes: number;
-  /** 回放并发 (透传 runSession.replayConcurrency)。缺省 = DEFAULT_REPLAY_CONCURRENCY。 */
-  replayConcurrency?: number;
 }
 
-/**
- * 回放默认并发。2026-09-02 烟测: M3 conductor 一题中位 95s (out 中位 14K token), 串行一个
- * variant 27 题 ≈ 43 min, K=4 一代 ≈ 3h; 4 路并发把一代压到 ~45 min。env OMD_REPLAY_CONCURRENCY 可覆盖。
- */
-export const DEFAULT_REPLAY_CONCURRENCY = 4;
-
-/** 两条执行路 + 两个 LLM 注入点 + 时钟, 全部可注入 (测试跑真编排, 零 LLM 零子进程)。 */
+/** 执行路 + 时钟, 全部可注入 (测试跑真编排, 零 LLM 零子进程)。 */
 export interface SessionsDeps {
-  runEvolve?: (card: EvolveCard, opts: SessionsOpts) => Promise<Omit<CardResult, 'wallMs'>>;
   runCode?: (card: CodeCard, opts: SessionsOpts) => Promise<Omit<CardResult, 'wallMs'>>;
-  /**
-   * S1/S2 的联机提供器。缺省 = `defaultLiveProvider` (真烧 token)。
-   * 测试装 fake → 整条 session 编排真跑, 零 HTTP。
-   */
-  liveProvider?: LiveProvider;
-  /**
-   * S1/S2 的变异算子。缺省 = `defaultMutationProvider` (由 `runSession` 兜底, 也真烧 token)。
-   * 测试装 fake → 变异这一跳也零 HTTP。
-   */
-  mutationProvider?: MutationProvider;
   now?: () => number;
-}
-
-// ── 曲线 ──────────────────────────────────────────────────────────────────
-
-/**
- * 逐代取**赢家**在主目标与 validity 上的读数。
- *
- * 赢家解析是全的: `baseline` 只在第 0 代被评估过 (session.ts 的 gen≥1 只把子代写进
- * `fitnessByChild`), 于是这里维护一张「变体 → 最近一次已知 fitness」的表, 边走边补。
- * 查不到 → 两维都记 null, 不编数。
- */
-export function curveOf(
-  generations: readonly GenerationRecord[],
-  mainObjective: FitnessField,
-): CurvePoint[] {
-  const known = new Map<string, AggregatedFitness>();
-  const points: CurvePoint[] = [];
-  for (const g of generations) {
-    for (const [name, fit] of Object.entries(g.fitnessByChild)) known.set(name, fit.main);
-    const winner = g.winnerIds[0] ?? SESSION_BASELINE_VARIANT;
-    const fit = known.get(winner);
-    points.push({
-      gen: g.genIdx,
-      main: fit ? ((fit[mainObjective] as number | null) ?? null) : null,
-      validity: fit ? fit.planValidityRate : null,
-    });
-  }
-  return points;
-}
-
-// ── 默认两条执行路 ────────────────────────────────────────────────────────
-
-function evolveResultToCard(card: EvolveCard, r: SessionResult): Omit<CardResult, 'wallMs'> {
-  return {
-    cardId: card.id,
-    substrate: card.substrate,
-    mainObjective: card.mainObjective,
-    sessionId: r.sessionId,
-    stopReason: r.stopReason,
-    winnerIds: [...r.winnerIds],
-    curve: curveOf(r.generations, card.mainObjective),
-  };
-}
-
-/**
- * S1/S2: 进程内 runSession, 语料/journal/session 全挂在本夜目录下 (不污染主账本)。
- *
- * ## 两个 LLM 座都在这里接上 (缺口 1)
- *
- * `runSession` 的两个 provider 都是**可注入且有默认**的, 而两个默认值指向相反的方向:
- * rawText 默认回落 `stubVariantToRawText` (canned plan, 零 LLM —— 曲线照样有数, 但那是
- * 假 fitness, 没有一处会红), 变异默认 `defaultMutationProvider` (缺 seats 直接抛)。
- * 于是这条路必须**两个都显式装**: live provider 送 (variant, id, prompt) 进联机装配,
- * `manifest.seats` 送进变异上下文。少装哪一个, 都由本文件配套测试的两条守着。
- *
- * variant 读盘根目录跟着本夜目录走 —— 指回仓库默认目录, 子代 spec 读不回来, 每个子代的
- * 系统提示与基线逐字节相同, 进化静默退化成基线复读。
- */
-async function defaultRunEvolve(
-  card: EvolveCard,
-  opts: SessionsOpts,
-  deps: SessionsDeps = {},
-): Promise<Omit<CardResult, 'wallMs'>> {
-  const corpus = loadCorpusFromPath(join(opts.cwd, opts.manifestPath), false);
-  const seats = corpus.manifest.seats;
-  const variantDir = join(opts.nightDir, 'variants');
-  const liveProvider = deps.liveProvider ?? defaultLiveProvider;
-  const r = await runSession({
-    corpus,
-    K: card.K,
-    maxGenerations: card.maxGenerations,
-    topM: card.topM,
-    budgetMs: card.budgetMinutes * 60_000,
-    sessionId: `night-${card.id}`,
-    variantDir,
-    journalPath: join(opts.nightDir, 'journal.md'),
-    sessionsDir: join(opts.nightDir, 'sessions'),
-    seats,
-    replayConcurrency: opts.replayConcurrency ?? DEFAULT_REPLAY_CONCURRENCY,
-    rawTextProvider: (variant, id, prompt) =>
-      liveProvider(id, prompt, { seats, variant, id, variantDir }),
-    ...(deps.mutationProvider ? { mutationProvider: deps.mutationProvider } : {}),
-  });
-  return evolveResultToCard(card, r);
 }
 
 /**
@@ -296,8 +169,6 @@ export async function runCards(
   if (cards.length === 0) return { cards: [], reason: NO_CARDS_REASON };
 
   const now = deps.now ?? Date.now;
-  const runEvolve =
-    deps.runEvolve ?? ((card: EvolveCard, o: SessionsOpts) => defaultRunEvolve(card, o, deps));
   const runCode = deps.runCode ?? defaultRunCode;
   const deadline = now() + opts.nightBudgetMinutes * 60_000;
 
@@ -317,8 +188,7 @@ export async function runCards(
       continue;
     }
     try {
-      const partial =
-        card.substrate === 'S3' ? await runCode(card, opts) : await runEvolve(card, opts);
+      const partial = await runCode(card, opts);
       out.push({ ...partial, wallMs: now() - startedAt });
     } catch (e) {
       // fail-open 可以吞异常, 不许吞证据: cardId + 错误原文都在。
@@ -343,24 +213,18 @@ export interface SessionsArgs {
   cardsPath: string;
   out: string;
   cwd: string;
-  manifestPath: string;
   nightBudgetMinutes: number;
-  replayConcurrency: number;
 }
 
 const USAGE =
   'usage: bun scripts/autoresearch-night-sessions.ts <cards.json> --out <results.json> ' +
-  '[--cwd <dir>] [--manifest <path>] [--night-budget-minutes 480] [--replay-concurrency 4]';
-
-export const DEFAULT_MANIFEST = 'runs/autoresearch/corpus/manifest.json';
+  '[--cwd <dir>] [--night-budget-minutes 480]';
 
 export function parseSessionsArgs(argv: readonly string[]): SessionsArgs {
   let cardsPath = '';
   let out = '';
   let cwd = process.cwd();
-  let manifestPath = DEFAULT_MANIFEST;
   let nightBudgetMinutes = 480;
-  let replayConcurrency = Number(process.env.OMD_REPLAY_CONCURRENCY ?? DEFAULT_REPLAY_CONCURRENCY);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     const next = (): string => {
@@ -370,18 +234,13 @@ export function parseSessionsArgs(argv: readonly string[]): SessionsArgs {
     };
     if (a === '--out') out = next();
     else if (a === '--cwd') cwd = next();
-    else if (a === '--manifest') manifestPath = next();
     else if (a === '--night-budget-minutes') nightBudgetMinutes = Number(next());
-    else if (a === '--replay-concurrency') replayConcurrency = Number(next());
     else if (a.startsWith('--')) throw new Error(`认不出的参数: ${a}`);
     else cardsPath = a;
   }
   if (cardsPath === '') throw new Error('cards.json 路径必填');
   if (out === '') throw new Error('--out 必填');
-  if (!Number.isInteger(replayConcurrency) || replayConcurrency < 1) {
-    throw new Error(`--replay-concurrency 须为 ≥1 的整数, 收到 ${replayConcurrency}`);
-  }
-  return { cardsPath, out, cwd, manifestPath, nightBudgetMinutes, replayConcurrency };
+  return { cardsPath, out, cwd, nightBudgetMinutes };
 }
 
 /** 从 cards.json (校卡闸产物) 取 accepted。文件缺席 / 形状不对 → 空数组 (下游记 no-cards)。 */
@@ -400,22 +259,18 @@ if (import.meta.main) {
     process.exit(2);
   }
   const cards = readAcceptedCards(args.cardsPath);
-  const results = await runCards(cards, {
+  const result = await runCards(cards, {
     cwd: args.cwd,
-    manifestPath: args.manifestPath,
     nightDir: dirname(args.out),
     nightBudgetMinutes: args.nightBudgetMinutes,
-    replayConcurrency: args.replayConcurrency,
   });
   mkdirSync(dirname(args.out), { recursive: true });
-  writeFileSync(args.out, `${JSON.stringify(results, null, 2)}\n`);
-  process.stdout.write(
-    `[night-sessions] ${results.cards.length} 张卡跑完${results.reason ? ` (${results.reason})` : ''} → ${args.out}\n`,
-  );
-  for (const c of results.cards) {
+  writeFileSync(args.out, `${JSON.stringify(result, null, 2)}\n`);
+  process.stdout.write(`[sessions] ${result.cards.length} 张卡 → ${args.out}${result.reason ? ` (${result.reason})` : ''}\n`);
+  for (const c of result.cards) {
     process.stdout.write(
       `  · ${c.cardId} [${c.substrate}] ${c.stopReason} · ${Math.round(c.wallMs / 1000)}s` +
-        `${c.error ? ` · 错误: ${c.error}` : ''}\n`,
+        `${c.error ? ` · error: ${c.error}` : ''}\n`,
     );
   }
   process.exit(0);

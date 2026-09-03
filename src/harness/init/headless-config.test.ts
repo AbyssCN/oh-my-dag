@@ -186,8 +186,8 @@ describe('setRoleHeadless', () => {
 
   test('不在登记表的座拒 + 全座位可调 + 坏坐标拒', () => {
     expect(() => setRoleHeadless('plan', 'x:y')).toThrow(/不在座位登记表/);
-    // 切片 A: 全座位可调 —— gate 在登记表里 (旧清单只有 conductor/leaf/verifier), 现在能落。
-    expect(() => setRoleHeadless('gate', 'x:y')).not.toThrow();
+    // 切片 A: 全座位可调 —— judge 在登记表里 (旧清单只有 conductor/leaf/verifier), 现在能落。
+    expect(() => setRoleHeadless('judge', 'x:y')).not.toThrow();
     expect(() => setRoleHeadless('conductor', 'not-a-coord')).toThrow(/格式非法/);
   });
 });

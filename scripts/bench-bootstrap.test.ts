@@ -26,7 +26,7 @@ describe('bench-bootstrap (E1b 容器配置引导)', () => {
     expect(Object.keys(m).length).toBe(SEATS.length);
     for (const id of ['conductor', 'escalation', 'fusion', 'graft']) expect(m[id]).toBe('bench:claude-opus-5');
     for (const id of ['verifier', 'review', 'review-spec']) expect(m[id]).toBe('bench:gpt-5.6-sol');
-    for (const id of ['leaf', 'agent', 'judge', 'gate', 'lens']) expect(m[id]).toBe('bench:MiniMax-M3');
+    for (const id of ['leaf', 'agent', 'judge', 'lens']) expect(m[id]).toBe('bench:MiniMax-M3');
   });
 
   // P2a (2026-09-02): escalation 此前恒等于 conductor 坐标 (CONDUCTOR_SEATS 分组), 使

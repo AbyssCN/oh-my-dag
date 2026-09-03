@@ -15,7 +15,7 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { conductorSystemPrompt, type ConductorPlan } from './conductor-plan';
+import { type ConductorPlan } from './conductor-plan';
 import { nodeFieldsKey } from './plan-passes/semantic-key';
 import { dedupPass } from './plan-passes/dedup-pass';
 import { REGISTRY } from './schema-field-registry';
@@ -64,17 +64,6 @@ describe('mcp schema-registry 五处同步', () => {
     expect(entry!.consumer).not.toBe('—');
   });
 
-  test('④ DECLARED_CONSUMERS 关系: 生产 prompt 明示 mcp ⇒ REGISTRY 登记 declared 且有消费者', () => {
-    // 「明示即承诺」与 empty-knobs DECLARED_CONSUMERS 是同一纪律的两个入口; 这里钉 mcp 这一行:
-    // 生产 conductorSystemPrompt (full/lean 两档) 明示形状里有 mcp。
-    // 证伪: prompt 形状行删 mcp → contains 红; REGISTRY.declared 回退 false → toBe(true) 红;
-    // consumer 回退 '—' → 红 (三个入口任一脱钩都抓得到)。
-    for (const profile of ['full', 'lean'] as const) {
-      expect(conductorSystemPrompt({ profile })).toContain('"mcp"?: string[]');
-    }
-    expect(REGISTRY.mcp!.declared).toBe(true);
-    expect(REGISTRY.mcp!.consumer).not.toBe('—');
-  });
 
   test('⑤ 生成文档: 生产生成器渲染的 mcp 行逐字节在 docs 表里', () => {
     // 证伪: REGISTRY.mcp 任一列回退旧值 → renderRegistryDoc 的 mcp 行变 → includes 红;

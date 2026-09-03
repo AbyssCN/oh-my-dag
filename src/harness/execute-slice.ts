@@ -50,8 +50,6 @@ export interface ExecuteExtensionOpts {
   leafModel: string;
   /** agent leaf 模型 (带工具改文件)。省略 = leafModel。 */
   agentLeafModel?: string;
-  /** 收敛 judge 模型。省略 = leafModel。 */
-  judgeModel?: string;
   /** 最大迭代轮数。省略 = iterate 默认 (3)。 */
   maxRounds?: number;
   /** conductor 轮级升级模型 (未收敛多轮换强 conductor 重画)。省略 = 永不升级。 */

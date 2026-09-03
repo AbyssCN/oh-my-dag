@@ -59,7 +59,7 @@ export function nightDir(date: string): string {
 const CARD_SCHEMA_TEXT = [
   '{ "cards": [ {',
   '  "version": 1, "id": "<短横线小写 id>",',
-  '  "substrate": "S1" | "S2" | "S3",',
+  '  "substrate": "S3",',
   '  "mainObjective": "planValidityRate" | "fakeSerialPairsTotal" | "speedupTheoreticalMedian"',
   '                 | "shapeDeclarationRate" | "planningTokensTotal",',
   '  "objectiveRow": "O1" | "O2" | "O3a" | "O3b" | "O3c",',
@@ -68,9 +68,7 @@ const CARD_SCHEMA_TEXT = [
   '  "successSignal": "<什么读数算成 —— 动手前写死>",',
   '  "voidConditions": ["<什么情况下这条读数作废>"],',
   '  "budgetMinutes": <整数>,',
-  '  // substrate=S1|S2 追加: "K": <整数>, "maxGenerations": <整数>, "topM": <整数>,',
-  '  //                       可选 "seedVariant", "mutationHint"',
-  '  // substrate=S3   追加: "goal": "<改什么>", "writeSet": ["<路径>"], "verify": "<命令>"',
+  '  "goal": "<改什么>", "writeSet": ["<路径>"], "verify": "<命令>"',
   '} ] }',
 ].join('\n');
 
@@ -83,7 +81,7 @@ function proposeGoal(opts: NightOpts): string {
     '## 硬约束',
     '',
     `- 至多 ${opts.maxCards} 张卡; ΣbudgetMinutes ≤ ${opts.nightBudgetMinutes}, 单卡 ≤ ${opts.sessionBudgetMinutes}。`,
-    '- 一张卡只跑一个基质 (S1|S2|S3), 不许写成数组或拼接。',
+    '- 一张卡只跑一个基质, 今天只有 S3 (代码改动走 solve); S1/S2 (变异 v1 prompt) 已于 2026-09-04 退役。',
     '- mainObjective 只能取下面 schema 里列出的五个字面量之一。',
     '- evidenceRefs 每一条必须逐字等于 candidates.items[].id 里的某一个; 不许自己编 id。',
     '- S3 卡的 writeSet 不许含: docs/plan/autoresearch-objective.md · src/eval/replay/** ·',
@@ -133,7 +131,7 @@ export function buildNightChain(opts: NightOpts): StageChain {
       command:
         `bun scripts/autoresearch-night-sessions.ts ${d}/cards.json --out ${d}/results.json ` +
         `--night-budget-minutes ${opts.nightBudgetMinutes}`,
-      goal: '按卡序串行跑 session (S1/S2 进程内进化 · S3 子进程 solve)',
+      goal: '按卡序串行跑 session (S3 子进程 solve, worktree 分支)',
     },
     {
       id: 'promote',
@@ -141,7 +139,7 @@ export function buildNightChain(opts: NightOpts): StageChain {
       command:
         `bun scripts/autoresearch-promote.ts ${d}/results.json --out ${d}/promotion.json ` +
         `--date ${opts.date}`,
-      goal: '晋升闸: S1/S2 held-out 两维不降 ∧ 护栏绿 → promoted; S3 主目标量不出 → 恒 held + 机械审计 (分支真在 / 禁改路径 / 判据虚探针); 进 main 仍是人',
+      goal: '晋升闸: S3 主目标量不出 → 恒 held + 机械审计 (分支真在 / 禁改路径 / 判据虚探针), 人审后进 main',
     },
     {
       id: 'verify',

@@ -20,7 +20,7 @@ import { classifyRetryDomain, retryBudgetFor, type RetryDomain } from './retry-d
 import { reconcileGateIds, scanGateVerdicts } from '../gates/gate-registry';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagConfig, GenerateFn } from './types';
-import { PLAN_BOUNDARY } from '../conductor-plan';
+import { PLAN_BOUNDARY } from '../../../test/helpers/legacy-plan-entry';
 import { registerProvider } from '../../model/providers';
 
 // 注册一个让升级模型能 ready 的假 provider (INV-6 测试要用 conductorEscalationModel 进升级轮)。

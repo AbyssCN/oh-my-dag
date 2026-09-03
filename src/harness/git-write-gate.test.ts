@@ -36,7 +36,6 @@ import {
   gitWriteBlockReason,
   gitWriteBlockReasonForLink,
 } from './command-leaf';
-import { GIT_BLOCKED_SUBCOMMANDS_FOR_PROMPT, commandGateRules } from './conductor-plan';
 import { createOmdAgentTools, type AnyOmdTool } from './agent-tools';
 
 const bashTool = (root: string): AnyOmdTool =>
@@ -155,43 +154,6 @@ describe('#239 git 写闸: agent 节点与 command 节点同一份判据', () =>
     }
   });
 
-  it('★ prompt 的两半与闸同一份判据 —— 放行表说放行的, 禁表不许再说 never', () => {
-    // 2026-09-02 补的闸。**它此前不存在, 这正是那个 bug 没被发现的原因**:
-    // `bd1820aa` 把 add/commit 放进 GIT_READONLY_SUBCOMMANDS 后, commandGateRules 的前半句
-    // (真源导出) 跟着变了, 后半句是手写字面量 `never checkout/commit/add/push` —— 同一句话
-    // 自相矛盾, conductor 读到后半句就不再产 git add/commit 节点。快照闸只锁"字节没变",
-    // 锁不住"两半说的是不是同一件事"。
-    //
-    // 怎么让它红 (三臂都实跑过, 读数如实记):
-    //   ① 把 GIT_BLOCKED_SUBCOMMANDS_FOR_PROMPT 改回手写字面量并塞进 'commit' → **本条红** (1 fail);
-    //   ② 让 prompt 那一句不再由这两个常量拼 (写死 'checkout/push') → **本条红** (1 fail);
-    //   ③ 把 'checkout' 加进 GIT_READONLY_SUBCOMMANDS → **本条仍绿, 而本文件另 4 条红**。
-    //      ③ 不红是对的、也是这条闸的设计意图: 禁半句由放行表推出, 放行表一松它自动跟着缩,
-    //      **结构上造不出矛盾**。"放行表本身松没松"归闸自己那几条管, 不归本条 —— 两层分工,
-    //      别让一条测试假装什么都测。
-    const prompt = commandGateRules().join(' ');
-
-    // 1) 禁表里的每一个子命令, 闸必须真的拒 —— 且不许与放行表相交 (结构上的自相矛盾)。
-    for (const sub of GIT_BLOCKED_SUBCOMMANDS_FOR_PROMPT) {
-      expect(GIT_READONLY_SUBCOMMANDS, `禁表与放行表相交: ${sub}`).not.toContain(sub);
-      expect(commandBlockReason(`git ${sub} x`, DEFAULT_COMMAND_ALLOWLIST), `闸应拒: git ${sub}`)
-        .not.toBeNull();
-    }
-    expect(GIT_BLOCKED_SUBCOMMANDS_FOR_PROMPT.length).toBeGreaterThan(0);
-
-    // 2) 放行表里的每一个子命令, prompt 不许把它写进 never 那半句。
-    const neverHalf = prompt.slice(prompt.indexOf('never '));
-    for (const sub of GIT_READONLY_SUBCOMMANDS) {
-      expect(neverHalf, `放行表里的 '${sub}' 出现在 prompt 的 never 半句里`).not.toContain(`${sub}/`);
-    }
-
-    // 3) prompt 确实是由这两个常量拼出来的 (不是碰巧文字对上)。
-    expect(prompt).toContain(GIT_READONLY_SUBCOMMANDS.join('/'));
-    expect(prompt).toContain(GIT_BLOCKED_SUBCOMMANDS_FOR_PROMPT.join('/'));
-    // `commit --amend` 已收回 dangerous, prompt 必须说出来 —— 否则 conductor 产了就是一次假红。
-    // (写作 `nor --amend` 而非全称: 两档共用段的字节预算只剩个位数, 见 conductor-plan 的说明。)
-    expect(prompt).toContain('--amend');
-  });
 
   it('★ 单段版判据: 非 git 命令一律不管 (闸只管自己那一格)', () => {
     // 怎么让它红: 把判据写成"命令串里出现 checkout 就拒" → `echo checkout` 被误伤, 这条红。

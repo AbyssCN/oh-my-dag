@@ -43,7 +43,7 @@ describe('seam 目录 (gen-seam-catalog)', () => {
     expect(deadFields(seams)).toEqual(['DagZzzSeam.zzzUnusedKnob9']);
   });
 
-  test('结构绊线: 8 seam / 50 字段 (改了分组或增删字段 → 抬这两个数并重跑生成器; 2026-09-04 v1 退役删 6 个死旋钮 56→50)', () => {
+  test('结构绊线: 8 seam / 50 字段 (改了分组或增删字段 → 抬这两个数并重跑生成器; 2026-09-04 v1 退役删 6 个死旋钮 56→50, 再删 judgeModel 随 gate 座 → 49)', () => {
     // 刻意保留字面量 —— 派生成 length 就成恒真式, 绊线就没了 (同 seat-check 16→18 的先例)
     // +1 来自 #247 片 2: planCriticGate (DagLeafShapingSeam)
     // +1 来自 D2 切片 2 (#266): repoChecks (DagRunnersSeam) + 新类型 RepoCheck
@@ -52,7 +52,7 @@ describe('seam 目录 (gen-seam-catalog)', () => {
     // 注: 新增 `RepoCheck` 类型不在 Dag*Seam 接口字段数内, 故 seam 字段数只 +1。
     const seams = extractSeams(readFileSync(join(ROOT, 'src/harness/dag/types.ts'), 'utf8'));
     expect(seams).toHaveLength(8);
-    expect(seams.reduce((n, s) => n + s.fields.length, 0)).toBe(50);
+    expect(seams.reduce((n, s) => n + s.fields.length, 0)).toBe(49);
   });
 
   // 2026-09-02 实测踩到的病: `src/harness/plan/map-expand.ts` 的注释里写了某个 Dag*Seam 字段名,

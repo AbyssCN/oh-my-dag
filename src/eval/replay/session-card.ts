@@ -26,8 +26,8 @@ import { touchesExcluded } from './night-excluded';
 
 export const SESSION_CARD_VERSION = 1;
 
-/** 研究基质: S1/S2 = 进化 session (提示面/图式), S3 = 代码改动走 solve。 */
-export type Substrate = 'S1' | 'S2' | 'S3';
+/** 研究基质: 只剩 S3 = 代码改动走 solve。S1/S2 (提示面 / 图式进化 session) 随 v1 规划式 conductor 于 2026-09-04 退役 —— 它们变异的是已删的 prompt。 */
+export type Substrate = 'S3';
 
 /** 主目标只能落在 AggregatedFitness 的这五维上 (objective.md §目标 的可机械读那部分)。 */
 export type FitnessField =
@@ -65,15 +65,6 @@ interface SessionCardBase {
   budgetMinutes: number;
 }
 
-export interface EvolveCard extends SessionCardBase {
-  substrate: 'S1' | 'S2';
-  K: number;
-  maxGenerations: number;
-  topM: number;
-  seedVariant?: string;
-  mutationHint?: string;
-}
-
 export interface CodeCard extends SessionCardBase {
   substrate: 'S3';
   goal: string;
@@ -81,7 +72,7 @@ export interface CodeCard extends SessionCardBase {
   verify: string;
 }
 
-export type SessionCard = EvolveCard | CodeCard;
+export type SessionCard = CodeCard;
 
 // ── schema (结构兜底; 语义判在下面的显式闸, 不靠 zod 的错误文本) ──────────────
 
@@ -103,16 +94,6 @@ const baseShape = {
   budgetMinutes: z.number().int().positive(),
 };
 
-const evolveShape = {
-  K: z.number().int().positive(),
-  maxGenerations: z.number().int().positive(),
-  topM: z.number().int().positive(),
-  seedVariant: z.string().min(1).optional(),
-  mutationHint: z.string().min(1).optional(),
-};
-
-const S1Schema = z.object({ ...baseShape, ...evolveShape, substrate: z.literal('S1') });
-const S2Schema = z.object({ ...baseShape, ...evolveShape, substrate: z.literal('S2') });
 const S3Schema = z.object({
   ...baseShape,
   substrate: z.literal('S3'),
@@ -121,12 +102,8 @@ const S3Schema = z.object({
   verify: z.string().min(1),
 });
 
-/** 三支判别联合 (S1/S2 同形但分开写, 让判别键的错误停在 `substrate` 上)。 */
-export const SessionCardSchema: z.ZodType<SessionCard> = z.discriminatedUnion('substrate', [
-  S1Schema,
-  S2Schema,
-  S3Schema,
-]) as unknown as z.ZodType<SessionCard>;
+/** 只剩 S3 一支 (2026-09-04)。 */
+export const SessionCardSchema: z.ZodType<SessionCard> = S3Schema as unknown as z.ZodType<SessionCard>;
 
 // ── 校卡闸 ────────────────────────────────────────────────────────────────
 
@@ -199,12 +176,12 @@ export function gateCards(
   let budgetUsed = 0;
 
   for (const card of list) {
-    // ① 单基质: 判别键必须逐字是三个字面量之一 (数组 / 'S1+S2' / 缺席全拒)。
+    // ① 单基质: 判别键必须逐字是 'S3' (数组 / 'S1' / 缺席全拒; S1/S2 已随 v1 退役)。
     const substrate = field(card, 'substrate');
-    if (substrate !== 'S1' && substrate !== 'S2' && substrate !== 'S3') {
+    if (substrate !== 'S3') {
       rejected.push({
         card,
-        reason: `substrate 非法: ${JSON.stringify(substrate)} —— 一张卡只跑一个基质 (S1|S2|S3)`,
+        reason: `substrate 非法: ${JSON.stringify(substrate)} —— 一张卡只跑一个基质, 今天只有 S3 (S1/S2 已退役)`,
       });
       continue;
     }

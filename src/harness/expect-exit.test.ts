@@ -10,7 +10,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { runExecutorDagWithPlan } from './dag/engine';
-import { PlanSchema, conductorSystemPrompt } from './conductor-plan';
+import { PlanSchema } from './conductor-plan';
 import { nodeFieldsKey } from './plan-passes/semantic-key';
 import type { ConductorPlan } from './conductor-plan';
 import type { ExecutorDagConfig, GenerateFn } from './dag/types';
@@ -115,11 +115,4 @@ describe('D-K expect_exit — 声明面', () => {
     expect(nodeFieldsKey(node(1))).toBe(nodeFieldsKey(node(1)));
   });
 
-  test('conductor prompt 两档都明示 expect_exit (消费点已登记于 empty-knobs)', () => {
-    for (const profile of ['full', 'lean'] as const) {
-      const p = conductorSystemPrompt({ profile });
-      expect(p).toContain('"expect_exit"?: number');
-      expect(p).toContain('expect_exit:1'); // 用法 (RED 步) 也在, 否则 conductor 只知有字段不知何时用
-    }
-  });
 });

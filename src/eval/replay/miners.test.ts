@@ -16,14 +16,11 @@
  */
 import { describe, expect, test } from 'bun:test';
 import {
-  FRONT_FROZEN_GENERATIONS,
   mineFailedRuns,
   mineReadout,
-  mineSessions,
   mineTestHealth,
   mineTickets,
   type FailedRunRow,
-  type SessionRecord,
   type TicketMapLike,
 } from './miners';
 
@@ -91,76 +88,6 @@ describe('mineFailedRuns (GWT-3)', () => {
     expect(mineFailedRuns([row(1, '', { status: 'failed' })], SINCE)).toEqual([]);
   });
 });
-
-// ── sessions ──────────────────────────────────────────────────────────────
-
-function gen(
-  genIdx: number,
-  sig: string,
-  mains: (number | null)[],
-): SessionRecord['generations'][number] {
-  const fitnessByChild: Record<string, { main: { speedupTheoreticalMedian: number | null } }> = {};
-  mains.forEach((m, i) => {
-    fitnessByChild[`c${genIdx}-${i}`] = { main: { speedupTheoreticalMedian: m } };
-  });
-  return { genIdx, frontFitnessSignature: sig, fitnessByChild };
-}
-
-describe('mineSessions', () => {
-  test('主尺 null → 出题, 带 rate 与分子分母 (null 与 0 分列)', () => {
-    const s: SessionRecord = {
-      sessionId: 's-1',
-      stopReason: 'maxGenerations',
-      generations: [gen(0, 'sig-a', [null, 1.4]), gen(1, 'sig-b', [null, null])],
-    };
-    const items = mineSessions([s]);
-    const nullItem = items.find((i) => i.id === 'sessions:main-objective-null');
-    expect(nullItem).toBeDefined();
-    expect(nullItem!.metrics).toMatchObject({ nullCount: 3, total: 4 });
-    expect(nullItem!.evidence).toEqual(['s-1']);
-  });
-
-  test('主尺健全 + 未平台 + 前沿在动 → 不出题 (不恒出题)', () => {
-    const s: SessionRecord = {
-      sessionId: 's-ok',
-      stopReason: 'maxGenerations',
-      generations: [gen(0, 'a', [1.2]), gen(1, 'b', [1.5]), gen(2, 'c', [1.9])],
-    };
-    expect(mineSessions([s])).toEqual([]);
-  });
-
-  test('plateau 收束 → 出题', () => {
-    const s: SessionRecord = {
-      sessionId: 's-p',
-      stopReason: 'plateau',
-      generations: [gen(0, 'a', [1.1])],
-    };
-    const ids = mineSessions([s]).map((i) => i.id);
-    expect(ids).toContain('sessions:plateau');
-  });
-
-  test(`前沿签名连续 ${FRONT_FROZEN_GENERATIONS} 代不动 → 出题; 差一代 → 不出`, () => {
-    const frozen: SessionRecord = {
-      sessionId: 's-f',
-      stopReason: 'maxGenerations',
-      generations: [gen(0, 'z', [1]), gen(1, 'z', [1]), gen(2, 'z', [1])],
-    };
-    expect(mineSessions([frozen]).map((i) => i.id)).toContain('sessions:front-frozen');
-
-    const nearly: SessionRecord = {
-      sessionId: 's-n',
-      stopReason: 'maxGenerations',
-      generations: [gen(0, 'z', [1]), gen(1, 'z', [1]), gen(2, 'y', [2])],
-    };
-    expect(mineSessions([nearly]).map((i) => i.id)).not.toContain('sessions:front-frozen');
-  });
-
-  test('零 session → 空', () => {
-    expect(mineSessions([])).toEqual([]);
-  });
-});
-
-// ── readout ───────────────────────────────────────────────────────────────
 
 describe('mineReadout', () => {
   test('读不到 (null) → 空 —— 读不到 ≠ 出题, 也 ≠ 这一类是零', () => {

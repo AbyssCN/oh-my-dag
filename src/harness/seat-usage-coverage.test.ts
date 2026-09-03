@@ -22,14 +22,13 @@ import { describe, expect, test } from 'bun:test';
 import { ALL_SEAT_IDS } from '../model/seats';
 import { KNOWN_UNATTRIBUTABLE, SEAT_USAGE_RULE_SEATS } from '../model/seat-usage';
 
-// 实装冻结决策钉死的 issue 八座 —— conductor / escalation / gate / judge /
+// 实装冻结决策钉死的 issue 八座 (2026-09-04 gate 座随 v1 退役删除 → 七座) —— conductor / escalation / judge /
 // verifier / agent / lens / leaf。detector **不是**注册座位(seats.ts 里没有),
 // 它的模型调用借 leaf 桶(`traceName` 走 `^primitive-leaf:` / `^omd-leaf$` 等归 leaf 的规则),
 // 所以清单上 detector 的位置由 leaf 顶替 —— 这条在注释里说清,不靠读者推理。
 const ISSUE_EIGHT: readonly string[] = [
   'conductor',
   'escalation',
-  'gate',
   'judge',
   'verifier',
   'agent',
@@ -44,7 +43,7 @@ const EXPECTED_UNACCOUNTED: readonly string[] = ['fusion', 'graft', 'overflow', 
 describe('seat-usage coverage —— issue 八座必须全部注册', () => {
   test('★ issue 八座集合 ⊆ ALL_SEAT_IDS', () => {
     const registered = new Set(ALL_SEAT_IDS);
-    // 证伪方式: 从 src/model/seats.ts 的 SEATS 数组里删掉 'gate'(或任一 issue 八座之一)→
+    // 证伪方式: 从 src/model/seats.ts 的 SEATS 数组里删掉 'judge'(或任一 issue 座之一)→
     // 这条 assertEvery 立刻红;register 集合里少了那座,差集非空。
     const missing = ISSUE_EIGHT.filter((id) => !registered.has(id));
     expect(missing).toEqual([]);

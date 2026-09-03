@@ -29,7 +29,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { PlanSchema, conductorSystemPrompt } from '../conductor-plan';
+import { PlanSchema } from '../conductor-plan';
 import { createDagRecorder } from './dag-record';
 import { isKnownShapeId, renderShapesForPrompt, GRAPH_SHAPES } from '../shapes';
 import type { ConductorPlan } from '../conductor-plan';
@@ -92,18 +92,4 @@ describe('SH-1 图式卡 id 接线', () => {
     expect(isKnownShapeId(undefined)).toBe(false);
   });
 
-  test('★ SH-1e: prompt 里词表与指令**两半都在** (缺任一半那一格的产出率就是 0 —— W1 教训)', () => {
-    // 词表那一半: 两档输出 schema 都列了 shape
-    for (const lean of [false, true]) {
-      const p = conductorSystemPrompt({ lean } as never);
-      expect(p, `lean=${lean} 的输出 schema 里没有 "shape"`).toContain('"shape"?: string');
-    }
-    // 指令那一半: 告诉它怎么填、以及没跟卡时要省略
-    const shapeLines = renderShapesForPrompt('full').join('\n');
-    expect(shapeLines).toContain('"shape" field');
-    expect(shapeLines).toContain('OMIT the field');
-    // 卡表非空, 且指令里举的例子是真卡 (举一个不存在的卡等于教它编 id)
-    expect(GRAPH_SHAPES.length).toBeGreaterThan(0);
-    expect(isKnownShapeId('one-decision-then-fanout')).toBe(true);
-  });
 });

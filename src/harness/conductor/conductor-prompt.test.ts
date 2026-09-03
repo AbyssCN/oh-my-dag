@@ -8,7 +8,6 @@ import { buildConductorSystemPrompt, CONDUCTOR_PROMPT_BOUNDARY, CONDUCTOR_PROMPT
 import { createConductorTools, CONDUCTOR_TOOL_NAMES } from './tools/index';
 import { renderManual } from './render-manual';
 import type { ConductorCtx, ConductorTool } from './types';
-import { conductorSystemPrompt } from '../conductor-plan';
 
 const ctx: ConductorCtx = { cwd: '/w', writeRoot: '/w', acceptance: { command: 'bun test', expect_exit: 0 }, allowlist: ['bun'], maxFanout: 6, seats: { worker: 'a', escalation: 'b', verify: 'c' }, researchAvailable: false };
 const FULL_FACTS = {
@@ -34,16 +33,14 @@ const FULL_FACTS = {
 };
 
 describe('conductor prompt', () => {
-  test('★ ① 常驻字符 ≤ 8000 (满槽 facts); 对照 conductor full prompt', () => {
+  test('★ ① 常驻字符 ≤ 8000 (满槽 facts)', () => {
     const tools = createConductorTools(ctx);
     const p = buildConductorSystemPrompt(FULL_FACTS, tools);
-    const old = conductorSystemPrompt().length;
-    console.log(`conductor resident=${p.length} chars · conductor full=${old} chars`);
+    console.log(`conductor resident=${p.length} chars`);
     expect(FULL_FACTS.goal.length).toBeGreaterThanOrEqual(850); // 满槽是真满: 题面按 bench 实测长度
     expect(p.length).toBeLessThanOrEqual(CONDUCTOR_PROMPT_RESIDENT_MAX);
     // 前缀自己的上限: 给事实留 ≥ 1400 字符 (2026-09-03)。删掉任一节的精简 → 这条先红。
     expect(renderConductorPrefix(tools).length).toBeLessThanOrEqual(CONDUCTOR_PROMPT_PREFIX_MAX);
-    expect(old).toBeGreaterThan(p.length * 2);
   });
 
   test('★ ② 七张 manual 的首行一条都不出现在常驻 prompt 里', () => {

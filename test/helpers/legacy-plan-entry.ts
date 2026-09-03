@@ -9,7 +9,10 @@
  * 不在生产代码里: reachability / capability 闸都不认 test/helpers。
  */
 import { loadAgentTemplates } from '../../src/harness/agent-templates';
-import { PLAN_BOUNDARY, parsePlan } from '../../src/harness/conductor-plan';
+import { parsePlan } from '../../src/harness/conductor-plan';
+
+/** v1 出图请求的冻结前缀 (原 conductor-plan.ts PLAN_BOUNDARY, 2026-09-04 随 v1 prompt 删除); 一批 fake generate 靠它的首行认出规划请求。 */
+export const PLAN_BOUNDARY = '\n\n===== TASK (dynamic, below the frozen boundary) =====\n\n';
 import { runExecutorDagWithPlan } from '../../src/harness/dag/engine';
 import type { ExecutorDagConfig, ExecutorDagResult, PriorExec } from '../../src/harness/dag/types';
 import { knownMcpServerNames } from '../../src/mcp/client/config';

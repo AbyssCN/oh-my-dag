@@ -116,61 +116,6 @@ export const SEATS: readonly SeatSpec[] = [
     preferredCoord: 'openai-codex:gpt-5.6-sol',
   },
 
-  // ── 判别: 闸 (判"达成没有") ─────────────────────────────────────────────────
-  {
-    id: 'gate',
-    tier: 'judge_synth',
-    what:
-      '**内环收敛闸**: 一轮子图跑完判「这个节点的 goal 达成了吗」→ {converged, failureReason, rejectedNodes[]}。' +
-      '不达成 → 带理由重画子图, 被点名的子节点进毒集不许复用。也判 continuity 的「该不该停」。',
-    where: [
-      'mcp/assemble:buildDefaultConfig',
-      'harness/plan/llm-judge:makeLlmConvergenceJudge',
-      'harness/continuity/halt-judge:haltJudge',
-    ],
-    frequency: '**每个 conductor 节点每轮 1 发** —— 全仓最高频的判别调用',
-    crossFamily: 'preferred',
-    // ★ **闸不开思考** —— 2026-08-01 实测定的, 不是省钱:
-    //
-    //   案例集 6 个 (真做完 / 少一条要求 / 捏造执行确认 / 朴素但做完 / 子节点失败 / 偷换要求),
-    //   每格 5~10 发, 对照已知真值:
-    //     关思考 + temp 0.2 → 准确 30/30, 零翻转; `捏造执行确认` 15/15
-    //     开思考 max        → 准确 27/30, 两个案例翻转; **`捏造执行确认` 8/15 (掷硬币)**
-    //
-    //   机制说得通, 不是噪声: 开思考 → deepseek 吃掉 temperature (见 model-caps) → 实际采样更野
-    //   → 判词飘。而闸干的是**逐条核对明确要求**, 不是推理 —— 核对不需要深想, 需要不跑偏。
-    //   飘在一个有明确对错的任务上就等于错, 于是"准确率下降"与"翻转率上升"是同一个原因的两面。
-    //
-    //   ⚠ 这条只对**这个模型 + 这类判词**成立。换坐标/换判词要重量, 别把它当普遍真理。
-    thinking: 'off',
-    // 裁决要**稳定可复现**: 同样的产出不该这一轮过、下一轮不过。低温不是省钱, 是要一致性。
-    //
-    // 它**真的在生效** —— 前提正是上面那条"闸不开思考":
-    // deepseek 官方 (guides/thinking_mode)「思考模式不支持 temperature/top_p…不报错也不生效」,
-    // 2026-08-01 判别实验 (topP=0.01 硬夹, n=12×4) 复现: 关思考时输出坍缩 1/12, 开思考时 3/12
-    // 与不夹时无差别。**两个旋钮互斥**, 而实测告诉我们这个闸该要哪一个。
-    sampling: { temperature: 0.2 },
-    recommend:
-      'minimax-cn:MiniMax-M3 · **关思考** (owner 2026-08-15 裁)。刻意**不**放 codex —— 它每节点每轮一发, ' +
-      '是高频座位, 与低频的 verifier 经济学完全不同。2026-07-31 那次空转 65 分钟正是"高频闸坐在强座位上"的代价。' +
-      '\n' +
-      '⚠ 换座依据 = `.omd/eval/gate-m3` (2026-08-15, 4 臂 × 6 段 × 10 次, 打生产那条链 ' +
-      '`renderRoundForJudge` + `makeLlmConvergenceJudge`)。基线取的是 **gate 出厂配** (flash 关思考 + temp 0.2), ' +
-      '不是旧读数里那个 high 档的 `flash-cheap` —— 换臂比较必须同条件。噪声地板 (基线复制一遍): ' +
-      '裁决准 0pp / 召回全 2pp。\n' +
-      '  · 召回全: flash 56% → M3 关思考 **74%** / M3 adaptive 66% (地板 2pp)\n' +
-      '  · 幽灵率: flash 37% → M3 关思考 **20%** / M3 adaptive 27%\n' +
-      '  · 代价: out tok 120 → 283 (adaptive 885) · 中位延迟 1.5s → 3.7s (adaptive 9.7s) · ' +
-      '调用失败 0/120 → 1/60\n' +
-      '  升的那 18pp **集中在两段**: `all-filler` 与 `wide-graph` —— flash 在这两段召回是 **0% 地板** ' +
-      '且幽灵 10/10 (每次都点不存在的 id)。其余四段两族基本平手。**别把它读成"M3 全面更强"**。\n' +
-      '⚠ **上面那条「闸不开思考」在 M3 上也复现了**, 这是第二个模型族的读数: M3 关思考在召回 (74 vs 66)、' +
-      '幽灵 (20% vs 27%)、延迟 (3.7s vs 9.7s)、out token (283 vs 885) 四项上全面优于 adaptive; ' +
-      'adaptive 还在 flash 本来干净的两段上**引入**幽灵 (`missing-requirement` 0/10 → 3/10, ' +
-      '`fabricated` 0/10 → 1/10)。所以本座位换模型但 `thinking: off` 不动。\n' +
-      '⚠ 未量: `halt-judge` (continuity 该不该停) 也吃本座位, 那条判词没进这份语料。',
-    preferredCoord: 'minimax-cn:MiniMax-M3',
-  },
 
   // ── 判别: 择优与合成 (判"哪个更好") ─────────────────────────────────────────
   {

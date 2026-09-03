@@ -22,7 +22,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runExecutorDagWithPlan } from './engine';
 import { registerProvider } from '../../model';
-import { PLAN_BOUNDARY } from '../conductor-plan';
+import { PLAN_BOUNDARY } from '../../../test/helpers/legacy-plan-entry';
 import { CheckpointManager } from '../continuity/checkpoint-manager';
 import type { NodeLoopJournal } from '../continuity/types';
 import type { ContentPart } from '../../model/gateway';

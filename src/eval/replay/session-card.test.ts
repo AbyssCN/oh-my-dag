@@ -36,12 +36,15 @@ const CANDIDATES: CandidateIdSource = {
 
 const CAPS: CardGateCaps = { maxCards: 3, nightBudgetMinutes: 480, sessionBudgetMinutes: 120 };
 
-/** 一张合法的 S1 卡 (其余 fixture 都在它身上改一处 —— 单一变量)。 */
+/** 一张合法的 S3 卡 (其余 fixture 都在它身上改一处 —— 单一变量)。S1/S2 已随 v1 于 2026-09-04 退役。 */
 function goodEvolve(id: string, over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     version: 1,
     id,
-    substrate: 'S1',
+    substrate: 'S3',
+    goal: '给 x 加一个字段',
+    writeSet: ['src/harness/x.ts'],
+    verify: 'bun test src/harness/x.test.ts',
     mainObjective: 'planValidityRate',
     objectiveRow: 'O3b',
     hypothesis: '给 conductor 加图式 few-shot 会抬 plan 合格率',
@@ -49,9 +52,6 @@ function goodEvolve(id: string, over: Record<string, unknown> = {}): Record<stri
     successSignal: 'main 段 planValidityRate 相对 baseline 升且 held-out 不降',
     voidConditions: ['语料 hash 变化', '座位签名变化'],
     budgetMinutes: 60,
-    K: 2,
-    maxGenerations: 3,
-    topM: 1,
     ...over,
   };
 }
@@ -83,7 +83,7 @@ describe('SessionCard schema', () => {
     expect(FITNESS_FIELDS).toHaveLength(5);
   });
 
-  test('S1 / S3 好卡过 schema', () => {
+  test('两张 S3 好卡过 schema (S1/S2 已退役, 见 bad-substrate)', () => {
     expect(SessionCardSchema.safeParse(goodEvolve('c1')).success).toBe(true);
     expect(SessionCardSchema.safeParse(goodCode('c2')).success).toBe(true);
   });

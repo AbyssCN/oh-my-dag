@@ -1,5 +1,4 @@
 import { describe, expect, test } from 'bun:test';
-import { conductorSystemPrompt } from '../conductor-plan';
 import { GRAPH_SHAPES, renderShapesForPrompt, shapeById } from './index';
 
 // shape = 图式的单一真源 (2026-07-26)。这些闸守的是"它别退化回散文"。
@@ -46,11 +45,6 @@ describe('两个消费面共用同一份数据 (不许抄第二份)', () => {
     }
   });
 
-  test('conductor prompt 里的 shape 段来自这份数据 (改数据 prompt 自动跟着变)', () => {
-    const prompt = conductorSystemPrompt({ profile: 'full' });
-    for (const s of GRAPH_SHAPES) expect(prompt).toContain(s.id);
-    expect(prompt).toContain('NOT when:');
-  });
 });
 
 // 2026-08-31 few-shot 落地 (SHAPE_EXAMPLES 锚串, SDD INV-1/INV-2)。
