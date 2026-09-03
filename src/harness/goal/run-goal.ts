@@ -89,6 +89,7 @@ import { escalationProviderReady, type VerdictTarget, type VerifierFn } from '..
 import { extractProtectedPaths } from './goal-protections';
 import { withProtectedPaths } from '../agent-tools';
 import {
+  LEAD_INFRA_FAILURE_KINDS,
   LEAD_NODE_ID,
   buildLeadFace,
   compileOrchestratingLoop,
@@ -582,6 +583,35 @@ export function boardTerminalEntry(runId: string, outcome: RunOutcomeKind): Boar
   };
 }
 /** D-2 diff 面: 跑后 git 工作树相对 HEAD 的改动 (相对路径, 含未跟踪, 不含被忽略的)。非 git 仓/失败 → 抛 (调用方 fail-open)。 */
+/** rubric 判官证据面的产物段: 盘上改动文件 (≤12 个, 每个 ≤20KB, 总 ≤80KB), 文本文件才进; 取不到 = 空串 + 一行证据。 */
+export function renderArtifactEvidence(config: RunGoalConfig): string {
+  let files: string[];
+  try {
+    files = (config.writeSet?._collectChangedFiles ?? (() => collectChangedFiles(config.cwd)))();
+  } catch (err) {
+    logger.warn({ err: String(err).slice(0, 160) }, '[run-goal] rubric 证据面: 改动文件取不到 → 只用报告正文 (fail-open)');
+    return '';
+  }
+  const parts: string[] = [];
+  let total = 0;
+  for (const rel of files.slice(0, 12)) {
+    const abs = isAbsolute(rel) ? rel : join(config.cwd, rel);
+    try {
+      if (!statSync(abs).isFile()) continue;
+      const raw = readFileSync(abs);
+      if (raw.includes(0)) continue; // 二进制不进
+      const text = raw.toString('utf8').slice(0, 20_000);
+      if (total + text.length > 80_000) break;
+      total += text.length;
+      parts.push(`--- ${rel} ---\n${text}`);
+    } catch (err) {
+      // fail-open 可以吞异常, 不许吞证据 (仓规静默坑 ②): 少了哪个文件判官就少看一份, 得留痕。
+      logger.warn({ file: rel, err: String(err).slice(0, 120) }, '[run-goal] rubric 证据面: 产物文件读不到 → 跳过');
+    }
+  }
+  return parts.length ? `\n\n===== 产物 (盘上改动文件, 与报告分开读; 判官以此为准) =====\n${parts.join('\n')}` : '';
+}
+
 function collectChangedFiles(cwd: string): string[] {
   const r = Bun.spawnSync(['git', 'status', '--porcelain'], { cwd, stdout: 'pipe', stderr: 'pipe' });
   if (r.exitCode !== 0) {
@@ -2041,7 +2071,20 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   // 第二次 **不带 verifier** (INV-7: 终审每 run 至多一次, 这里靠"字段不在"机械保证, 不靠计数)。
   // 之后终态由机械 oracle 定 (下方 outcome 的 verifier-rejected 分支)。
   let reinjected = false;
-  if (loopPlan !== undefined && lastVerdict !== undefined && !lastVerdict.pass) {
+  /**
+   * 2026-09-03 (code80-p3 首批停批根因): lead 节点死于基建 (529 / 超时 / 停摆 / 缺能力) 时**不回灌** —— 终审对着空产物
+   * 判红是必然的, 再派只是再撞一次同一堵墙, 而终态会被标成 verifier-rejected (语义否决), 把引擎故障记成了模型没做对。
+   * 这一格的下一步是「修引擎 / 换池, 别加轮数」, 所以直接走 infra-error (见下方 infraStopped 的循环路径分支)。
+   */
+  const leadInfraFailure = ((): string | undefined => {
+    const lead = loopPlan !== undefined ? exec.results[LEAD_NODE_ID] : undefined;
+    if (!lead || lead.status === 'done' || !lead.failureKind || !LEAD_INFRA_FAILURE_KINDS.has(lead.failureKind)) return undefined;
+    return `lead 节点基建失败 (${lead.failureKind}): ${(lead.output ?? '').slice(0, 240)}`;
+  })();
+  if (leadInfraFailure !== undefined && lastVerdict !== undefined && !lastVerdict.pass) {
+    logger.warn({ why: leadInfraFailure }, '[run-goal] D-14: lead 节点基建类败因 → 不回灌, 终态 infra-error (不是 verifier-rejected)');
+  }
+  if (loopPlan !== undefined && lastVerdict !== undefined && !lastVerdict.pass && leadInfraFailure === undefined) {
     const finding = lastVerdict.reason;
     logger.warn(
       { chars: finding.length, target: lastVerdict.target },
@@ -2215,7 +2258,10 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
     // 所以证据越薄判得越严, 那个方向是安全的 (不会把没做的判成做了)。
     let inputs = config.rubricVerdictInputs;
     if (!inputs) {
-      const judged = await judgeRubric(acceptance.checklist, execLeaf?.output ?? '', {
+      // 2026-09-03 (smoke8-p3 repo_understanding: 我们判 8/11 不过, bench 判 15/15 过): 证据面此前只有执行叶的
+      // **报告正文**, 产物文件本身判官一个字没看见 —— lead 经 bash 写的 analysis.json 就在盘上。证据 = 报告 + 盘上
+      // 改动文件的内容 (git status 取, fail-open: 取不到就只剩报告, 留一行)。判官只能依据它判, 所以宁可给全。
+      const judged = await judgeRubric(acceptance.checklist, `${execLeaf?.output ?? ''}${renderArtifactEvidence(config)}`, {
         generate: config.dag.generate ?? makeDefaultGenerate(config.dag.sessionId ?? randomUUID()),
         model: config.dag.conductorModel,
       });
@@ -2588,7 +2634,8 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   // P3 S6b / D-14: 回灌过 ∧ (回灌后机械 oracle 仍红 ∨ 本 run 无机械 oracle) ⇒ 终审的否决没被证伪, 这趟不算成。
   // 回灌后 oracle 绿 ⇒ 照常 (success / delivered-with-red), 摘要里注记「finding 回灌 1 次, 未复审」。
   const verifierRejected = loopUsed && reinjected && (runnable ? !oracleOk : true);
-  const converged = loopOk && oracleOk && !verifierRejected;
+  // lead 死于基建 (2026-09-03): 哪怕 accept 复用了一份绿, 这趟也不算成 —— 引擎侧停 (infra-error), 不是交付达标。
+  const converged = loopOk && oracleOk && !verifierRejected && leadInfraFailure === undefined;
   // judge 异议 (判据绿收敛而 judge 判没成): **只报不翻终态** —— 这一格是判据轴「judge 太紧 /
   // 判据覆盖不够」的样本, 判词在 continuity 的 _loop-execute.json。翻终态的版本就是 #148。
   const judgeDissent = converged && !judgeSaidOk;
@@ -2606,7 +2653,8 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   // **引擎自己出事**导致环提前退出 (今天唯一来源: judge 调不通)。与 blocked 分开的理由是
   // 下一步相反: blocked 要人给外部输入, 这个要**修引擎** —— 而它此前落 `not-converged`,
   // 于是读的人会去加轮数, 恰恰是最没用的那个动作。
-  const infraStopped = execLeaf?.infraStopped;
+  // 循环路径: lead 节点的基建类败因也是「引擎侧停」(agent 叶没有 conductor 那种 infraStopped 字段, 从 failureKind 读)。
+  const infraStopped = execLeaf?.infraStopped ?? leadInfraFailure;
   const cancelledReason = exec.cancelled?.reason;
   // 判词与 oracle **分开报**: 两者不一致时那句话本身就是结论 —— judge 说成了而冻结判据没过,
   // 正是 D-I 要抓的"作弊达标"; 反过来则是"任务里还有命令覆盖不到的明确要求"。

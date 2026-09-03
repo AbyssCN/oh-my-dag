@@ -110,6 +110,7 @@ import { createSandboxedLeafRunner } from './hooks/sandboxed-leaf';
 import { loadSandboxConfig } from './hooks/command-policy';
 import { allowlistForRoot, createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from './command-leaf';
 import { renderAcceptanceOutcome, runAcceptance, type AcceptanceOutcome } from './acceptance-run';
+import { wrapReadOnlyShell } from './lead/readonly-shell';
 import { buildLeafSystemPromptV2, LEAN_LEAF_TOOLS } from './leaf-prompt-v2';
 import { runtimeAllowlistForRoot } from './env-facts';
 import { formatRepoChecksFailure, runRepoChecks } from './repo-checks';
@@ -2027,7 +2028,11 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // P3 S6b: face 在场 → 名单 ∩ 内置 ∪ 追加卡。名单里一个都没匹配上不静默: 留一行, 仍按 face 走
     // (lead 没有手比 lead 拿到一副别人的手更容易被发现)。
     const faceTools = face
-      ? [...availableTools.filter((t) => face.toolNames.includes(t.name)), ...(face.customTools ?? [])]
+      ? [
+          // P3 D-20 (2026-09-03): face.readOnlyShell → 名单里的 bash 包成只读闸 (lead/readonly-shell.ts), 其它手原样。
+          ...availableTools.filter((t) => face.toolNames.includes(t.name)).map((t) => (face.readOnlyShell && t.name === 'bash' ? wrapReadOnlyShell(t) : t)),
+          ...(face.customTools ?? []),
+        ]
       : null;
     if (face && faceTools!.length === 0) logger.warn({ model, want: face.toolNames }, '[agent-leaf] 按调用 face 的工具名单一个都没匹配上 (工具面为空)');
     const perCallToolsBase = faceTools ?? (wantLeanFace ? leanTools : wantMinimalFace ? minimalTools : fullTools);

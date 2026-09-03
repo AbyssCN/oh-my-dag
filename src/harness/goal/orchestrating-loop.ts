@@ -58,6 +58,14 @@ export const LEAD_READONLY_SENTINEL = '.omd/lead-readonly-sentinel';
 /** lead 的只读手 (D-20: 无 write / edit)。bash 的边界 = 危险命令闸 + git 写闸 + 收尾写集对账, 不是首词白名单 (D-7)。 */
 export const LEAD_HAND_TOOLS = ['read', 'ls', 'grep', 'bash'] as const;
 
+/**
+ * lead 节点**基建类**败因 (2026-09-03, code80-p3 首批 09:22 停批的根因形态): MiniMax 529 → lead 首发即 failed →
+ * 终审对着空产物判红 → D-14 回灌 → 再 529 → `verifier-rejected`。基建失败不许被标成语义否决:
+ * 这一集里的败因既不回灌 (再派只是再撞一次 529), 终态也走 infra-error 那一格 (下一步 = 修引擎/换池, 别加轮数)。
+ * 不含 empty-artifact / assert-failed 等**语义类**败因 —— 那些正是回灌该处理的。
+ */
+export const LEAD_INFRA_FAILURE_KINDS: ReadonlySet<string> = new Set(['infra-error', 'timed-out', 'missing-capability', 'stall', 'spin-fused']);
+
 /** 回灌锚的固定首行 —— 测试与人读日志都靠它认「这一发是回灌」。 */
 export const REINJECT_ANCHOR_HEAD = '[verifier 打回 · 回灌 1 次 (D-14: 之后终态由机械 oracle 定, 终审不复审)]';
 
@@ -284,6 +292,8 @@ export function buildLeadFace(facts: LeadFacts, deps: LeadRuntimeDeps): LeafFace
     toolNames: [...LEAD_HAND_TOOLS],
     customTools: createLeadRuntimeTools(deps),
     systemPrompt,
+    // D-20 机械面 (2026-09-03, smoke8-p3 repo_understanding 那题 lead 用 heredoc 写了 22KB 产物): bash 只读, 改文件只能派 work()。
+    readOnlyShell: true,
   };
 }
 

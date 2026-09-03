@@ -145,6 +145,11 @@ export interface LeafFace {
   /** 按调用追加的工具 (lead 的七张派工卡)。 */
   customTools?: readonly AnyOmdTool[];
   systemPrompt: string;
+  /**
+   * 名单里的 `bash` 包成只读 (P3 D-20 机械面, 2026-09-03): 写文件 / 改仓 / 改环境的命令走 tool result 拒,
+   * 见 `lead/readonly-shell.ts`。缺省 false = bash 原样。
+   */
+  readOnlyShell?: boolean;
 }
 
 /**

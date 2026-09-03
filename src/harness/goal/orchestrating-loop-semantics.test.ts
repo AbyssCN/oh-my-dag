@@ -30,6 +30,8 @@ const failingVerifier = async () => ({ pass: false, reason: dissent, target: 'im
 
 interface CallShape {
   acceptStatus?: 'done' | 'failed';
+  /** lead 节点按这个败因判 failed (缺席 = done)。 */
+  leadFailureKind?: string;
   acceptSkipped?: boolean;
   leadFiles?: string[];
   /** 每次调用前跑一段副作用 (写盘 / 删盘)。 */
@@ -47,7 +49,7 @@ const fakeEngine = (shapes: CallShape[], seen: ConductorPlan[] = []): NonNullabl
     results[id] =
       n.executor === 'command'
         ? ({ id, status: shape.acceptStatus ?? 'done', kind: 'command', output: '', deps: n.depends_on ?? [], usage: { in: 0, out: 0 }, exitCode: (shape.acceptStatus ?? 'done') === 'done' ? 0 : 1, ...(shape.acceptSkipped ? { skipped: true } : {}) } as never)
-        : ({ id, status: 'done', kind: 'agent', output: 'lead report', deps: [], usage: { in: 1, out: 1 }, ...(shape.leadFiles ? { filesTouched: shape.leadFiles, artifactRoot: cfg.continuity?.execRoot ?? cfg.continuity?.repoRoot } : {}) } as never);
+        : ({ id, status: shape.leadFailureKind ? 'failed' : 'done', ...(shape.leadFailureKind ? { failureKind: shape.leadFailureKind } : {}), kind: 'agent', output: shape.leadFailureKind ? '[agent-leaf] 529 overloaded_error' : 'lead report', deps: [], usage: { in: 1, out: 1 }, ...(shape.leadFiles ? { filesTouched: shape.leadFiles, artifactRoot: cfg.continuity?.execRoot ?? cfg.continuity?.repoRoot } : {}) } as never);
   }
   let verification: ExecutorDagResult['verification'];
   if (cfg.verifier && (shape.acceptStatus ?? 'done') === 'done') {
@@ -184,5 +186,59 @@ describe('2-C · work(resume_of) 上一次结果机械回灌', () => {
     await work.execute('t1', { goal: 'fix', brief: 'repro output here; scope src/a.ts; do not touch anything else.', resume_of: 'd9.ghost' });
     expect(Object.keys(seen[0]!.nodes)).toEqual(['d9.ghost']);
     expect(seen[0]!.nodes['d9.ghost']!.goal).not.toContain(RESUME_PRIOR_HEAD);
+  });
+});
+
+describe('D-14 基建守卫 (2026-09-03, code80-p3 首批停批根因)', () => {
+  test('★ lead 首发 infra-error + 终审判红 ⇒ 不回灌 (只跑 1 次), 终态 infra-error 而不是 verifier-rejected', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omd-loop-infra-'));
+    const seen: ConductorPlan[] = [];
+    const r = await runGoal('修 add()', {
+      cwd,
+      orchestratingLoop: true,
+      dag: { conductorModel: 'c:m', leafModel: 'l:m', verifier: failingVerifier } as ExecutorDagConfig,
+      _classify: classify(EXEC_ACCEPT),
+      _runDag: fakeEngine([{ acceptStatus: 'done', leadFailureKind: 'infra-error' }, { acceptStatus: 'done' }], seen),
+    });
+    // 证伪: run-goal 去掉 leadInfraFailure 守卫 → seen 变 2 且 outcome 落 success/verifier-rejected, 红。
+    expect(seen).toHaveLength(1);
+    expect(r.outcome).toBe('infra-error');
+    expect(r.stages.at(-1)!.summary).toContain('529');
+  });
+
+  test('判别力: lead 语义类败因 (empty-artifact) 照常回灌', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omd-loop-semantic-'));
+    const seen: ConductorPlan[] = [];
+    await runGoal('修 add()', {
+      cwd,
+      orchestratingLoop: true,
+      dag: { conductorModel: 'c:m', leafModel: 'l:m', verifier: failingVerifier } as ExecutorDagConfig,
+      _classify: classify(EXEC_ACCEPT),
+      _runDag: fakeEngine([{ acceptStatus: 'done', leadFailureKind: 'empty-artifact' }, { acceptStatus: 'done' }], seen),
+    });
+    expect(seen).toHaveLength(2);
+  });
+});
+
+describe('rubric 判官证据面含盘上产物 (2026-09-03)', () => {
+  test('★ lead 经 bash 写的产物文件内容进判官 prompt', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omd-loop-rubric-artifact-'));
+    Bun.spawnSync(['git', 'init', '-q'], { cwd });
+    writeFileSync(join(cwd, 'analysis.json'), '{"summary":"FEIGN-PROXY-EVIDENCE-7731"}');
+    const prompts: string[] = [];
+    await runGoal('写一份分析', {
+      cwd,
+      orchestratingLoop: true,
+      dag: {
+        conductorModel: 'c:m', leafModel: 'l:m',
+        generate: (async (req: { messages: { content: string }[]; traceName?: string }) => { if (req.traceName === 'judge:rubric') prompts.push(String(req.messages[0]!.content)); return { text: '{}', usage: { in: 0, out: 0 } }; }) as never,
+      } as ExecutorDagConfig,
+      _classify: async () => ({ tier: 'complex', acceptance: { kind: 'rubric', checklist: freezeRubric([{ id: 'r1', requirement: '点名数据来源' }]) }, route: { kind: 'none' } }),
+      _runDag: fakeEngine([{}]),
+    });
+    // 证伪: judgeRubric 的证据只传 execLeaf.output → prompt 里没有文件内容, 红。
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain('FEIGN-PROXY-EVIDENCE-7731');
+    expect(prompts[0]).toContain('analysis.json');
   });
 });
