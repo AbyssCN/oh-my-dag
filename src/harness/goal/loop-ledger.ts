@@ -3,18 +3,18 @@
  *
  * 两样东西:
  *  · {@link LoopLedger}: 写进 `omd_dag_runs.loop` (JSON) 的**最终**形状, 由 run-goal 收尾时组装, goal.ts 经 `recorder.updateLoop` 回填父行。
- *  · {@link LeadCardLedger}: 运行期**可变**计数器, run-goal 造一个, 经 `buildLeadFace` 交给七张卡的运行期适配层与只读 bash 闸,
+ *  · {@link ConductorCardLedger}: 运行期**可变**计数器, run-goal 造一个, 经 `buildConductorFace` 交给七张卡的运行期适配层与只读 bash 闸,
  *    D-14 回灌的第二跑**沿用同一个**(两跑合并计数: 读数问的是「这趟 run」, 不是「这一跑」)。
  *
  * 三态纪律 (仓规静默坑 1): 整列 NULL = 没走循环 / 老记录; `verifier.firstVerdict: null` = 没调 (≠ fail);
  * `cards.byCard` 缺键 = 那张卡一次没派成 (调用数在 `calls`); `dispatches[].briefHasRepro: null` = 该卡没有 brief 槽。
  */
 
-export type LeadCardName = 'work' | 'spawn' | 'map' | 'explore' | 'best_of' | 'research' | 'decompose';
+export type ConductorCardName = 'work' | 'spawn' | 'map' | 'explore' | 'best_of' | 'research' | 'decompose';
 
 export interface LoopDispatch {
   seq: number;
-  card: LeadCardName;
+  card: ConductorCardName;
   nodes: number;
   /** brief 里有没有粘运行输出 —— **启发式** (见 {@link briefHasRepro}), 量的不是"复现对不对"。null = 该卡没有 brief 槽。 */
   briefHasRepro: boolean | null;
@@ -26,7 +26,7 @@ export interface LoopDispatch {
 }
 
 /**
- * 1-A (2026-09-03) 判据先落盘冻结的台账。判据命令引用、run 开始时不存在的文件: lead 的第一个派发只准产出它们,
+ * 1-A (2026-09-03) 判据先落盘冻结的台账。判据命令引用、run 开始时不存在的文件: conductor 的第一个派发只准产出它们,
  * 引擎在实装派发之前记下 hash, 之后的派发走路径禁令 (agent-tools withProtectedPaths)。
  * 三态: 整格缺席 = 判据不引用未存在文件 (不适用); `frozenAtDispatch` 缺席 = 还没派成过; `hashes[f] === null` = 派发回来
  * 文件仍不存在 (没冻住, 不受保护); `tampered` 缺席 = 没核过, `[]` = 核过全同。
@@ -39,23 +39,23 @@ export interface CriterionFreeze {
 }
 
 /** 运行期计数器 (可变)。字段语义与 {@link LoopLedger.cards} 逐字相同。 */
-export interface LeadCardLedger {
+export interface ConductorCardLedger {
   calls: number;
   ok: number;
   rejectedSchema: number;
   help: number;
   rejectedCompile: number;
   childRunError: number;
-  byCard: Partial<Record<LeadCardName, number>>;
+  byCard: Partial<Record<ConductorCardName, number>>;
   readOnlyShellBlocked: number;
   dispatches: LoopDispatch[];
-  /** lead 常驻 system prompt 真跑的字符数 (含 RUN FACTS); 由 buildLeadFace 写, 回灌第二跑覆盖为同值。 */
+  /** conductor 常驻 system prompt 真跑的字符数 (含 RUN FACTS); 由 buildConductorFace 写, 回灌第二跑覆盖为同值。 */
   residentPromptChars: number | null;
   /** 1-A 冻结台账 (可变; 回灌第二跑沿用, 那时 hashes 已在 → 直接受保护)。缺席 = 不适用。 */
   criterionFreeze?: CriterionFreeze;
 }
 
-export function createLeadCardLedger(): LeadCardLedger {
+export function createConductorCardLedger(): ConductorCardLedger {
   return { calls: 0, ok: 0, rejectedSchema: 0, help: 0, rejectedCompile: 0, childRunError: 0, byCard: {}, readOnlyShellBlocked: 0, dispatches: [], residentPromptChars: null };
 }
 
@@ -66,7 +66,7 @@ export interface LoopLedger {
   route: { kind: 'none' | 'chain' | 'shape'; chainHit: boolean };
   /** 动手前 LLM 调用数 (classify 一发 + P2b 重推 / 追问那几发)。INV-12 判词: 默认路径 = 1, 含追问 ≤ 3。null = 分类器没走 LLM (注入式 / 缺 generate)。 */
   preActionLlmCalls: number | null;
-  /** lead 常驻 prompt 真跑字符数。INV-8 判词 ≤ 8000。null = 面没构造 (不该发生, 留给读侧看见)。 */
+  /** conductor 常驻 prompt 真跑字符数。INV-8 判词 ≤ 8000。null = 面没构造 (不该发生, 留给读侧看见)。 */
   residentPromptChars: number | null;
   verifier: {
     /** 真调 verifier 的次数 (闸红短路 / verifier-error 不计)。INV-7 判词 ≤ 1。 */
@@ -77,9 +77,9 @@ export interface LoopLedger {
     /** 回灌后终局; 没回灌 (含基建守卫拦住) = 'skipped'。 */
     afterReinject: 'green' | 'red' | 'no-oracle' | 'skipped';
   };
-  /** lead 节点基建类败因 (D-14 守卫); 缺席 = 没发生。 */
-  leadInfraFailure?: string;
-  cards: Omit<LeadCardLedger, 'dispatches' | 'residentPromptChars' | 'criterionFreeze'>;
+  /** conductor 节点基建类败因 (D-14 守卫); 缺席 = 没发生。 */
+  conductorInfraFailure?: string;
+  cards: Omit<ConductorCardLedger, 'dispatches' | 'residentPromptChars' | 'criterionFreeze'>;
   dispatches: LoopDispatch[];
   /** 1-A 冻结台账 (收尾时 `tampered` 已核)。缺席 = 判据不引用未存在文件。 */
   criterionFreeze?: CriterionFreeze;

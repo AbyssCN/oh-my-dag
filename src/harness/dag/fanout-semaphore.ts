@@ -4,8 +4,8 @@
  * 并发三层: ① 题内 `maxFanout` (一张图同时派几个, 由 ready-set pump 管) ② **本文件**: 一个进程里
  * 同时在飞的模型型 leaf (agent + inproc) 总数 ③ 题间 8 路 (bench 宿主侧, 不在引擎)。
  *
- * ② 为什么必须独立于 ①: S6b 之后 lead 的每次派发是一次**嵌套 run**, 各自带一份 `maxFanout`;
- * 两个 lead 同时派 map(N) 就是 2N 个 leaf 同时打同一个 provider —— batch 7 minimax 侧 31 次
+ * ② 为什么必须独立于 ①: S6b 之后 conductor 的每次派发是一次**嵌套 run**, 各自带一份 `maxFanout`;
+ * 两个 conductor 同时派 map(N) 就是 2N 个 leaf 同时打同一个 provider —— batch 7 minimax 侧 31 次
  * 502/超时正是这形态。① 只看得见自己那张图, 挡不住跨 run 的叠加; 只有进程级的一把闸看得见总数。
  *
  * 形状: 契约冻结 `acquireLeafSlot(): Promise<() => void>` (release 走 finally)。cap 由装配层经

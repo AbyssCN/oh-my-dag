@@ -352,7 +352,7 @@ if (import.meta.main) {
       if (req.method === 'POST' && url.pathname === '/v1/chat/completions') {
         const body = (await req.json().catch(() => ({}))) as OpenAiChatBody & Record<string, unknown>;
         // 工具座路由: minimax / deepseek 坐标走字节级透传 (tools/tool_calls 原生往返); 其余走 translate。
-        // deepseek (2026-09-03, smoke8-dsw 根因): 它是 OpenAI 形状端点, 走 translate 时 tools 被剥, lead 一发文字就结束 (8/8 零派发)。
+        // deepseek (2026-09-03, smoke8-dsw 根因): 它是 OpenAI 形状端点, 走 translate 时 tools 被剥, conductor 一发文字就结束 (8/8 零派发)。
         const coordForRoute = body.model ? map.get(body.model.trim()) : undefined;
         const r = coordForRoute?.startsWith('minimax-cn:') && passthroughKey
           ? await handlePassthrough(body, {

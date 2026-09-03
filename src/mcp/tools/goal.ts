@@ -228,8 +228,8 @@ export function summarizeGoal(r: RunGoalResult): string {
       `循环: 终审 ${v.calls} 次${v.firstVerdict ? ` (首判 ${v.firstVerdict}${v.target ? ` · 对象 ${v.target}` : ''})` : ' (未调)'}` +
         ` · 回灌 ${v.reinjected ? `是 → ${v.afterReinject}${after}` : '否'}` +
         ` · 派发 ${r.loop.dispatches.length} 次 (卡 ok ${r.loop.cards.ok}/${r.loop.cards.calls})` +
-        ` · lead 常驻 prompt ${r.loop.residentPromptChars ?? '未记'} 字符` +
-        `${r.loop.leadInfraFailure ? ` · ${r.loop.leadInfraFailure.slice(0, 80)}` : ''}`,
+        ` · conductor 常驻 prompt ${r.loop.residentPromptChars ?? '未记'} 字符` +
+        `${r.loop.conductorInfraFailure ? ` · ${r.loop.conductorInfraFailure.slice(0, 80)}` : ''}`,
     );
   }
   return lines.join('\n');
@@ -237,8 +237,8 @@ export function summarizeGoal(r: RunGoalResult): string {
 
 // ── R-1 第 4 步 (2026-09-03): resultOut 头部的 `ledger:` 行 ──────────────────────────
 //
-// bench 容器里 `dag-runs.db` 不出容器 (omd-state.tgz 只扫 <cwd>/.omd, 账本在 omd home), 于是父 run 与 lead 派发的
-// 子 run (同 run_id, plan_name `lead-*`) 的**节点用量**只有这条路能出去。形状刻意扁: 每条账本行一项, `levels` 只留
+// bench 容器里 `dag-runs.db` 不出容器 (omd-state.tgz 只扫 <cwd>/.omd, 账本在 omd home), 于是父 run 与 conductor 派发的
+// 子 run (同 run_id, plan_name `conductor-*`) 的**节点用量**只有这条路能出去。形状刻意扁: 每条账本行一项, `levels` 只留
 // 每层节点数 (宽度 = max, 深度 = length), 节点只留读侧要的计数格。三态照搬账本: 节点上没记的格是 null, 不编 0。
 /** `ledger:` 头行里的一条账本行。 */
 export interface LedgerHeaderRow {

@@ -1,5 +1,5 @@
 /**
- * lead-tools-manual.test —— D-3:manual 从真源渲染,不是第二份手抄。
+ * conductor-tools-manual.test —— D-3:manual 从真源渲染,不是第二份手抄。
  *
  * 怎么让它红:实装前 `renderManual` 不存在,module-not-found。之后:改
  * `GRAPH_SHAPES` 里任一条 `when`(或本测试临时改写的那条),`renderManual` 的输出必须跟着变 ——
@@ -9,13 +9,13 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { PRIMITIVE_REGISTRY } from '../primitive-registry';
 import { GRAPH_SHAPES } from '../shapes';
 import { ALL_SHAPE_IDS, MANUAL_SOURCES, renderManual } from './render-manual';
-import { LEAD_TOOL_NAMES } from './tools/index';
+import { CONDUCTOR_TOOL_NAMES } from './tools/index';
 
-describe('lead-tools-manual (D-3 从真源渲染)', () => {
+describe('conductor-tools-manual (D-3 从真源渲染)', () => {
   test('七张卡 manual 非空,且各自的 headline 不同', () => {
-    const manuals = LEAD_TOOL_NAMES.map((name) => renderManual(name));
+    const manuals = CONDUCTOR_TOOL_NAMES.map((name) => renderManual(name));
     for (const m of manuals) expect(m.length).toBeGreaterThan(0);
-    expect(new Set(manuals.map((m) => m.split('\n')[0])).size).toBe(LEAD_TOOL_NAMES.length);
+    expect(new Set(manuals.map((m) => m.split('\n')[0])).size).toBe(CONDUCTOR_TOOL_NAMES.length);
   });
 
   test('renderManual 逐字引用 PRIMITIVE_REGISTRY 的参数名(不是手抄的第二份)', () => {

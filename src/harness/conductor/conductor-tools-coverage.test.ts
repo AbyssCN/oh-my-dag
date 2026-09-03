@@ -1,5 +1,5 @@
 /**
- * lead-tools-coverage.test —— INV-18:原语覆盖三分法(D-23),无开放式排除逃逸。
+ * conductor-tools-coverage.test —— INV-18:原语覆盖三分法(D-23),无开放式排除逃逸。
  *
  * 怎么让它红:实装前 `coverage.ts` 不存在,module-not-found。之后:
  * 往 `PRIMITIVE_EXCLUDED` 加一项(哪怕是够不着的原语)会让并集与 `PRIMITIVE_IDS` 不再逐元素
@@ -15,7 +15,7 @@ import { ALL_SHAPE_IDS, MANUAL_SOURCES } from './render-manual';
 // D-23 决策正文的字面量(逐元素相等,不许在这个文件里就地加宽 —— 改这个常量本身就是「回流改契约」的动作)。
 const CONTRACT_PRIMITIVE_EXCLUDED = ['pipeline', 'iterate', 'router', 'race', 'saga', 'escape-hatch'];
 
-describe('lead-tools-coverage (INV-18 三分法)', () => {
+describe('conductor-tools-coverage (INV-18 三分法)', () => {
   test('三张表两两不相交', () => {
     const cardKeys = new Set(Object.keys(CARD_COVERED));
     const compiler = new Set(COMPILER_COVERED);

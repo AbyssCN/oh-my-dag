@@ -1,5 +1,5 @@
 /**
- * src/harness/lead/tools/map —— `map` 卡:待处理集合在规划期未知,运行时展开一个 worker/项。
+ * src/harness/conductor/tools/map —— `map` 卡:待处理集合在规划期未知,运行时展开一个 worker/项。
  * 契约 S1 change note:「list_from / per_item / key_by? / stages? / until? / max_items?(默认 64);
  * compile → executor:'map' + lister 子步」。
  *
@@ -20,7 +20,7 @@
 import { z } from 'zod';
 import type { ConductorPlan } from '../../conductor-plan';
 import { renderManual } from '../render-manual';
-import type { CompileResult, LeadCtx, LeadTool } from '../types';
+import type { CompileResult, ConductorCtx, ConductorTool } from '../types';
 
 const MapSchema = z
   .object({
@@ -44,12 +44,12 @@ const LISTER_ARRAY_KEY = 'items';
 const SHORT =
   'One worker per item of a runtime list. list_from is a read-only command; an agent step runs it and reports one item per line. per_item is the goal template with {item}. Optional stages run each item through ordered steps.';
 
-export const mapTool: LeadTool<MapParams> = {
+export const mapTool: ConductorTool<MapParams> = {
   name: 'map',
   short: SHORT,
   schema: MapSchema,
   manual: () => renderManual('map'),
-  compile(params: MapParams, ctx: LeadCtx): CompileResult {
+  compile(params: MapParams, ctx: ConductorCtx): CompileResult {
     if (params.until === 'no-new') {
       return {
         ok: false,
@@ -88,6 +88,6 @@ export const mapTool: LeadTool<MapParams> = {
         maxItems: params.max_items ?? DEFAULT_MAX_ITEMS,
       },
     };
-    return { ok: true, plan: { name: 'lead-map', nodes: { map: node } } };
+    return { ok: true, plan: { name: 'conductor-map', nodes: { map: node } } };
   },
 };

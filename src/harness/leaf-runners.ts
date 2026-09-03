@@ -119,7 +119,7 @@ export interface AgentLeafInput {
    */
   leafTimeoutMs?: number;
   /**
-   * P3 S6b (2026-09-02): **按调用指定的工具面 + system prompt**(编排循环的 lead 节点用)。
+   * P3 S6b (2026-09-02): **按调用指定的工具面 + system prompt**(编排循环的 conductor 节点用)。
    * 在场 = 本次调用的工具面恒等于 `toolNames` ∩ runner 内置工具 ∪ `customTools`, system prompt 恒等于
    * `systemPrompt`; 精益面 / 座位极简面 / profile 三条缺省策略与 scaffold 前缀**全部不进**。
    * 缺席 = 老路径逐字节不变。只由引擎按 `ExecutorDagConfig.leafFace` 钩子按节点下发,
@@ -136,18 +136,18 @@ export interface AgentLeafInput {
 
 /**
  * P3 S6b: 一次 agent 调用的完整面 —— 工具名单 + 追加工具 + 整份 system prompt。
- * `customTools` 是**按调用**的闭包 (lead 的七张派工卡要拿当次 run 的引擎 config 派子图),
+ * `customTools` 是**按调用**的闭包 (conductor 的七张派工卡要拿当次 run 的引擎 config 派子图),
  * 所以不能烤进 runner 装配期的 `AgentLeafRunnerOpts.customTools`。
  */
 export interface LeafFace {
   /** runner 内置工具里要保留的名字 (如 read / ls / grep / bash)。 */
   toolNames: readonly string[];
-  /** 按调用追加的工具 (lead 的七张派工卡)。 */
+  /** 按调用追加的工具 (conductor 的七张派工卡)。 */
   customTools?: readonly AnyOmdTool[];
   systemPrompt: string;
   /**
    * 名单里的 `bash` 包成只读 (P3 D-20 机械面, 2026-09-03): 写文件 / 改仓 / 改环境的命令走 tool result 拒,
-   * 见 `lead/readonly-shell.ts`。缺省 false = bash 原样。
+   * 见 `conductor/readonly-shell.ts`。缺省 false = bash 原样。
    */
   readOnlyShell?: boolean;
   /** R-1: 只读闸每拒一次调一次 (计数进 loop 账本)。缺席 = 不计。 */
@@ -300,7 +300,7 @@ export interface AgentLeafResult {
    * 本次 leaf 的 **LLM 调用次数** (R-1, 2026-09-03)。pi 通道 = `turn_end` 事件计数 (一轮 = 一次模型响应);
    * SDK 通道 = 按 API message id 去重的 assistant 消息数 (同一次调用按 content 块拆成多条, id 相同)。
    * **与 toolCalls 两回事**: 一轮可发多个工具调用, 也可零工具直接收尾。省略 = 该 runner 不统计 (老 runner / 替身)。
-   * 它是「M3 调用/题」按 lead / worker 分解的引擎侧唯一来源 —— 桥日志一文件一请求只能按批算, 分不到题。
+   * 它是「M3 调用/题」按 conductor / worker 分解的引擎侧唯一来源 —— 桥日志一文件一请求只能按批算, 分不到题。
    */
   llmCalls?: number;
   /**

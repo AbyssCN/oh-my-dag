@@ -4649,7 +4649,7 @@ async function executePlan(
         // P2e: 配了目标预算 → 这一发的超时不许超过剩余额度 (未配 → undefined, 不下发字段,
         // 老调用方逐字节零回归)。
         const leafBudgetMs = remainingBudgetMs();
-        // P3 S6b: 按节点工具面钩子 (编排循环的 lead 节点)。缺席 / 返回 undefined → 不传字段, 老叶逐字节零回归。
+        // P3 S6b: 按节点工具面钩子 (编排循环的 conductor 节点)。缺席 / 返回 undefined → 不传字段, 老叶逐字节零回归。
         const leafFace = config.leafFace?.({ id, executor: node.executor });
         // P3 S7 (D-18): agent 叶 thinking 按座位逐调用解析 —— node.thinking > 座位档; 座位表没给档时**不下发**
         // 字段, 让 agent-leaf 各通道保持自己的缺省 (pi xhigh / SDK medium), 不顺手降 worker 档。

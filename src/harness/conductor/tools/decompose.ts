@@ -1,5 +1,5 @@
 /**
- * src/harness/lead/tools/decompose —— `decompose` 卡:一步在规划期分不出来,留给 escalation
+ * src/harness/conductor/tools/decompose —— `decompose` 卡:一步在规划期分不出来,留给 escalation
  * 座位现场画子图。契约 S1 change note:「goal / hint? / max_nodes?;compile → 单个
  * executor:'conductor' 节点,座位 = escalation,只展开一层」。
  *
@@ -11,7 +11,7 @@
  */
 import { z } from 'zod';
 import { renderManual } from '../render-manual';
-import type { CompileResult, LeadCtx, LeadTool } from '../types';
+import type { CompileResult, ConductorCtx, ConductorTool } from '../types';
 
 const DecomposeSchema = z
   .object({
@@ -29,16 +29,16 @@ const SHORT =
   'A stronger model draws a subgraph for a goal you cannot split and one worker cannot finish. Optional hint ' +
   'names a control-flow: router, loop-until, iterate, escalation, saga, verify.';
 
-export const decomposeTool: LeadTool<DecomposeParams> = {
+export const decomposeTool: ConductorTool<DecomposeParams> = {
   name: 'decompose',
   short: SHORT,
   schema: DecomposeSchema,
   manual: () => renderManual('decompose'),
-  compile(params: DecomposeParams, ctx: LeadCtx): CompileResult {
+  compile(params: DecomposeParams, ctx: ConductorCtx): CompileResult {
     return {
       ok: true,
       plan: {
-        name: 'lead-decompose',
+        name: 'conductor-decompose',
         nodes: {
           decompose: {
             executor: 'conductor',

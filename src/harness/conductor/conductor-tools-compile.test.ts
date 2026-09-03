@@ -1,5 +1,5 @@
 /**
- * lead-tools-compile.test —— INV-3(格式面)+ D-6/D-11/D-23 一带各卡的拒绝语义。
+ * conductor-tools-compile.test —— INV-3(格式面)+ D-6/D-11/D-23 一带各卡的拒绝语义。
  *
  * 怎么让它红:实装前(无 tools/*、无 compile)整个文件 module-not-found,全红。
  * 之后:任一卡的合法样本 compile 产物过不了 `parsePlan` 即红;spawn 写集重叠 / best_of 缺
@@ -14,16 +14,16 @@ import { renderManual } from './render-manual';
 import { bestOfTool } from './tools/best-of';
 import { decomposeTool } from './tools/decompose';
 import { exploreTool } from './tools/explore';
-import { eraseLeadTool, invokeLeadTool } from './tools/index';
+import { eraseConductorTool, invokeConductorTool } from './tools/index';
 import { mapTool } from './tools/map';
 import { researchTool } from './tools/research';
 import { spawnTool } from './tools/spawn';
 import { workTool } from './tools/work';
-import type { LeadCtx, LeadTool, LeadToolName } from './types';
+import type { ConductorCtx, ConductorTool, ConductorToolName } from './types';
 
-const CTX: LeadCtx = {
-  cwd: '/tmp/lead-tools-test',
-  writeRoot: '/tmp/lead-tools-test',
+const CTX: ConductorCtx = {
+  cwd: '/tmp/conductor-tools-test',
+  writeRoot: '/tmp/conductor-tools-test',
   acceptance: { command: 'bun test', expect_exit: 0 },
   allowlist: ['bun', 'git'],
   maxFanout: 4,
@@ -31,20 +31,20 @@ const CTX: LeadCtx = {
   researchAvailable: true,
 };
 
-const NO_ACCEPTANCE_CTX: LeadCtx = { ...CTX, acceptance: undefined };
-const NO_RESEARCH_CTX: LeadCtx = { ...CTX, researchAvailable: false };
+const NO_ACCEPTANCE_CTX: ConductorCtx = { ...CTX, acceptance: undefined };
+const NO_RESEARCH_CTX: ConductorCtx = { ...CTX, researchAvailable: false };
 
-const TOOLS: readonly LeadTool[] = [
-  eraseLeadTool(workTool),
-  eraseLeadTool(spawnTool),
-  eraseLeadTool(mapTool),
-  eraseLeadTool(exploreTool),
-  eraseLeadTool(bestOfTool),
-  eraseLeadTool(researchTool),
-  eraseLeadTool(decomposeTool),
+const TOOLS: readonly ConductorTool[] = [
+  eraseConductorTool(workTool),
+  eraseConductorTool(spawnTool),
+  eraseConductorTool(mapTool),
+  eraseConductorTool(exploreTool),
+  eraseConductorTool(bestOfTool),
+  eraseConductorTool(researchTool),
+  eraseConductorTool(decomposeTool),
 ];
 
-const VALID_PARAMS: Record<LeadToolName, Record<string, unknown>> = {
+const VALID_PARAMS: Record<ConductorToolName, Record<string, unknown>> = {
   work: { goal: '修一个 bug', brief: 'x'.repeat(40) },
   spawn: { tasks: [{ goal: 'a', brief: 'b' }, { goal: 'c', brief: 'd' }] },
   map: { list_from: 'ls src', per_item: 'process {item}' },
@@ -54,7 +54,7 @@ const VALID_PARAMS: Record<LeadToolName, Record<string, unknown>> = {
   decompose: { goal: '一个还拆不出来的目标' },
 };
 
-describe('lead-tools-compile (D-5/INV-3 格式面)', () => {
+describe('conductor-tools-compile (D-5/INV-3 格式面)', () => {
   for (const tool of TOOLS) {
     test(`${tool.name}: 合法样本 compile 产物过 parsePlan`, () => {
       const parsed = tool.schema.safeParse(VALID_PARAMS[tool.name]);
@@ -151,7 +151,7 @@ describe('lead-tools-compile (D-5/INV-3 格式面)', () => {
   test('help:true → 只返 manual,compile 计数为 0', () => {
     const spy = spyOn(workTool, 'compile');
     try {
-      const result = invokeLeadTool(workTool, { help: true }, CTX);
+      const result = invokeConductorTool(workTool, { help: true }, CTX);
       expect(result.ok).toBe(false);
       if (result.ok) return;
       expect(result.manual).toBe(renderManual('work'));
@@ -169,7 +169,7 @@ describe('lead-tools-compile (D-5/INV-3 格式面)', () => {
     test(`${tool.name}: help:true 过 schema(不依赖 .strict() 拒收后才短路)`, () => {
       const withHelp = { ...VALID_PARAMS[tool.name], help: true };
       expect(tool.schema.safeParse(withHelp).success).toBe(true);
-      const result = invokeLeadTool(tool, withHelp, CTX);
+      const result = invokeConductorTool(tool, withHelp, CTX);
       expect(result.ok).toBe(false);
       if (result.ok) return;
       expect(result.manual).toBe(renderManual(tool.name));

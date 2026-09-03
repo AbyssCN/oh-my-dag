@@ -1,5 +1,5 @@
 /**
- * src/harness/lead/readonly-shell.test —— lead 只读 bash 闸 (D-20 机械面)。反向自检写在文件头。
+ * src/harness/conductor/readonly-shell.test —— conductor 只读 bash 闸 (D-20 机械面)。反向自检写在文件头。
  */
 import { describe, expect, test } from 'bun:test';
 import type { AnyOmdTool } from '../agent-tools';
@@ -30,7 +30,7 @@ describe('readOnlyShellBlockReason', () => {
     for (const c of blocked) expect(readOnlyShellBlockReason(c), c).not.toBeNull();
   });
 
-  test('★ 只读命令与测试命令放行 (lead prompt §1 承诺的那几类)', () => {
+  test('★ 只读命令与测试命令放行 (conductor prompt §1 承诺的那几类)', () => {
     const allowed = [
       'ls -la',
       'grep -rn "best_match" jsonschema/',

@@ -1,5 +1,5 @@
 /**
- * src/harness/lead/tools/best-of —— `best_of` 卡:n 个竞争尝试,验收命令打分。
+ * src/harness/conductor/tools/best-of —— `best_of` 卡:n 个竞争尝试,验收命令打分。
  * 契约 S1 change note:「n[2..8] / goal / brief / mode?;无 scorer(判据不可执行)时 compile
  * 返回 ok:false」。
  *
@@ -31,7 +31,7 @@
 import { z } from 'zod';
 import type { ConductorPlan } from '../../conductor-plan';
 import { renderManual } from '../render-manual';
-import type { CompileResult, LeadCtx, LeadTool } from '../types';
+import type { CompileResult, ConductorCtx, ConductorTool } from '../types';
 
 const BestOfSchema = z
   .object({
@@ -50,12 +50,12 @@ type BestOfParams = z.infer<typeof BestOfSchema>;
 const SHORT =
   'n sequential attempts on the same write_set, chained so they never race. Each later attempt runs the acceptance command first: already passing → zero changes; still failing → git-checkout the write_set and try a different approach. Worst case n full loops.';
 
-export const bestOfTool: LeadTool<BestOfParams> = {
+export const bestOfTool: ConductorTool<BestOfParams> = {
   name: 'best_of',
   short: SHORT,
   schema: BestOfSchema,
   manual: () => renderManual('best_of'),
-  compile(params: BestOfParams, ctx: LeadCtx): CompileResult {
+  compile(params: BestOfParams, ctx: ConductorCtx): CompileResult {
     if (!ctx.acceptance) {
       return {
         ok: false,
@@ -85,6 +85,6 @@ export const bestOfTool: LeadTool<BestOfParams> = {
       };
       prevId = id;
     }
-    return { ok: true, plan: { name: 'lead-best-of', nodes } };
+    return { ok: true, plan: { name: 'conductor-best-of', nodes } };
   },
 };

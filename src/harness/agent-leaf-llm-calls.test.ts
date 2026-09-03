@@ -1,6 +1,6 @@
 /**
  * R-1 (2026-09-03): `AgentLeafResult.llmCalls` —— pi 腿数 `turn_end` (一轮 = 一次模型响应), SDK 腿按 API message id 去重。
- * 它是「M3 调用/题」按 lead / worker 分解的引擎侧唯一来源 (桥日志只能按批)。
+ * 它是「M3 调用/题」按 conductor / worker 分解的引擎侧唯一来源 (桥日志只能按批)。
  * 证伪: 删 emit 里的 turn_end 计数 → 第一条红 (0 ≠ 2); SDK 腿改成数 assistant 条数 → 第二条红 (3 ≠ 2)。
  */
 import type { AgentMessage } from '@earendil-works/pi-agent-core';

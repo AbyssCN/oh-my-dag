@@ -89,7 +89,7 @@ leaf prompt 整形 seam: 注入 leaf 上下文/前缀/压缩级与档位闸 (省
 | `leafTierThresholdBytes` |  | `number` | g1「塞得下单 leaf prompt」阈值 (字节), 决定改写建议走「单 cat+leaf」还是「conductor 展开 per-item 对」。 | `src/harness/dag/engine.ts`<br>`src/mcp/assemble.ts` (2 文件) |
 | `planCriticGate` |  | `boolean` | **plan-critic 静态闸进活规划环** (#247, 2026-08-24, 片 2): parsePlan 成功后跑一次 `critique()`, 只 enforce 无外部输入子集 `{PP-I01, PP-I02, … | `src/mcp/assemble.ts`<br>`src/harness/dag/engine.ts` (2 文件) |
 | `faninSummary` |  | `FaninSummaryConfig` | fan-in **定向摘要** (引擎接缝, 2026-07-21): 一个 producer 的输出被 ≥2 个下游 consumer 消费时, 不再把全文复制 ≥2 份灌进各 consumer, 而是跑 1 发定向摘要 (按下游目… | `src/harness/dag/engine.ts` (1 文件) |
-| `leafFace` |  | `(node: { id: string; executor?: string }) => LeafFace \| u…` | **按节点下发整副工具面 + system prompt** 的钩子 (P3 S6b, 2026-09-02; 编排循环的 lead 节点用)。 | `src/harness/dag/engine.ts`<br>`src/harness/goal/run-goal.ts` (2 文件) |
+| `leafFace` |  | `(node: { id: string; executor?: string }) => LeafFace \| u…` | **按节点下发整副工具面 + system prompt** 的钩子 (P3 S6b, 2026-09-02; 编排循环的 conductor 节点用)。 | `src/harness/dag/engine.ts`<br>`src/harness/goal/run-goal.ts` (2 文件) |
 
 ## DagLoopControlSeam
 

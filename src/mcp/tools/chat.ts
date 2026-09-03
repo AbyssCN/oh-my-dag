@@ -26,8 +26,8 @@ import { createOmdAgentTools } from '../../harness/agent-tools';
 import { createConductorChatTools } from '../../serve/chat-tools';
 import { createHistoryTools } from './history';
 import { Type } from '@sinclair/typebox';
-import { createLeadTools, formatRejection, invokeLeadTool } from '../../harness/lead/tools/index';
-import type { LeadCtx, LeadTool } from '../../harness/lead/types';
+import { createConductorTools, formatRejection, invokeConductorTool } from '../../harness/conductor/tools/index';
+import type { ConductorCtx, ConductorTool } from '../../harness/conductor/types';
 import { allowlistForRoot } from '../../harness/command-leaf';
 import { effectiveFanout } from '../../harness/fleet';
 import { tryResolveSeatModel } from '../../model/role-models';
@@ -129,10 +129,10 @@ function buildHeadlessHands(cwd: string): AnyOmdTool[] {
 }
 
 /**
- * P3 S6b (契约 D-22 / INV-1): conductor_chat 的 lead 卡上下文。与 solve 侧 (`run-goal.ts` `leadCtxOf`) 同形,
+ * P3 S6b (契约 D-22 / INV-1): conductor_chat 的 conductor 卡上下文。与 solve 侧 (`run-goal.ts` `conductorCtxOf`) 同形,
  * 差别只在来源: chat 位没有 run, 判据缺席 (best_of 据此拒)、座位从座位表现解、并发 cap 走 fleet 真源。
  */
-function leadCtxForChat(cwd: string, tools: readonly OmdMcpTool[]): LeadCtx {
+function conductorCtxForChat(cwd: string, tools: readonly OmdMcpTool[]): ConductorCtx {
   const seat = (id: 'agent' | 'escalation' | 'verifier'): string => {
     try {
       return tryResolveSeatModel(id)?.model ?? '';
@@ -152,16 +152,16 @@ function leadCtxForChat(cwd: string, tools: readonly OmdMcpTool[]): LeadCtx {
 }
 
 /**
- * P3 S6b (D-22): 七张 lead 卡在 chat 位的形态 —— compile 过的图经 `dag_run_plan` 派出去 (fire-and-forget,
+ * P3 S6b (D-22): 七张 conductor 卡在 chat 位的形态 —— compile 过的图经 `dag_run_plan` 派出去 (fire-and-forget,
  * 回执首行 `runId:` 由 `collectRunIds` 同款规则收), 拒绝 (zod / help / 编译) 走 tool result 带完整 manual (D-3)。
  * 与 solve 侧唯一的差别是 `runChild` 的实现 (那边同步等子 run 结束并回 fan-in 摘要, 这边立返 runId):
  * chat 位是 fire-and-forget 语义 (见文件头), 卡不该在这里变成阻塞调用。
  */
-export function createLeadChatTools(cwd: string, tools: readonly OmdMcpTool[]): AnyOmdTool[] {
+export function createConductorCardChatTools(cwd: string, tools: readonly OmdMcpTool[]): AnyOmdTool[] {
   const runPlan = tools.find((t) => t.name === 'dag_run_plan');
-  if (!runPlan) throw new Error("[conductor_chat] 装配面里找不到 'dag_run_plan' — lead 卡没有派图通道");
-  const ctx = leadCtxForChat(cwd, tools);
-  return createLeadTools(ctx).map((card: LeadTool): AnyOmdTool => ({
+  if (!runPlan) throw new Error("[conductor_chat] 装配面里找不到 'dag_run_plan' — conductor 卡没有派图通道");
+  const ctx = conductorCtxForChat(cwd, tools);
+  return createConductorTools(ctx).map((card: ConductorTool): AnyOmdTool => ({
     name: card.name,
     label: card.name,
     description: card.short,
@@ -169,10 +169,10 @@ export function createLeadChatTools(cwd: string, tools: readonly OmdMcpTool[]): 
     parameters: Type.Unsafe(z.toJSONSchema(card.schema, { target: 'draft-7' })),
     executionMode: 'sequential',
     async execute(_id: string, params: unknown) {
-      const compiled = invokeLeadTool(card, params, ctx);
+      const compiled = invokeConductorTool(card, params, ctx);
       if (!compiled.ok) return { content: [{ type: 'text', text: formatRejection(compiled) }], details: { ok: false, card: card.name } };
       const res = (await (runPlan.handler as (a: unknown, extra: unknown) => unknown)(
-        { plan: JSON.stringify(compiled.plan), task: `lead ${card.name}: ${compiled.plan.name}` },
+        { plan: JSON.stringify(compiled.plan), task: `conductor ${card.name}: ${compiled.plan.name}` },
         {},
       )) as { content?: { text?: string }[]; isError?: boolean };
       const text = (res.content ?? []).map((c) => c.text ?? '').filter(Boolean).join('\n');
@@ -182,8 +182,8 @@ export function createLeadChatTools(cwd: string, tools: readonly OmdMcpTool[]): 
 }
 
 /**
- * 一轮 conductor_chat 的完整工具面 (P3 S6b / D-22): `[...hands, ...lead 卡, ...createConductorChatTools(…)]`。
- * 三段缺一不可: hands 是只读手 (D-1); lead 卡与 solve 侧同一构造点 `createLeadTools` (INV-1 包含关系);
+ * 一轮 conductor_chat 的完整工具面 (P3 S6b / D-22): `[...hands, ...conductor 卡, ...createConductorChatTools(…)]`。
+ * 三段缺一不可: hands 是只读手 (D-1); conductor 卡与 solve 侧同一构造点 `createConductorTools` (INV-1 包含关系);
  * `createConductorChatTools` 必须**仍在调用路径上** —— 它体内第一行是 `assertSurfaceComplete` (装配期闸),
  * 把它换掉等于那道闸一次都不再跑 (闸消失, 不是变红)。
  */
@@ -193,7 +193,7 @@ export function buildChatRoundTools(
   extraMcpTools: readonly OmdMcpTool[] = [],
 ): AnyOmdTool[] {
   const all = [...deps.tools, ...extraMcpTools];
-  return [...hands, ...createLeadChatTools(deps.cwd, all), ...createConductorChatTools(all)];
+  return [...hands, ...createConductorCardChatTools(deps.cwd, all), ...createConductorChatTools(all)];
 }
 
 /**
@@ -296,7 +296,7 @@ export function createConductorChatTool(deps: ConductorChatDeps): OmdMcpTool {
       }
       // Session-bound history tools are rebuilt per round; sessionId stays explicit and fixed.
       const historyTools = createHistoryTools({ store: deps.store, sessionId: sid });
-      // P3 S6b / D-22: hands + lead 七张卡 + conductor 工具 (含装配期闸)。
+      // P3 S6b / D-22: hands + conductor 七张卡 + conductor 工具 (含装配期闸)。
       const roundTools = buildChatRoundTools(deps, hands, historyTools);
 
       const runIds: string[] = [];

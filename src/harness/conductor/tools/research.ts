@@ -1,11 +1,11 @@
 /**
- * src/harness/lead/tools/research —— `research` 卡:一条问题的有据网络调研。
+ * src/harness/conductor/tools/research —— `research` 卡:一条问题的有据网络调研。
  * 契约 S1 change note:「question / lenses? / depth?;`ctx.researchAvailable === false` 时
  * compile 返回 ok:false 并给判词」。
  */
 import { z } from 'zod';
 import { renderManual } from '../render-manual';
-import type { CompileResult, LeadCtx, LeadTool } from '../types';
+import type { CompileResult, ConductorCtx, ConductorTool } from '../types';
 
 const ResearchSchema = z
   .object({
@@ -23,12 +23,12 @@ const SHORT =
   'Web research on one question. Only when the run has a search provider. depth:"second-pass" digs only ' +
   'what the first pass left uncited or unread.';
 
-export const researchTool: LeadTool<ResearchParams> = {
+export const researchTool: ConductorTool<ResearchParams> = {
   name: 'research',
   short: SHORT,
   schema: ResearchSchema,
   manual: () => renderManual('research'),
-  compile(params: ResearchParams, ctx: LeadCtx): CompileResult {
+  compile(params: ResearchParams, ctx: ConductorCtx): CompileResult {
     if (ctx.researchAvailable === false) {
       return {
         ok: false,
@@ -46,7 +46,7 @@ export const researchTool: LeadTool<ResearchParams> = {
     return {
       ok: true,
       plan: {
-        name: 'lead-research',
+        name: 'conductor-research',
         nodes: {
           research: {
             executor: 'research',

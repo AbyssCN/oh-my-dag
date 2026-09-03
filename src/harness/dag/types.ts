@@ -392,10 +392,10 @@ export interface DagLeafShapingSeam {
    */
   faninSummary?: FaninSummaryConfig;
   /**
-   * **按节点下发整副工具面 + system prompt** 的钩子 (P3 S6b, 2026-09-02; 编排循环的 lead 节点用)。
+   * **按节点下发整副工具面 + system prompt** 的钩子 (P3 S6b, 2026-09-02; 编排循环的 conductor 节点用)。
    * 引擎在每次 agent 派发前调一次; 返回值在场 → 原样进 `AgentLeafInput.face`, 该叶的工具面与
    * system prompt 由它定 (精益面 / 座位极简面 / profile / scaffold 全不进); 返回 undefined → 老路径逐字节不变。
-   * 不进 plan (闭包不可序列化); 装配点 = run-goal 的编排循环路径, 只对 `lead` 这一个 id 返回值。
+   * 不进 plan (闭包不可序列化); 装配点 = run-goal 的编排循环路径, 只对 `conductor` 这一个 id 返回值。
    */
   leafFace?: (node: { id: string; executor?: string }) => LeafFace | undefined;
 }

@@ -1,7 +1,7 @@
 /**
- * lead-tools-schema.test —— INV-2:七张卡 schema 全部 `.strict()`,调度字段(D-4)必拒。
+ * conductor-tools-schema.test —— INV-2:七张卡 schema 全部 `.strict()`,调度字段(D-4)必拒。
  *
- * 怎么让它红:目录 `src/harness/lead/` 还不存在时(实装前),这些 import 全部 module-not-found,
+ * 怎么让它红:目录 `src/harness/conductor/` 还不存在时(实装前),这些 import 全部 module-not-found,
  * 整个文件红。任何一张卡的 schema 放开一个调度字段(去掉 `.strict()` 或加一个显式字段)即红。
  */
 import { describe, expect, test } from 'bun:test';
@@ -9,16 +9,16 @@ import { renderManual } from './render-manual';
 import { bestOfTool } from './tools/best-of';
 import { decomposeTool } from './tools/decompose';
 import { exploreTool } from './tools/explore';
-import { eraseLeadTool, formatRejection, invokeLeadTool, LEAD_TOOL_NAMES } from './tools/index';
+import { eraseConductorTool, formatRejection, invokeConductorTool, CONDUCTOR_TOOL_NAMES } from './tools/index';
 import { mapTool } from './tools/map';
 import { researchTool } from './tools/research';
 import { spawnTool } from './tools/spawn';
 import { workTool } from './tools/work';
-import type { LeadCtx, LeadTool, LeadToolName } from './types';
+import type { ConductorCtx, ConductorTool, ConductorToolName } from './types';
 
-const CTX: LeadCtx = {
-  cwd: '/tmp/lead-tools-test',
-  writeRoot: '/tmp/lead-tools-test',
+const CTX: ConductorCtx = {
+  cwd: '/tmp/conductor-tools-test',
+  writeRoot: '/tmp/conductor-tools-test',
   acceptance: { command: 'bun test', expect_exit: 0 },
   allowlist: ['bun', 'git'],
   maxFanout: 4,
@@ -26,18 +26,18 @@ const CTX: LeadCtx = {
   researchAvailable: true,
 };
 
-const TOOLS: readonly LeadTool[] = [
-  eraseLeadTool(workTool),
-  eraseLeadTool(spawnTool),
-  eraseLeadTool(mapTool),
-  eraseLeadTool(exploreTool),
-  eraseLeadTool(bestOfTool),
-  eraseLeadTool(researchTool),
-  eraseLeadTool(decomposeTool),
+const TOOLS: readonly ConductorTool[] = [
+  eraseConductorTool(workTool),
+  eraseConductorTool(spawnTool),
+  eraseConductorTool(mapTool),
+  eraseConductorTool(exploreTool),
+  eraseConductorTool(bestOfTool),
+  eraseConductorTool(researchTool),
+  eraseConductorTool(decomposeTool),
 ];
 
 /** 每张卡的一份最小合法样本(D-4 全矩阵测试要在此基础上叠加调度字段)。 */
-const VALID_PARAMS: Record<LeadToolName, Record<string, unknown>> = {
+const VALID_PARAMS: Record<ConductorToolName, Record<string, unknown>> = {
   work: { goal: '修一个 bug', brief: 'x'.repeat(40) },
   spawn: { tasks: [{ goal: 'a', brief: 'b' }, { goal: 'c', brief: 'd' }] },
   map: { list_from: 'ls src', per_item: 'process {item}' },
@@ -58,9 +58,9 @@ const SCHEDULING_FIELDS: Record<string, unknown> = {
   requires: 'all',
 };
 
-describe('lead-tools-schema (INV-2)', () => {
-  test('七张卡名字与 LEAD_TOOL_NAMES 一致', () => {
-    expect(TOOLS.map((t) => t.name).sort()).toEqual([...LEAD_TOOL_NAMES].sort());
+describe('conductor-tools-schema (INV-2)', () => {
+  test('七张卡名字与 CONDUCTOR_TOOL_NAMES 一致', () => {
+    expect(TOOLS.map((t) => t.name).sort()).toEqual([...CONDUCTOR_TOOL_NAMES].sort());
   });
 
   for (const tool of TOOLS) {
@@ -83,7 +83,7 @@ describe('lead-tools-schema (INV-2)', () => {
 
   for (const tool of TOOLS) {
     test(`${tool.name}: 缺必填字段 → 拒绝体首行 === 该卡 manual 首行`, () => {
-      const result = invokeLeadTool(tool, {}, CTX);
+      const result = invokeConductorTool(tool, {}, CTX);
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error('unreachable');
       const rejectionBody = formatRejection(result);

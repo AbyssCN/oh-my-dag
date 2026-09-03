@@ -220,7 +220,7 @@ export function missingPathArgBlockReason(
 /**
  * 1-A (2026-09-03): 判据命令里**现在还不存在**的路径参数 (相对 root, 去重保序)。
  * 形状判定与 root 内判定跟 {@link missingPathArgBlockReason} 同一套 (looksLikePathArg / 解析后仍在 root 内),
- * 但它**不拒**: 它回答的是「判据在等谁产出」—— 编排循环用它冻结判据文件 (lead 的第一个派发只准写这些,
+ * 但它**不拒**: 它回答的是「判据在等谁产出」—— 编排循环用它冻结判据文件 (conductor 的第一个派发只准写这些,
  * 之后禁改)。root 为空 → [] (没有仓根就没有"存不存在"这回事)。
  */
 export function missingPathArgs(command: string, root: string): string[] {

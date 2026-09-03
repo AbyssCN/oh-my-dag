@@ -1,5 +1,5 @@
 /**
- * src/harness/lead/tools/spawn —— `spawn` 卡:N 个独立 worker 并行。
+ * src/harness/conductor/tools/spawn —— `spawn` 卡:N 个独立 worker 并行。
  * 契约 S1 change note:「tasks[2..16] + 可选 decision;compile → N 个无边兄弟,
  * 有 decision 时前置一个决策节点;写集重叠当场拒」。
  *
@@ -12,7 +12,7 @@
 import { z } from 'zod';
 import type { ConductorPlan } from '../../conductor-plan';
 import { renderManual } from '../render-manual';
-import type { CompileResult, LeadCtx, LeadTool } from '../types';
+import type { CompileResult, ConductorCtx, ConductorTool } from '../types';
 
 const TaskSchema = z
   .object({
@@ -49,12 +49,12 @@ function firstOverlap(writeSets: readonly (readonly string[])[]): string | null 
   return null;
 }
 
-export const spawnTool: LeadTool<SpawnParams> = {
+export const spawnTool: ConductorTool<SpawnParams> = {
   name: 'spawn',
   short: SHORT,
   schema: SpawnSchema,
   manual: () => renderManual('spawn'),
-  compile(params: SpawnParams, ctx: LeadCtx): CompileResult {
+  compile(params: SpawnParams, ctx: ConductorCtx): CompileResult {
     const overlap = firstOverlap(params.tasks.map((t) => t.write_set ?? []));
     if (overlap) {
       return {
@@ -78,6 +78,6 @@ export const spawnTool: LeadTool<SpawnParams> = {
         ...(decisionId ? { depends_on: [decisionId] } : {}),
       };
     });
-    return { ok: true, plan: { name: 'lead-spawn', nodes } };
+    return { ok: true, plan: { name: 'conductor-spawn', nodes } };
   },
 };

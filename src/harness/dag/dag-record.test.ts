@@ -188,7 +188,7 @@ describe('留痕的派生面 — 命令原文 + 效果指标计数', () => {
     const nodes = rec.get(id)!.nodes;
     expect(nodes.find((n) => n.id === 'a')!.llmCalls).toBe(3);
     expect(nodes.find((n) => n.id === 'a')!.toolCalls).toBe(7);
-    // 证伪: 写成 `?? 0` → 下面两条红 —— 读数板会把「没记」念成「零次调用」, lead/worker 分解的分母就假了。
+    // 证伪: 写成 `?? 0` → 下面两条红 —— 读数板会把「没记」念成「零次调用」, conductor/worker 分解的分母就假了。
     expect(nodes.find((n) => n.id === 'o')!.llmCalls).toBeNull();
     expect(nodes.find((n) => n.id === 'o')!.toolCalls).toBeNull();
     rec.close();
@@ -996,10 +996,10 @@ describe('R-1 · loop 列: 只回填父行, 子 run 行与老行 NULL', () => {
     dispatches: [{ seq: 1, card: 'work' as const, nodes: 1, briefHasRepro: true, failed: 0 }],
   };
 
-  test('★ 父行 (plan_name 点名) 拿到 loop; 同 runId 的子 run 行 (lead-*) 仍缺席; 别的 runId 不串', () => {
+  test('★ 父行 (plan_name 点名) 拿到 loop; 同 runId 的子 run 行 (conductor-*) 仍缺席; 别的 runId 不串', () => {
     const rec = createDagRecorder({ db: new Database(':memory:') });
     const parent = rec.record(graph('goal-orchestrating-loop'), { runId: 'g1', entry: 'solve' });
-    const child = rec.record(graph('lead-work-fix-add'), { runId: 'g1', entry: 'solve' });
+    const child = rec.record(graph('conductor-work-fix-add'), { runId: 'g1', entry: 'solve' });
     const other = rec.record(graph('goal-orchestrating-loop'), { runId: 'g2', entry: 'solve' });
     rec.updateLoop('g1', 'goal-orchestrating-loop', loop);
     // 证伪: updateLoop 的 WHERE 去掉 plan_name → 子行也拿到 loop, 第二条红。

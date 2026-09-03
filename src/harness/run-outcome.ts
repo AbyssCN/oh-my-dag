@@ -62,7 +62,7 @@ export type RunOutcomeKind =
    */
   | 'delivered-with-red'
   /**
-   * **跨模型终审判红一次, finding 回灌同一 lead 节点重派一次之后仍不能证明修复** (P3 S6b / D-14, 2026-09-02)。
+   * **跨模型终审判红一次, finding 回灌同一 conductor 节点重派一次之后仍不能证明修复** (P3 S6b / D-14, 2026-09-02)。
    * 直接证据 = 编排循环路径 ∧ 回灌发生过 ∧ (回灌后机械 oracle 红 ∨ 本 run 无机械 oracle)。
    * 与 `oracle-failed` 分开: 那格是「环说成了而判据没过」; 这格是「终审说没成, 且引擎按 INV-7 不再复审」。
    * 与 `delivered-with-red` 分开: 那格判据绿。owner 2026-09-02 裁: 新增一格, 不复用 `delivered-with-red`
@@ -190,9 +190,9 @@ export const RUN_OUTCOME_INFO: Record<RunOutcomeKind, RunOutcomeInfo> = {
     spendBucket: 'delivery',
     loopState: 'STALLED',
     evidence:
-      '编排循环路径: verifier 判红 (RunGoalResult.verifierDissent 有原文) → finding 回灌 lead 节点重派 1 次 → 回灌后机械 oracle 仍红, 或本 run 无机械 oracle 可证明修复',
+      '编排循环路径: verifier 判红 (RunGoalResult.verifierDissent 有原文) → finding 回灌 conductor 节点重派 1 次 → 回灌后机械 oracle 仍红, 或本 run 无机械 oracle 可证明修复',
     nextAction:
-      '读 verifierDissent 原文与第二轮 lead 报告 —— **别加轮数**: 第二次 finding 不进引擎环 (INV-7 终审恰一次), 要么人裁 finding 不成立, 要么改 goal/判据再跑',
+      '读 verifierDissent 原文与第二轮 conductor 报告 —— **别加轮数**: 第二次 finding 不进引擎环 (INV-7 终审恰一次), 要么人裁 finding 不成立, 要么改 goal/判据再跑',
     resumable: false,
   },
   blocked: {

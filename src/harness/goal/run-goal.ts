@@ -90,17 +90,17 @@ import { escalationProviderReady, type VerdictTarget, type VerifierFn } from '..
 import { extractProtectedPaths } from './goal-protections';
 import { withProtectedPaths } from '../agent-tools';
 import {
-  LEAD_INFRA_FAILURE_KINDS,
-  LEAD_NODE_ID,
-  buildLeadFace,
+  CONDUCTOR_INFRA_FAILURE_KINDS,
+  CONDUCTOR_NODE_ID,
+  buildConductorFace,
   compileOrchestratingLoop,
   orchestratingLoopEnabled,
   withReinjectedFinding,
   checkCriterionFreeze,
   renderCriterionFreezeTruth,
 } from './orchestrating-loop';
-import type { LeadCtx } from '../lead/types';
-import { createLeadCardLedger, type LeadCardLedger, type LoopLedger } from './loop-ledger';
+import type { ConductorCtx } from '../conductor/types';
+import { createConductorCardLedger, type ConductorCardLedger, type LoopLedger } from './loop-ledger';
 import { allowlistForRoot } from '../command-leaf';
 import { tryResolveSeatModel } from '../../model/role-models';
 import { AGENT_DEFAULT_FANOUT } from '../fleet';
@@ -377,8 +377,8 @@ export interface RunGoalConfig {
    * (`0` / `false` / `off` 关, 其余含缺席 = **开**); 给定布尔值压过环境 (测试 / 装配层用这条)。
    *
    * 缺省语义 = **开** (D-17: sdd-direct > orchestrating-loop > chain > flat-first > v1)。开 = 无 SDD 的 goal 走
-   * `compileOrchestratingLoop` 的两节点图 (lead agent + accept oracle), lead 拿七张派工卡与 ≤8k 常驻 prompt,
-   * 终审恰一次 + finding 回灌 lead 一次 (D-14)。关 = 回到 D-17 的下一档, 行为与 S6a 之后逐字节相同 ——
+   * `compileOrchestratingLoop` 的两节点图 (conductor agent + accept oracle), conductor 拿七张派工卡与 ≤8k 常驻 prompt,
+   * 终审恰一次 + finding 回灌 conductor 一次 (D-14)。关 = 回到 D-17 的下一档, 行为与 S6a 之后逐字节相同 ——
    * 那是 R-1 「D4 路由命中率」对照臂的入口。不给 solve/run 加 inputSchema 参数 (D-16)。
    */
   orchestratingLoop?: boolean;
@@ -1063,18 +1063,18 @@ export function flatFirstEnabled(config: { flatFirst?: boolean }, env: NodeJS.Pr
  * 镜像 `flatFirstEnabled` 的形状, 两开关**同源同真源**, 装配层 A/B 时只动 env 就行。
  */
 /**
- * P3 S6b: lead 卡 compile 的执行上下文 (契约 D-2 `LeadCtx`)。全部从 run 的 config 与座位表**透传**,
+ * P3 S6b: conductor 卡 compile 的执行上下文 (契约 D-2 `ConductorCtx`)。全部从 run 的 config 与座位表**透传**,
  * 不在这里第二次解析环境 (D-25: maxFanout 沿用装配层 `effectiveFanout` 的结果; 测试 / 无装配时回落
  * fleet 的缺省 36, 与引擎「不限」同义)。座位: worker = agent 座, escalation = 升级座 (decompose 卡的
  * conductor 用它), verify = verifier 座 (今天没有卡消费, 透传给 prompt/读数)。
  */
-function leadCtxOf(config: RunGoalConfig, runnable: { command: string; expectExit?: number } | null): LeadCtx {
+function conductorCtxOf(config: RunGoalConfig, runnable: { command: string; expectExit?: number } | null): ConductorCtx {
   const seat = (id: 'agent' | 'escalation' | 'verifier'): string | undefined => {
     try {
       return tryResolveSeatModel(id)?.model;
     } catch (err) {
       // 座位表读不出来 (测试 / 无 config) = 这一格缺席, 留一行证据, 不掀桌。
-      logger.warn({ seat: id, err: String(err).slice(0, 120) }, '[run-goal] lead 座位坐标解析失败 → 缺席');
+      logger.warn({ seat: id, err: String(err).slice(0, 120) }, '[run-goal] conductor 座位坐标解析失败 → 缺席');
       return undefined;
     }
   };
@@ -1095,7 +1095,7 @@ function leadCtxOf(config: RunGoalConfig, runnable: { command: string; expectExi
 
 /**
  * P3 S6b: 循环路径的引擎 config —— 在 `base` 上加 (a) `maxEscalations: 0` (D-14 不开重规划轮) 与
- * (b) `leafFace` (只对 `lead` id 返回整副面)。卡的 `runChild` 跑派发出的子图: 同一 `_runDag` 注入口
+ * (b) `leafFace` (只对 `conductor` id 返回整副面)。卡的 `runChild` 跑派发出的子图: 同一 `_runDag` 注入口
  * (D-5 唯一执行入口), 子 run 的 config = base 剥掉 verifier / maxEscalations / leafFace / freezeCriterion
  * (子图节点各自带 self_check; 终审只在父 run 打一次), continuity 派生 runId `<runId>:d<n>` (子节点 checkpoint
  * 与父 run 不撞; `onComplete` / `onNodeEvent` 保留 —— 留痕库按 run_id 归组, 一次派发一行, 进度事件照发)。
@@ -1107,9 +1107,9 @@ function withLoopConfig(
   runnable: { command: string; expectExit?: number } | null,
   task: string,
   /** R-1 账本; 回灌第二跑传同一个对象 (两跑合并计数)。 */
-  ledger?: LeadCardLedger,
+  ledger?: ConductorCardLedger,
 ): ExecutorDagConfig {
-  const ctx = leadCtxOf(config, runnable);
+  const ctx = conductorCtxOf(config, runnable);
   const { verifier: _v, maxEscalations: _m, leafFace: _f, freezeCriterion: _c, frozenNodes: _n, deterministicReplan: _d, ...childBase } = base;
   void _v; void _m; void _f; void _c; void _n; void _d;
   const runChild = (childPlan: ConductorPlan, seq: number): Promise<ExecutorDagResult> => {
@@ -1120,13 +1120,13 @@ function withLoopConfig(
     return (config._runDag ?? runExecutorDagWithPlan)(childPlan, childCfg);
   };
   const budgetMs = base.loopBudget?.ms;
-  // 1-A (2026-09-03): 判据引用、此刻不存在的文件 → lead 第一个派发只准写它们, 之后冻结 (闸在 orchestrating-loop)。
+  // 1-A (2026-09-03): 判据引用、此刻不存在的文件 → conductor 第一个派发只准写它们, 之后冻结 (闸在 orchestrating-loop)。
   // 回灌第二跑时文件已存在 → 这里算出 [], 但 ledger.criterionFreeze 里已有 hashes → 工具面从那里恢复保护 (initFreezeState)。
   const criterionFiles = runnable ? missingPathArgs(runnable.command, config.cwd) : [];
   const freezeFiles = criterionFiles.length ? criterionFiles : ledger?.criterionFreeze?.files ?? [];
-  const face = buildLeadFace(
+  const face = buildConductorFace(
     {
-      goal: plan.nodes[LEAD_NODE_ID]?.goal ?? task,
+      goal: plan.nodes[CONDUCTOR_NODE_ID]?.goal ?? task,
       writeRoot: config.cwd,
       protectedPaths: extractProtectedPaths(task),
       ...(ctx.acceptance ? { acceptance: ctx.acceptance } : {}),
@@ -1141,7 +1141,7 @@ function withLoopConfig(
   return {
     ...base,
     maxEscalations: 0,
-    leafFace: (node) => (node.id === LEAD_NODE_ID ? face : undefined),
+    leafFace: (node) => (node.id === CONDUCTOR_NODE_ID ? face : undefined),
   };
 }
 
@@ -1694,7 +1694,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
    */
   let loopPlan: ConductorPlan | undefined;
   /** R-1 账本 (循环路径才用; 两跑合并)。 */
-  const loopLedger: LeadCardLedger = createLeadCardLedger();
+  const loopLedger: ConductorCardLedger = createConductorCardLedger();
   let chainHit = false;
   /**
    * P3 S7 (D-17 / D-19 / INV-12): D4 chain 默认开, 位次 = sdd-direct > loop > **chain** > flat-first > v1。
@@ -1869,7 +1869,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   } else if (loopOn) {
     // ── P3 S6b 编排循环 (契约 D-1 / D-14 / D-17 / D-20; 2026-09-02) ─────────────────────
     //
-    // 默认路径。图 = `lead` (agent, 七张派工卡 + ≤8k 常驻 prompt, 只读手) → `accept` (冻结判据原文;
+    // 默认路径。图 = `conductor` (agent, 七张派工卡 + ≤8k 常驻 prompt, 只读手) → `accept` (冻结判据原文;
     // 无可执行判据时缺席, 那时终审是唯一判官)。**不要求 runnable**: 探索型 / rubric 型也走循环 ——
     // 它们此前走 v1 conductor, 而 v1 的内环 judge 与 30k 画图 prompt 正是 P3 要撤的东西。
     // 子图执行与终审恰一次的机械在下面 execCfg (leafFace / maxEscalations:0) 与 exec 之后的回灌段。
@@ -1878,14 +1878,14 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
       ...(runnable
         ? { acceptance: { command: runnable.command, expect_exit: runnable.expectExit ?? 0 } }
         : {}),
-      ctx: leadCtxOf(config, runnable),
+      ctx: conductorCtxOf(config, runnable),
       // 编排节点坐 conductor 座 (owner 2026-09-03): 它就是 conductor, 不是 worker。
       ...(config.dag.conductorModel ? { conductorModel: config.dag.conductorModel } : {}),
     });
     loopPlan = compiledLoop;
     logger.info(
       { nodes: Object.keys(compiledLoop.nodes), acceptance: runnable !== null },
-      '[run-goal] P3 编排循环默认路径 → lead 节点 + 机械 oracle (D-17; OMD_ORCHESTRATING_LOOP=0 回到下一档)',
+      '[run-goal] P3 编排循环默认路径 → conductor 节点 + 机械 oracle (D-17; OMD_ORCHESTRATING_LOOP=0 回到下一档)',
     );
   } else if (chainPlan !== undefined) {
     flatPlan = chainPlan;
@@ -2074,7 +2074,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
     const tappedCfg = config.dag.verifier ? { ...execCfg, verifier: tapVerifier(config.dag.verifier) } : execCfg;
     // ── P3 S6b: 循环路径的引擎 config ─────────────────────────────────────────────
     //   · maxEscalations: 0 —— 终审判红**不开**升级重规划轮 (D-14: 重试单元不再是整图重画);
-    //   · leafFace —— 只对 `lead` 这一个 id 下发整副面 (只读手 + 七张卡 + 常驻 lead prompt);
+    //   · leafFace —— 只对 `conductor` 这一个 id 下发整副面 (只读手 + 七张卡 + 常驻 conductor prompt);
     //   · 卡的 `runChild` = 同一个 `_runDag` 注入口跑派发出的子图 (D-5 唯一执行入口), 子 run 剥掉
     //     verifier / maxEscalations / leafFace / freezeCriterion (子图节点各自带 self_check), 派生 runId。
     //   平铺图那几颗钉子 (frozenNodes / deterministicReplan) 不挂: 循环没有重规划轮。
@@ -2087,40 +2087,40 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   //
   // 触发 = 循环路径 ∧ verifier **真被调过**且判红 (`lastVerdict` 只在 tapVerifier 里赋值 —— 闸红短路与
   // verifier-error 两条出口都不经过 tap, 所以它们天然不触发回灌: oracle 红走短路零 LLM, 判卷官坏了
-  // 不替它开修复轮)。回灌 = finding 原文 append 到**同一 lead 节点 id** 的 goal, 按同一张图重跑一次,
+  // 不替它开修复轮)。回灌 = finding 原文 append 到**同一 conductor 节点 id** 的 goal, 按同一张图重跑一次,
   // 第二次 **不带 verifier** (INV-7: 终审每 run 至多一次, 这里靠"字段不在"机械保证, 不靠计数)。
   // 之后终态由机械 oracle 定 (下方 outcome 的 verifier-rejected 分支)。
   let reinjected = false;
   /** R-1: 回灌第二跑开始时的派发数 (两跑共用 loopLedger), 读侧据此分「回灌后有没有新派发」。 */
   let dispatchesBeforeReinject: number | undefined;
   /**
-   * 2026-09-03 (code80-p3 首批停批根因): lead 节点死于基建 (529 / 超时 / 停摆 / 缺能力) 时**不回灌** —— 终审对着空产物
+   * 2026-09-03 (code80-p3 首批停批根因): conductor 节点死于基建 (529 / 超时 / 停摆 / 缺能力) 时**不回灌** —— 终审对着空产物
    * 判红是必然的, 再派只是再撞一次同一堵墙, 而终态会被标成 verifier-rejected (语义否决), 把引擎故障记成了模型没做对。
    * 这一格的下一步是「修引擎 / 换池, 别加轮数」, 所以直接走 infra-error (见下方 infraStopped 的循环路径分支)。
    */
-  const leadInfraFailure = ((): string | undefined => {
-    const lead = loopPlan !== undefined ? exec.results[LEAD_NODE_ID] : undefined;
-    if (!lead || lead.status === 'done' || !lead.failureKind || !LEAD_INFRA_FAILURE_KINDS.has(lead.failureKind)) return undefined;
-    return `lead 节点基建失败 (${lead.failureKind}): ${(lead.output ?? '').slice(0, 240)}`;
+  const conductorInfraFailure = ((): string | undefined => {
+    const conductor = loopPlan !== undefined ? exec.results[CONDUCTOR_NODE_ID] : undefined;
+    if (!conductor || conductor.status === 'done' || !conductor.failureKind || !CONDUCTOR_INFRA_FAILURE_KINDS.has(conductor.failureKind)) return undefined;
+    return `conductor 节点基建失败 (${conductor.failureKind}): ${(conductor.output ?? '').slice(0, 240)}`;
   })();
-  if (leadInfraFailure !== undefined && lastVerdict !== undefined && !lastVerdict.pass) {
-    logger.warn({ why: leadInfraFailure }, '[run-goal] D-14: lead 节点基建类败因 → 不回灌, 终态 infra-error (不是 verifier-rejected)');
+  if (conductorInfraFailure !== undefined && lastVerdict !== undefined && !lastVerdict.pass) {
+    logger.warn({ why: conductorInfraFailure }, '[run-goal] D-14: conductor 节点基建类败因 → 不回灌, 终态 infra-error (不是 verifier-rejected)');
   }
   /**
-   * 1-B (2026-09-03): 终审否决**判据** (target=criterion) 不回灌 lead —— smoke8 与主批实测 37/50 打回是这一型, 回灌后 lead 零新派发、
+   * 1-B (2026-09-03): 终审否决**判据** (target=criterion) 不回灌 conductor —— smoke8 与主批实测 37/50 打回是这一型, 回灌后 conductor 零新派发、
    * oracle 绿即 success, finding 原地蒸发。判据量不出对错时重跑实装没有意义; 这一格的下一步是 INV-4 判据重建 (下方 rebuildTrigger
    * 对 target=criterion 恒触发), 终态按 verifier-rejected 记 (oracle 绿在被否决的判据上不构成证据)。
    */
   const criterionVeto =
-    loopPlan !== undefined && lastVerdict !== undefined && !lastVerdict.pass && lastVerdict.target === 'criterion' && leadInfraFailure === undefined;
+    loopPlan !== undefined && lastVerdict !== undefined && !lastVerdict.pass && lastVerdict.target === 'criterion' && conductorInfraFailure === undefined;
   if (criterionVeto) {
-    logger.warn({ reason: lastVerdict!.reason.slice(0, 200) }, '[run-goal] 1-B: 终审否决判据 (target=criterion) → 不回灌 lead, 走 INV-4 判据重建');
+    logger.warn({ reason: lastVerdict!.reason.slice(0, 200) }, '[run-goal] 1-B: 终审否决判据 (target=criterion) → 不回灌 conductor, 走 INV-4 判据重建');
   }
-  if (loopPlan !== undefined && lastVerdict !== undefined && !lastVerdict.pass && leadInfraFailure === undefined && !criterionVeto) {
+  if (loopPlan !== undefined && lastVerdict !== undefined && !lastVerdict.pass && conductorInfraFailure === undefined && !criterionVeto) {
     const finding = lastVerdict.reason;
     logger.warn(
       { chars: finding.length, target: lastVerdict.target },
-      '[run-goal] D-14 终审判红 → finding 回灌 lead 节点重派 1 次 (第二次不带 verifier, INV-7)',
+      '[run-goal] D-14 终审判红 → finding 回灌 conductor 节点重派 1 次 (第二次不带 verifier, INV-7)',
     );
     const replanted = withReinjectedFinding(loopPlan, finding);
     try {
@@ -2192,10 +2192,10 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   }
   const flatUsed = flatPlan !== undefined;
   const loopUsed = loopPlan !== undefined;
-  // P3 S6b: 循环路径的"执行叶"是 lead 节点 —— 下游读 output (rubric 判官) / blocked / budgetStopped 的地方
+  // P3 S6b: 循环路径的"执行叶"是 conductor 节点 —— 下游读 output (rubric 判官) / blocked / budgetStopped 的地方
   // 全部照旧, 只是换了个 id。
-  const execLeaf = loopUsed ? exec.results[LEAD_NODE_ID] : exec.results.execute;
-  if (!execLeaf && !flatUsed) return bail(`${loopUsed ? 'lead' : 'execute'} 节点无结果 (引擎没跑到它)`, 'infra-error');
+  const execLeaf = loopUsed ? exec.results[CONDUCTOR_NODE_ID] : exec.results.execute;
+  if (!execLeaf && !flatUsed) return bail(`${loopUsed ? 'conductor' : 'execute'} 节点无结果 (引擎没跑到它)`, 'infra-error');
   // D-I 环外闸: 执行型才有这个节点。它**没跑**(引擎没走到 / 被 quorum 级联跳过)也算没过 ——
   // 冻结判据的意义就是"没被证明过就不算成", fail-closed 与 converged 缺席同一条纪律。
   const acceptLeaf = runnable ? exec.results.accept : undefined;
@@ -2292,7 +2292,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
     let inputs = config.rubricVerdictInputs;
     if (!inputs) {
       // 2026-09-03 (smoke8-p3 repo_understanding: 我们判 8/11 不过, bench 判 15/15 过): 证据面此前只有执行叶的
-      // **报告正文**, 产物文件本身判官一个字没看见 —— lead 经 bash 写的 analysis.json 就在盘上。证据 = 报告 + 盘上
+      // **报告正文**, 产物文件本身判官一个字没看见 —— conductor 经 bash 写的 analysis.json 就在盘上。证据 = 报告 + 盘上
       // 改动文件的内容 (git status 取, fail-open: 取不到就只剩报告, 留一行)。判官只能依据它判, 所以宁可给全。
       const judged = await judgeRubric(acceptance.checklist, `${execLeaf?.output ?? ''}${renderArtifactEvidence(config)}`, {
         generate: config.dag.generate ?? makeDefaultGenerate(config.dag.sessionId ?? randomUUID()),
@@ -2543,7 +2543,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   // 平铺路径 (D-3): 没有 conductor 节点就没有 judge 投票 —— 停止规则唯一 = 冻结判据,
   // criteria.judge 恒等于 oracle, 「判词✅/判据❌打架」这个状态在平铺图上从型别消灭。
   // P3 S6b 循环路径 (D-14 「循环内以 oracle 为终止条件」): 有可执行判据 ⇒ 停止规则唯一 = 冻结判据, 与平铺同形;
-  // 无判据 (探索型 / rubric) ⇒ 环的结论 = lead 节点跑完 (status done), 判据轴由 rubric 判官 / 终审说话。
+  // 无判据 (探索型 / rubric) ⇒ 环的结论 = conductor 节点跑完 (status done), 判据轴由 rubric 判官 / 终审说话。
   const loopOk = flatUsed ? oracleOk : loopUsed ? (runnable ? oracleOk : execLeaf!.status === 'done') : execLeaf!.converged === true;
   // judge 自己那一票 (判据轴观测位, 进 criteria.judge; 与裁决位分开 —— 「judge 太紧」那一格
   // 靠它才观测得到)。缺席 = 没走环内判据那条路, 环结论即 judge 说的。
@@ -2667,8 +2667,8 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   // P3 S6b / D-14: 回灌过 ∧ (回灌后机械 oracle 仍红 ∨ 本 run 无机械 oracle) ⇒ 终审的否决没被证伪, 这趟不算成。
   // 回灌后 oracle 绿 ⇒ 照常 (success / delivered-with-red), 摘要里注记「finding 回灌 1 次, 未复审」。
   const verifierRejected = loopUsed && ((reinjected && (runnable ? !oracleOk : true)) || criterionVeto);
-  // lead 死于基建 (2026-09-03): 哪怕 accept 复用了一份绿, 这趟也不算成 —— 引擎侧停 (infra-error), 不是交付达标。
-  const converged = loopOk && oracleOk && !verifierRejected && leadInfraFailure === undefined;
+  // conductor 死于基建 (2026-09-03): 哪怕 accept 复用了一份绿, 这趟也不算成 —— 引擎侧停 (infra-error), 不是交付达标。
+  const converged = loopOk && oracleOk && !verifierRejected && conductorInfraFailure === undefined;
   // judge 异议 (判据绿收敛而 judge 判没成): **只报不翻终态** —— 这一格是判据轴「judge 太紧 /
   // 判据覆盖不够」的样本, 判词在 continuity 的 _loop-execute.json。翻终态的版本就是 #148。
   const judgeDissent = converged && !judgeSaidOk;
@@ -2686,8 +2686,8 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   // **引擎自己出事**导致环提前退出 (今天唯一来源: judge 调不通)。与 blocked 分开的理由是
   // 下一步相反: blocked 要人给外部输入, 这个要**修引擎** —— 而它此前落 `not-converged`,
   // 于是读的人会去加轮数, 恰恰是最没用的那个动作。
-  // 循环路径: lead 节点的基建类败因也是「引擎侧停」(agent 叶没有 conductor 那种 infraStopped 字段, 从 failureKind 读)。
-  const infraStopped = execLeaf?.infraStopped ?? leadInfraFailure;
+  // 循环路径: conductor 节点的基建类败因也是「引擎侧停」(agent 叶没有 conductor 那种 infraStopped 字段, 从 failureKind 读)。
+  const infraStopped = execLeaf?.infraStopped ?? conductorInfraFailure;
   const cancelledReason = exec.cancelled?.reason;
   // 判词与 oracle **分开报**: 两者不一致时那句话本身就是结论 —— judge 说成了而冻结判据没过,
   // 正是 D-I 要抓的"作弊达标"; 反过来则是"任务里还有命令覆盖不到的明确要求"。
@@ -2788,8 +2788,8 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
         // 追加一次, 两处都印会把同一段 pytest 输出在同一行里印两遍。
         : criterionInconclusiveTerminal ? TERMINAL_CRITERION_INCONCLUSIVE
         : outcome === 'verifier-rejected' ? (criterionVeto
-            ? `终审否决判据 (target=criterion, 1-B): 不回灌 lead, 走 INV-4 判据重建 (见 ${CRITERION_REBUILD_LABEL}); 被否决的判据上 oracle 绿不算证据, 本 run 不算成`
-            : `终审判红, finding 回灌 lead 1 次后${runnable ? '机械判据仍红' : '无机械判据可证明修复'} (D-14; 终审不复审, 读 verifierDissent, **别加轮数**)`)
+            ? `终审否决判据 (target=criterion, 1-B): 不回灌 conductor, 走 INV-4 判据重建 (见 ${CRITERION_REBUILD_LABEL}); 被否决的判据上 oracle 绿不算证据, 本 run 不算成`
+            : `终审判红, finding 回灌 conductor 1 次后${runnable ? '机械判据仍红' : '无机械判据可证明修复'} (D-14; 终审不复审, 读 verifierDissent, **别加轮数**)`)
         : outcome === 'oracle-failed' ? '环说成了但冻结判据(环外)没过 (D-I: 以判据为准)'
         // 两条路都落 delivered-with-red, 摘要必须说清是哪一条 —— 混着念就是在编现场:
         // converged=true 那条 accept **真跑真绿**, 照抄「accept 被级联压死没跑」会让读的人
@@ -2804,7 +2804,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
       }${oracleNote}${judgeDissent ? ' · ⚠ judge 异议: 判据绿收敛而 judge 判没成 —— 判据轴「judge 太紧/判据覆盖不够」样本, 判词见 continuity _loop-execute.json' : ''}` +
       `${flatUsed ? ` · 直通v2平铺 (并行读数: ${flatParallelism})` : ''}${flatFallback ? ` · 直通v2回落: ${flatFallback}` : ''}` +
       // P3 S6b: 循环路径的三格读数印在同一行 —— 路径身份 / 终审调用次数 (INV-7 判词 ≤1) / 回灌发生没有。
-      `${loopUsed ? ` · 编排循环 (lead${runnable ? ' + accept' : ', 无机械判据'}) · 终审调用 ${verifierCalls} 次${reinjected ? ' · finding 回灌 1 次 (未复审)' : ''}` : ''}` +
+      `${loopUsed ? ` · 编排循环 (conductor${runnable ? ' + accept' : ', 无机械判据'}) · 终审调用 ${verifierCalls} 次${reinjected ? ' · finding 回灌 1 次 (未复审)' : ''}` : ''}` +
       `${reusedNodes.length ? ` · 复用 ${reusedNodes.length} 节点` : ''}` +
       // S-51 抓法 ③: 「因契约变更而失效的片」必须印在**同一行**。S-51 那次的摘要只说
       // 「复用 6 节点」, 而「改的那件事有没有做」一个字都没有 —— 人第一眼看的正是这一行。
@@ -2845,7 +2845,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
           reinjected,
           afterReinject: !reinjected ? 'skipped' : runnable ? (oracleOk ? 'green' : 'red') : 'no-oracle',
         },
-        ...(leadInfraFailure !== undefined ? { leadInfraFailure } : {}),
+        ...(conductorInfraFailure !== undefined ? { conductorInfraFailure } : {}),
         cards: {
           calls: loopLedger.calls,
           ok: loopLedger.ok,

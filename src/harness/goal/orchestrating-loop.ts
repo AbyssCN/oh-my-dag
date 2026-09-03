@@ -2,8 +2,8 @@
  * src/harness/goal/orchestrating-loop —— solve 的默认执行形态 = **编排循环** (P3 契约 S6b, 2026-09-02;
  * D-1 / D-3 / D-14 / D-17 / D-20 / D-22)。
  *
- * 一句话: lead (conductor 本人) 作为**一个 agent 节点**主上下文连续到底, 手里握着七张封闭派工卡
- * (`src/harness/lead/tools/*`); 每张卡 `compile` 出的子图**经引擎入口**当一次嵌套 run 执行
+ * 一句话: conductor (conductor 本人) 作为**一个 agent 节点**主上下文连续到底, 手里握着七张封闭派工卡
+ * (`src/harness/conductor/tools/*`); 每张卡 `compile` 出的子图**经引擎入口**当一次嵌套 run 执行
  * (`runExecutorDagWithPlan` → `executePlan(applyPlanFilters(…))`, INV-3: 写竞争串行化 / 命令链合并 /
  * oracle 过滤照走, 闸 / checkpoint / blame 全部照走); 图上另有一个机械 oracle 节点 (`accept`, 冻结判据原文),
  * 收尾由 run-goal 打**恰一次**跨家族 verifier (D-14 / INV-7)。
@@ -12,25 +12,25 @@
  *
  * 1. `compileOrchestratingLoop` —— 出那张两节点的 plan。**不进** `GRAPH_SHAPES` 卡表 (D-1): 卡表是 conductor
  *    画图的菜单, 这条路模型没有选择权; 路径身份记 `RunGoalResult.path`。
- * 2. `createLeadRuntimeTools` —— 把七张卡 (`LeadTool`, zod + compile) 适配成 agent 叶能调的 `AnyOmdTool`:
+ * 2. `createConductorRuntimeTools` —— 把七张卡 (`ConductorTool`, zod + compile) 适配成 agent 叶能调的 `AnyOmdTool`:
  *    zod 拒 / `help:true` / 编译拒 → 拒因 + 该卡完整 manual 走 **tool result** (D-3, manual 永不进 system prompt);
  *    编译过 → `runChild(plan)` 跑子图 → 返回 fan-in 摘要 (节点状态 / 产出尾 / 尾块 / 验收台账)。
- * 3. `buildLeadFace` —— lead 节点的整副面: 只读手 (read / ls / grep / bash, D-20: 无 write / edit) + 七张卡 +
- *    常驻 lead prompt (S5, ≤8000)。由 run-goal 经 `ExecutorDagConfig.leafFace` 只对 `lead` 这一个 id 下发。
+ * 3. `buildConductorFace` —— conductor 节点的整副面: 只读手 (read / ls / grep / bash, D-20: 无 write / edit) + 七张卡 +
+ *    常驻 conductor prompt (S5, ≤8000)。由 run-goal 经 `ExecutorDagConfig.leafFace` 只对 `conductor` 这一个 id 下发。
  *
  * ## 诚实边界 (与契约措辞的偏离, 记进进度表)
  *
  * - 子单元是**嵌套 run** (同 sessionId, 派生 runId `<runId>:d<n>`), 不是同一 run 内的子图: 引擎今天没有
  *   「在一个 agent 工具调用里执行一批子节点」的内部接缝 (`runConductorRound` 的展开→局部调度是内联的),
- *   拆它超出本片。代价: 父 run 的 checkpoint 不含子节点 (父 lead 节点自己有 checkpoint; 子 run 各自有);
+ *   拆它超出本片。代价: 父 run 的 checkpoint 不含子节点 (父 conductor 节点自己有 checkpoint; 子 run 各自有);
  *   收益: 子图零新机制, 闸链与 `run`/`solve` 逐字节同一条。
  * - `work(resume_of)` 今天 = **同 id 重派** (fresh context), 不是续同一会话: 引擎没有按节点 id 续 agent 会话的
  *   机制 (全仓 resume 只有 checkpoint 复用)。owner 2026-09-02 裁 2-C: 上一次同 id 子 run 的结果 (状态 / 文件 /
- *   验收台账 / 尾块 / 报告尾) 由**运行时机械 append 进 goal** (`injectPriorResult`), 不指望 lead 复制进 brief —
+ *   验收台账 / 尾块 / 报告尾) 由**运行时机械 append 进 goal** (`injectPriorResult`), 不指望 conductor 复制进 brief —
  *   丢的只是工具调用历史。真续会话 (pi session / SDK sessionId 按 `${runId}:${nodeId}` 留住) 留作单变量实验。
  *
  * 证伪方式 (orchestrating-loop.test.ts): 删掉 `runChild` 那一跳 → 卡调用不再产生嵌套 run 即红; 把 manual 拼进
- * face.systemPrompt → INV-8 长度闸红; `accept` 节点丢掉 `depends_on: ['lead']` → 拓扑测试红。
+ * face.systemPrompt → INV-8 长度闸红; `accept` 节点丢掉 `depends_on: ['conductor']` → 拓扑测试红。
  */
 import { Type } from '@sinclair/typebox';
 import { z } from 'zod';
@@ -40,34 +40,34 @@ import { hashArtifact } from '../continuity/checkpoint-manager';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagResult, LeafResult } from '../dag/types';
 import type { LeafFace } from '../leaf-runners';
-import { buildLeadSystemPrompt, LEAD_PROMPT_RESIDENT_MAX, type LeadFacts } from '../lead/lead-prompt';
-import { createLeadTools, formatRejection, invokeLeadTool } from '../lead/tools/index';
-import type { LeadCtx, LeadTool } from '../lead/types';
+import { buildConductorSystemPrompt, CONDUCTOR_PROMPT_RESIDENT_MAX, type ConductorFacts } from '../conductor/conductor-prompt';
+import { createConductorTools, formatRejection, invokeConductorTool } from '../conductor/tools/index';
+import type { ConductorCtx, ConductorTool } from '../conductor/types';
 import { logger } from '../logger';
-import { briefHasRepro, type CriterionFreeze, type LeadCardLedger, type LeadCardName } from './loop-ledger';
+import { briefHasRepro, type CriterionFreeze, type ConductorCardLedger, type ConductorCardName } from './loop-ledger';
 
 /** plan 名 —— run-goal 的 `_runDag` 注入口与测试靠它认路径 (与 `goal-execute` / `goal-execute-flat` 同一约定)。 */
 export const ORCHESTRATING_LOOP_PLAN_NAME = 'goal-orchestrating-loop';
-/** lead 节点 id。`leafFace` 钩子只对它返回值; 回灌锚也只挂它。 */
-export const LEAD_NODE_ID = 'lead';
+/** conductor 节点 id。`leafFace` 钩子只对它返回值; 回灌锚也只挂它。 */
+export const CONDUCTOR_NODE_ID = 'conductor';
 /** 机械 oracle 节点 id —— 与 v1 路径同名, 让 run-goal 既有的 `exec.results.accept` 消费者零改动。 */
 export const LOOP_ACCEPT_NODE_ID = 'accept';
 /**
- * lead 的只读哨兵写集 (与 `lead/tools/explore.ts` 的 READONLY_SENTINEL 同一手法): 声明一条仓内不存在
- * 的路径使 `writeAllow.length > 0`, 写域闸真下发; lead 面上没有 write/edit, 这条闸对它天然成立 (D-20),
+ * conductor 的只读哨兵写集 (与 `conductor/tools/explore.ts` 的 READONLY_SENTINEL 同一手法): 声明一条仓内不存在
+ * 的路径使 `writeAllow.length > 0`, 写域闸真下发; conductor 面上没有 write/edit, 这条闸对它天然成立 (D-20),
  * bash 重定向写盘会被写集对账 (writeset/write-set.ts) 在收尾抓到。
  */
-export const LEAD_READONLY_SENTINEL = '.omd/lead-readonly-sentinel';
-/** lead 的只读手 (D-20: 无 write / edit)。bash 的边界 = 危险命令闸 + git 写闸 + 收尾写集对账, 不是首词白名单 (D-7)。 */
-export const LEAD_HAND_TOOLS = ['read', 'ls', 'grep', 'bash'] as const;
+export const CONDUCTOR_READONLY_SENTINEL = '.omd/conductor-readonly-sentinel';
+/** conductor 的只读手 (D-20: 无 write / edit)。bash 的边界 = 危险命令闸 + git 写闸 + 收尾写集对账, 不是首词白名单 (D-7)。 */
+export const CONDUCTOR_HAND_TOOLS = ['read', 'ls', 'grep', 'bash'] as const;
 
 /**
- * lead 节点**基建类**败因 (2026-09-03, code80-p3 首批 09:22 停批的根因形态): MiniMax 529 → lead 首发即 failed →
+ * conductor 节点**基建类**败因 (2026-09-03, code80-p3 首批 09:22 停批的根因形态): MiniMax 529 → conductor 首发即 failed →
  * 终审对着空产物判红 → D-14 回灌 → 再 529 → `verifier-rejected`。基建失败不许被标成语义否决:
  * 这一集里的败因既不回灌 (再派只是再撞一次 529), 终态也走 infra-error 那一格 (下一步 = 修引擎/换池, 别加轮数)。
  * 不含 empty-artifact / assert-failed 等**语义类**败因 —— 那些正是回灌该处理的。
  */
-export const LEAD_INFRA_FAILURE_KINDS: ReadonlySet<string> = new Set(['infra-error', 'timed-out', 'missing-capability', 'stall', 'spin-fused']);
+export const CONDUCTOR_INFRA_FAILURE_KINDS: ReadonlySet<string> = new Set(['infra-error', 'timed-out', 'missing-capability', 'stall', 'spin-fused']);
 
 /** 回灌锚的固定首行 —— 测试与人读日志都靠它认「这一发是回灌」。 */
 export const REINJECT_ANCHOR_HEAD = '[verifier 打回 · 回灌 1 次 (D-14: 之后终态由机械 oracle 定, 终审不复审)]';
@@ -75,7 +75,7 @@ export const REINJECT_ANCHOR_HEAD = '[verifier 打回 · 回灌 1 次 (D-14: 之
 export interface OrchestratingLoopInput {
   goal: string;
   acceptance?: { command: string; expect_exit: number };
-  ctx: LeadCtx;
+  ctx: ConductorCtx;
   /**
    * 编排节点的座位 (owner 2026-09-03): 它就是 conductor —— 编排 + 对话循环的那个角色, 该坐 conductor 座 (SOTA 档),
    * 不跟 worker 同座。给了 → 节点 `model` 显式钉死 (TPL-3 最高优先, 引擎 per-node 路由); 缺席 → 落回 agent 叶静态座
@@ -85,16 +85,16 @@ export interface OrchestratingLoopInput {
 }
 
 /**
- * 编排循环的 plan: `lead` (agent, 只读哨兵写集) → `accept` (command, 冻结判据原文; 无判据时缺席)。
+ * 编排循环的 plan: `conductor` (agent, 只读哨兵写集) → `accept` (command, 冻结判据原文; 无判据时缺席)。
  * 只经 `executePlan(applyPlanFilters(…))` 执行 (D-5 / INV-3); 这里不调 parsePlan —— 它是格式闸, 编译产物
  * 恒过它 (测试钉这一点), 运行期再过一遍是冗余。
  */
 export function compileOrchestratingLoop(input: OrchestratingLoopInput): ConductorPlan {
   const nodes: ConductorPlan['nodes'] = {
-    [LEAD_NODE_ID]: {
+    [CONDUCTOR_NODE_ID]: {
       executor: 'agent',
       goal: input.goal,
-      write_set: [LEAD_READONLY_SENTINEL],
+      write_set: [CONDUCTOR_READONLY_SENTINEL],
       ...(input.conductorModel ? { model: input.conductorModel } : {}),
     },
   };
@@ -103,7 +103,7 @@ export function compileOrchestratingLoop(input: OrchestratingLoopInput): Conduct
       executor: 'command',
       command: input.acceptance.command,
       expect_exit: input.acceptance.expect_exit,
-      depends_on: [LEAD_NODE_ID],
+      depends_on: [CONDUCTOR_NODE_ID],
       goal: '冻结判据 (环外确定性闸)',
     };
   }
@@ -111,17 +111,17 @@ export function compileOrchestratingLoop(input: OrchestratingLoopInput): Conduct
 }
 
 /**
- * D-14 回灌: verifier finding 原文 append 到 **同一 lead 节点 id** 的 goal 末尾, 其它节点逐字不动。
+ * D-14 回灌: verifier finding 原文 append 到 **同一 conductor 节点 id** 的 goal 末尾, 其它节点逐字不动。
  * 用新对象替换 (不原地改): 与 engine.ts 的 blameAnchor 同一条纪律 —— 原地写会污染上一轮 plan 的引用。
  */
 export function withReinjectedFinding(plan: ConductorPlan, finding: string): ConductorPlan {
-  const lead = plan.nodes[LEAD_NODE_ID];
-  if (!lead) return plan;
+  const conductor = plan.nodes[CONDUCTOR_NODE_ID];
+  if (!conductor) return plan;
   return {
     ...plan,
     nodes: {
       ...plan.nodes,
-      [LEAD_NODE_ID]: { ...lead, goal: `${lead.goal ?? ''}\n\n---\n${REINJECT_ANCHOR_HEAD}\n${finding}\n` },
+      [CONDUCTOR_NODE_ID]: { ...conductor, goal: `${conductor.goal ?? ''}\n\n---\n${REINJECT_ANCHOR_HEAD}\n${finding}\n` },
     },
   } as ConductorPlan;
 }
@@ -172,8 +172,8 @@ function describeTrailer(r: LeafResult): string {
 }
 
 /**
- * 一次派发的 fan-in 摘要 —— lead 读的是这个, 不是子 run 原始对象。**先机器事实后散文**: 状态 / 败因 /
- * 触碰文件 / 验收台账 / 尾块在前, 报告尾部在后 (lead prompt §2.4 「read each report's machine trailer first」)。
+ * 一次派发的 fan-in 摘要 —— conductor 读的是这个, 不是子 run 原始对象。**先机器事实后散文**: 状态 / 败因 /
+ * 触碰文件 / 验收台账 / 尾块在前, 报告尾部在后 (conductor prompt §2.4 「read each report's machine trailer first」)。
  */
 export function summarizeChildRun(exec: ExecutorDagResult, label: string): string {
   const results = Object.values(exec.results);
@@ -217,15 +217,15 @@ export function injectPriorResult(plan: ConductorPlan, id: string, prior: LeafRe
   return { ...plan, nodes: { ...plan.nodes, [id]: { ...node, goal: `${node.goal ?? ''}${block}` } } } as ConductorPlan;
 }
 
-export interface LeadRuntimeDeps {
-  ctx: LeadCtx;
+export interface ConductorRuntimeDeps {
+  ctx: ConductorCtx;
   /**
    * 跑一张编译产物。run-goal 给的是 `(config._runDag ?? runExecutorDagWithPlan)(plan, childCfg)` —— 唯一执行
    * 入口 (D-5); 第二个参数是派发序号 (从 1 起), 调用方据它派生子 runId / 前缀。
    */
   runChild: (plan: ConductorPlan, seq: number) => Promise<ExecutorDagResult>;
   /** R-1 账本 (可变计数器, run-goal 造一个, 回灌第二跑沿用同一个)。缺席 = 不记 (测试 / 非 run-goal 调用方)。 */
-  ledger?: LeadCardLedger;
+  ledger?: ConductorCardLedger;
   /**
    * 1-A (2026-09-03) 判据先落盘冻结: `files` = 判据命令引用、run 开始时不存在的文件 (相对 `root`)。
    * 非空 → 第一个派成的派发必须是一张 work() 且写集被强制为这些文件; 派发回来引擎记 hash 进 ledger.criterionFreeze,
@@ -243,7 +243,7 @@ function toTypebox(schema: z.ZodType): ReturnType<typeof Type.Unsafe> {
 
 /**
  * 七张卡 → agent 叶工具。`executionMode: 'sequential'`: 一次派发就是一次子 run, 并发由卡内的图宽与
- * 进程级 cap 管 (S8), 不由 lead 同时按两张卡。
+ * 进程级 cap 管 (S8), 不由 conductor 同时按两张卡。
  */
 /** 1-A 冻结的运行期状态 (每副工具面一份; 回灌第二跑从 ledger 里已有的 hashes 恢复)。 */
 interface FreezeState {
@@ -254,7 +254,7 @@ interface FreezeState {
   protectedFiles: string[];
 }
 
-function initFreezeState(deps: LeadRuntimeDeps): FreezeState | undefined {
+function initFreezeState(deps: ConductorRuntimeDeps): FreezeState | undefined {
   const prior = deps.ledger?.criterionFreeze;
   const files = deps.criterionFreeze?.files.length ? [...deps.criterionFreeze.files] : prior?.files ?? [];
   if (files.length === 0) return undefined;
@@ -282,8 +282,8 @@ export function renderCriterionFreezeTruth(freeze: CriterionFreeze, root: string
   return `派发 #${freeze.frozenAtDispatch} 单独产出并冻结: ${parts.join(' · ')}`;
 }
 
-export function createLeadRuntimeTools(deps: LeadRuntimeDeps): AnyOmdTool[] {
-  const cards = createLeadTools(deps.ctx);
+export function createConductorRuntimeTools(deps: ConductorRuntimeDeps): AnyOmdTool[] {
+  const cards = createConductorTools(deps.ctx);
   let seq = 0;
   /** 2-C: 本 run 里每个子节点最后一次的结果 (键 = 带前缀的节点 id), resume_of 回灌的来源。 */
   const priorById = new Map<string, LeafResult>();
@@ -291,7 +291,7 @@ export function createLeadRuntimeTools(deps: LeadRuntimeDeps): AnyOmdTool[] {
   return cards.map((card) => adaptCard(card, deps, () => ++seq, priorById, freeze));
 }
 
-function adaptCard(card: LeadTool, deps: LeadRuntimeDeps, nextSeq: () => number, priorById: Map<string, LeafResult>, freeze?: FreezeState): AnyOmdTool {
+function adaptCard(card: ConductorTool, deps: ConductorRuntimeDeps, nextSeq: () => number, priorById: Map<string, LeafResult>, freeze?: FreezeState): AnyOmdTool {
   return {
     name: card.name,
     label: card.name,
@@ -303,9 +303,9 @@ function adaptCard(card: LeadTool, deps: LeadRuntimeDeps, nextSeq: () => number,
       const ledger = deps.ledger;
       if (ledger) ledger.calls++;
       const isHelp = !!params && typeof params === 'object' && (params as { help?: unknown }).help === true;
-      const compiled = invokeLeadTool(card, params, deps.ctx);
+      const compiled = invokeConductorTool(card, params, deps.ctx);
       if (!compiled.ok) {
-        // R-1: 三种拒分开数 —— help 是 lead 主动要 manual, 不是"没直达"; zod 拒与编译拒的修法不同 (读 manual vs 换形状)。
+        // R-1: 三种拒分开数 —— help 是 conductor 主动要 manual, 不是"没直达"; zod 拒与编译拒的修法不同 (读 manual vs 换形状)。
         if (ledger) {
           if (isHelp) ledger.help++;
           else if (card.schema.safeParse(params).success) ledger.rejectedCompile++;
@@ -331,19 +331,19 @@ function adaptCard(card: LeadTool, deps: LeadRuntimeDeps, nextSeq: () => number,
       const n = nextSeq();
       const label = `dispatch d${n} (${card.name})`;
       let plan = prefixPlanIds(compiledPlan, `d${n}`);
-      // 2-C: work(resume_of) —— 同 id 重派, 上一次的结果由引擎机械回灌进 goal (不靠 lead 复制)。
+      // 2-C: work(resume_of) —— 同 id 重派, 上一次的结果由引擎机械回灌进 goal (不靠 conductor 复制)。
       const resumeOf = card.name === 'work' && params && typeof params === 'object' ? (params as { resume_of?: unknown }).resume_of : undefined;
       if (typeof resumeOf === 'string') {
         const prior = priorById.get(resumeOf);
         if (prior) plan = injectPriorResult(plan, resumeOf, prior);
         else logger.warn({ resumeOf }, '[orchestrating-loop] resume_of 指向的 id 本 run 没跑过 → 不回灌 (fresh 派发, 留证)');
       }
-      logger.info({ card: card.name, seq: n, plan: plan.name, nodes: Object.keys(plan.nodes).length }, '[orchestrating-loop] lead 派发 → 嵌套 run');
+      logger.info({ card: card.name, seq: n, plan: plan.name, nodes: Object.keys(plan.nodes).length }, '[orchestrating-loop] conductor 派发 → 嵌套 run');
       // R-1 派发台账: brief 有没有粘运行输出 (启发式, 只对有 brief 槽的卡判)。
       const briefRaw = params && typeof params === 'object' ? (params as { brief?: unknown }).brief : undefined;
       const dispatch = {
         seq: n,
-        card: card.name as LeadCardName,
+        card: card.name as ConductorCardName,
         nodes: Object.keys(plan.nodes).length,
         briefHasRepro: typeof briefRaw === 'string' ? briefHasRepro(briefRaw) : null,
         ...(typeof resumeOf === 'string' ? { resumeOf } : {}),
@@ -355,9 +355,9 @@ function adaptCard(card: LeadTool, deps: LeadRuntimeDeps, nextSeq: () => number,
       try {
         exec = await guarded();
       } catch (err) {
-        // 嵌套 run 抛错 = 引擎侧事故, 不是 lead 的错: 原文回给 lead (它据此决定换形状还是上报), 不吞。
+        // 嵌套 run 抛错 = 引擎侧事故, 不是 conductor 的错: 原文回给 conductor (它据此决定换形状还是上报), 不吞。
         const msg = String(err instanceof Error ? err.message : err).slice(0, 600);
-        logger.warn({ card: card.name, seq: n, err: msg }, '[orchestrating-loop] 嵌套 run 抛错 (原文回给 lead)');
+        logger.warn({ card: card.name, seq: n, err: msg }, '[orchestrating-loop] 嵌套 run 抛错 (原文回给 conductor)');
         if (ledger) {
           ledger.childRunError++;
           ledger.dispatches.push({ ...dispatch, error: msg.slice(0, 200) });
@@ -380,7 +380,7 @@ function adaptCard(card: LeadTool, deps: LeadRuntimeDeps, nextSeq: () => number,
       }
       if (ledger) {
         ledger.ok++;
-        ledger.byCard[card.name as LeadCardName] = (ledger.byCard[card.name as LeadCardName] ?? 0) + 1;
+        ledger.byCard[card.name as ConductorCardName] = (ledger.byCard[card.name as ConductorCardName] ?? 0) + 1;
         ledger.dispatches.push({ ...dispatch, failed: Object.values(exec.results).filter((r) => r.status !== 'done').length });
       }
       const summary = summarizeChildRun(exec, label);
@@ -394,21 +394,21 @@ function adaptCard(card: LeadTool, deps: LeadRuntimeDeps, nextSeq: () => number,
 }
 
 /**
- * lead 节点的整副面。常驻 prompt 超 INV-8 上限**不抛** (运行期不为一个字符掀桌), 但留一行证据 ——
- * 硬闸在 lead-prompt.test.ts。
+ * conductor 节点的整副面。常驻 prompt 超 INV-8 上限**不抛** (运行期不为一个字符掀桌), 但留一行证据 ——
+ * 硬闸在 conductor-prompt.test.ts。
  */
-export function buildLeadFace(facts: LeadFacts, deps: LeadRuntimeDeps): LeafFace {
-  const cards = createLeadTools(deps.ctx);
-  const systemPrompt = buildLeadSystemPrompt(facts, cards);
-  if (systemPrompt.length > LEAD_PROMPT_RESIDENT_MAX) {
-    logger.warn({ chars: systemPrompt.length, max: LEAD_PROMPT_RESIDENT_MAX }, '[orchestrating-loop] lead 常驻 prompt 超 INV-8 上限 (照跑, 留证)');
+export function buildConductorFace(facts: ConductorFacts, deps: ConductorRuntimeDeps): LeafFace {
+  const cards = createConductorTools(deps.ctx);
+  const systemPrompt = buildConductorSystemPrompt(facts, cards);
+  if (systemPrompt.length > CONDUCTOR_PROMPT_RESIDENT_MAX) {
+    logger.warn({ chars: systemPrompt.length, max: CONDUCTOR_PROMPT_RESIDENT_MAX }, '[orchestrating-loop] conductor 常驻 prompt 超 INV-8 上限 (照跑, 留证)');
   }
   if (deps.ledger) deps.ledger.residentPromptChars = systemPrompt.length;
   return {
-    toolNames: [...LEAD_HAND_TOOLS],
-    customTools: createLeadRuntimeTools(deps),
+    toolNames: [...CONDUCTOR_HAND_TOOLS],
+    customTools: createConductorRuntimeTools(deps),
     systemPrompt,
-    // D-20 机械面 (2026-09-03, smoke8-p3 repo_understanding 那题 lead 用 heredoc 写了 22KB 产物): bash 只读, 改文件只能派 work()。
+    // D-20 机械面 (2026-09-03, smoke8-p3 repo_understanding 那题 conductor 用 heredoc 写了 22KB 产物): bash 只读, 改文件只能派 work()。
     readOnlyShell: true,
     ...(deps.ledger ? { onReadOnlyBlocked: () => { deps.ledger!.readOnlyShellBlocked++; } } : {}),
   };

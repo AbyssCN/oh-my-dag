@@ -5,13 +5,13 @@
  * 反向自检 (本仓惯例, 证伪方式写在各 test 注释里): 每条闸配已知违规样本, 删掉对应机制该条当场红。
  *
  * 涵盖:
- *  · 编译形状: lead(agent, 只读哨兵写集) → accept(command, 冻结判据原文); 无判据时 accept 缺席; 过 parsePlan (格式闸)。
- *  · 回灌: finding 只 append 到 lead 节点 goal, 其它节点逐字不动, 返回新对象。
+ *  · 编译形状: conductor(agent, 只读哨兵写集) → accept(command, 冻结判据原文); 无判据时 accept 缺席; 过 parsePlan (格式闸)。
+ *  · 回灌: finding 只 append 到 conductor 节点 goal, 其它节点逐字不动, 返回新对象。
  *  · 派发前缀: 子图 id 与 depends_on 同步改名, 已带前缀的不重复加。
  *  · 运行期卡: zod 拒 / help → manual 走 tool result 且不派子图 (D-3); 合法 → runChild 拿到带前缀的编译产物,
  *    回 fan-in 摘要 (先机器事实后报告尾)。
- *  · lead 面: 只读四手 + 七张卡; 常驻 prompt ≤ 8000 且不含任何 manual 首行 (INV-8)。
- *  · runGoal 接线: 缺省走循环 (plan 名 / 节点 / leafFace 只对 lead / maxEscalations 0 / path); 显式关回 v1 (D-17);
+ *  · conductor 面: 只读四手 + 七张卡; 常驻 prompt ≤ 8000 且不含任何 manual 首行 (INV-8)。
+ *  · runGoal 接线: 缺省走循环 (plan 名 / 节点 / leafFace 只对 conductor / maxEscalations 0 / path); 显式关回 v1 (D-17);
  *    动手前 classify 恰一次 (INV-12)。
  *  · D-14: verifier 判红 → 第二次 `_runDag` 带回灌锚且**无 verifier** (INV-7 恰一次); 回灌后 oracle 绿 → success,
  *    仍红 → verifier-rejected, 无 oracle → verifier-rejected; verifier 过 → 只跑一次。
@@ -23,23 +23,23 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parsePlan, type ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagConfig, ExecutorDagResult } from '../dag/types';
-import { LEAD_TOOL_NAMES } from '../lead/tools/index';
-import { renderManual } from '../lead/render-manual';
-import { briefHasRepro, createLeadCardLedger } from './loop-ledger';
-import { LEAD_PROMPT_RESIDENT_MAX } from '../lead/lead-prompt';
-import type { LeadCtx } from '../lead/types';
+import { CONDUCTOR_TOOL_NAMES } from '../conductor/tools/index';
+import { renderManual } from '../conductor/render-manual';
+import { briefHasRepro, createConductorCardLedger } from './loop-ledger';
+import { CONDUCTOR_PROMPT_RESIDENT_MAX } from '../conductor/conductor-prompt';
+import type { ConductorCtx } from '../conductor/types';
 import type { GoalClassification } from './classify-acceptance';
 import { runGoal, type RunGoalConfig } from './run-goal';
 import {
-  LEAD_HAND_TOOLS,
-  LEAD_NODE_ID,
-  LEAD_READONLY_SENTINEL,
+  CONDUCTOR_HAND_TOOLS,
+  CONDUCTOR_NODE_ID,
+  CONDUCTOR_READONLY_SENTINEL,
   LOOP_ACCEPT_NODE_ID,
   ORCHESTRATING_LOOP_PLAN_NAME,
   REINJECT_ANCHOR_HEAD,
-  buildLeadFace,
+  buildConductorFace,
   compileOrchestratingLoop,
-  createLeadRuntimeTools,
+  createConductorRuntimeTools,
   orchestratingLoopEnabled,
   prefixPlanIds,
   withReinjectedFinding,
@@ -47,7 +47,7 @@ import {
   renderCriterionFreezeTruth,
 } from './orchestrating-loop';
 
-const CTX: LeadCtx = {
+const CTX: ConductorCtx = {
   cwd: '/tmp/x',
   writeRoot: '/tmp/x',
   acceptance: { command: 'bun test src/a.test.ts', expect_exit: 0 },
@@ -86,37 +86,37 @@ const fakeExec = (plan: ConductorPlan, overrides: Partial<ExecutorDagResult> = {
   }) as unknown as ExecutorDagResult;
 
 describe('compileOrchestratingLoop — 形状 (D-1)', () => {
-  test('lead(agent, 只读哨兵写集) → accept(command, 判据原文, depends_on lead); 过 parsePlan', () => {
+  test('conductor(agent, 只读哨兵写集) → accept(command, 判据原文, depends_on conductor); 过 parsePlan', () => {
     const plan = compileOrchestratingLoop({ goal: 'G', acceptance: CTX.acceptance, ctx: CTX });
     expect(plan.name).toBe(ORCHESTRATING_LOOP_PLAN_NAME);
-    expect(Object.keys(plan.nodes)).toEqual([LEAD_NODE_ID, LOOP_ACCEPT_NODE_ID]);
-    expect(plan.nodes[LEAD_NODE_ID]).toMatchObject({ executor: 'agent', goal: 'G', write_set: [LEAD_READONLY_SENTINEL] });
-    expect(plan.nodes[LEAD_NODE_ID]!.model).toBeUndefined(); // 没给座 → 不钉 (落回 agent 叶静态座)
+    expect(Object.keys(plan.nodes)).toEqual([CONDUCTOR_NODE_ID, LOOP_ACCEPT_NODE_ID]);
+    expect(plan.nodes[CONDUCTOR_NODE_ID]).toMatchObject({ executor: 'agent', goal: 'G', write_set: [CONDUCTOR_READONLY_SENTINEL] });
+    expect(plan.nodes[CONDUCTOR_NODE_ID]!.model).toBeUndefined(); // 没给座 → 不钉 (落回 agent 叶静态座)
     // owner 2026-09-03: 编排节点就是 conductor, 给了座就显式钉在节点上 (TPL-3 最高优先)。证伪: 删掉 compile 里那行 spread → 红。
-    expect(compileOrchestratingLoop({ goal: 'G', ctx: CTX, conductorModel: 'c:sota' }).nodes[LEAD_NODE_ID]!.model).toBe('c:sota');
-    // 证伪: 把 accept 的 depends_on 去掉 → 这条红 (oracle 会与 lead 并行跑, 判的是改前的树)。
-    expect(plan.nodes[LOOP_ACCEPT_NODE_ID]).toMatchObject({ executor: 'command', command: 'bun test src/a.test.ts', expect_exit: 0, depends_on: [LEAD_NODE_ID] });
+    expect(compileOrchestratingLoop({ goal: 'G', ctx: CTX, conductorModel: 'c:sota' }).nodes[CONDUCTOR_NODE_ID]!.model).toBe('c:sota');
+    // 证伪: 把 accept 的 depends_on 去掉 → 这条红 (oracle 会与 conductor 并行跑, 判的是改前的树)。
+    expect(plan.nodes[LOOP_ACCEPT_NODE_ID]).toMatchObject({ executor: 'command', command: 'bun test src/a.test.ts', expect_exit: 0, depends_on: [CONDUCTOR_NODE_ID] });
     // 格式闸: 编译产物必须过 parsePlan (D-5: parsePlan 是格式闸, 执行面只经 executePlan(applyPlanFilters))。
     expect(parsePlan(JSON.stringify(plan), { knownServers: new Set() }).ok).toBe(true);
   });
 
   test('无判据 → accept 缺席 (终审是唯一判官), 仍过 parsePlan', () => {
     const plan = compileOrchestratingLoop({ goal: 'explore', ctx: { ...CTX, acceptance: undefined } });
-    expect(Object.keys(plan.nodes)).toEqual([LEAD_NODE_ID]);
+    expect(Object.keys(plan.nodes)).toEqual([CONDUCTOR_NODE_ID]);
     expect(parsePlan(JSON.stringify(plan), { knownServers: new Set() }).ok).toBe(true);
   });
 });
 
 describe('withReinjectedFinding / prefixPlanIds', () => {
-  test('finding 只 append 到 lead 的 goal, accept 逐字不动, 原 plan 不被原地改', () => {
+  test('finding 只 append 到 conductor 的 goal, accept 逐字不动, 原 plan 不被原地改', () => {
     const plan = compileOrchestratingLoop({ goal: 'G', acceptance: CTX.acceptance, ctx: CTX });
     const before = JSON.stringify(plan);
     const next = withReinjectedFinding(plan, 'missing test for edge case');
-    expect(next.nodes[LEAD_NODE_ID]!.goal).toContain(REINJECT_ANCHOR_HEAD);
-    expect(next.nodes[LEAD_NODE_ID]!.goal).toContain('missing test for edge case');
-    expect(next.nodes[LEAD_NODE_ID]!.goal!.startsWith('G')).toBe(true);
+    expect(next.nodes[CONDUCTOR_NODE_ID]!.goal).toContain(REINJECT_ANCHOR_HEAD);
+    expect(next.nodes[CONDUCTOR_NODE_ID]!.goal).toContain('missing test for edge case');
+    expect(next.nodes[CONDUCTOR_NODE_ID]!.goal!.startsWith('G')).toBe(true);
     expect(next.nodes[LOOP_ACCEPT_NODE_ID]).toEqual(plan.nodes[LOOP_ACCEPT_NODE_ID]);
-    // 证伪: 改成原地 `lead.goal += …` → 这条红 (与 engine.ts blameAnchor 同一条纪律)。
+    // 证伪: 改成原地 `conductor.goal += …` → 这条红 (与 engine.ts blameAnchor 同一条纪律)。
     expect(JSON.stringify(plan)).toBe(before);
   });
 
@@ -128,11 +128,11 @@ describe('withReinjectedFinding / prefixPlanIds', () => {
   });
 });
 
-describe('createLeadRuntimeTools — 七张卡的运行期形态 (D-3)', () => {
-  test('名字 = LEAD_TOOL_NAMES; zod 拒 → manual 首行在 tool result 里, runChild 零调用', async () => {
+describe('createConductorRuntimeTools — 七张卡的运行期形态 (D-3)', () => {
+  test('名字 = CONDUCTOR_TOOL_NAMES; zod 拒 → manual 首行在 tool result 里, runChild 零调用', async () => {
     const calls: ConductorPlan[] = [];
-    const tools = createLeadRuntimeTools({ ctx: CTX, runChild: async (p) => { calls.push(p); return fakeExec(p); } });
-    expect(tools.map((t) => t.name)).toEqual([...LEAD_TOOL_NAMES]);
+    const tools = createConductorRuntimeTools({ ctx: CTX, runChild: async (p) => { calls.push(p); return fakeExec(p); } });
+    expect(tools.map((t) => t.name)).toEqual([...CONDUCTOR_TOOL_NAMES]);
     const work = tools.find((t) => t.name === 'work')!;
     const res = (await work.execute('t1', { goal: 'g' })) as { content: { text: string }[] };
     const text = res.content[0]!.text;
@@ -144,7 +144,7 @@ describe('createLeadRuntimeTools — 七张卡的运行期形态 (D-3)', () => {
 
   test('help:true → 只返 manual, 不派子图', async () => {
     const calls: ConductorPlan[] = [];
-    const tools = createLeadRuntimeTools({ ctx: CTX, runChild: async (p) => { calls.push(p); return fakeExec(p); } });
+    const tools = createConductorRuntimeTools({ ctx: CTX, runChild: async (p) => { calls.push(p); return fakeExec(p); } });
     const spawn = tools.find((t) => t.name === 'spawn')!;
     const res = (await spawn.execute('t1', { help: true })) as { content: { text: string }[] };
     expect(res.content[0]!.text).toContain(renderManual('spawn').split('\n')[0]!);
@@ -153,7 +153,7 @@ describe('createLeadRuntimeTools — 七张卡的运行期形态 (D-3)', () => {
 
   test('合法 work → runChild 拿到带 d1. 前缀的编译产物 (含 self_check = 冻结判据), 回 fan-in 摘要', async () => {
     const calls: { plan: ConductorPlan; seq: number }[] = [];
-    const tools = createLeadRuntimeTools({ ctx: CTX, runChild: async (p, seq) => { calls.push({ plan: p, seq }); return fakeExec(p); } });
+    const tools = createConductorRuntimeTools({ ctx: CTX, runChild: async (p, seq) => { calls.push({ plan: p, seq }); return fakeExec(p); } });
     const work = tools.find((t) => t.name === 'work')!;
     const brief = 'repro: bun test src/a.test.ts → 1 fail (expected 2 got 3). scope: src/a.ts only. do not touch src/b.ts.';
     const res = (await work.execute('t1', { goal: 'fix add()', brief })) as { content: { text: string }[]; details: { ok: boolean; seq: number } };
@@ -176,8 +176,8 @@ describe('createLeadRuntimeTools — 七张卡的运行期形态 (D-3)', () => {
     expect(Object.keys(calls[1]!.plan.nodes)[0]!.startsWith('d2.')).toBe(true);
   });
 
-  test('runChild 抛错 → 原文回给 lead, 不吞', async () => {
-    const tools = createLeadRuntimeTools({ ctx: CTX, runChild: async () => { throw new Error('leafModel 必填'); } });
+  test('runChild 抛错 → 原文回给 conductor, 不吞', async () => {
+    const tools = createConductorRuntimeTools({ ctx: CTX, runChild: async () => { throw new Error('leafModel 必填'); } });
     const explore = tools.find((t) => t.name === 'explore')!;
     const res = (await explore.execute('t1', { questions: ['where is add()?'] })) as { content: { text: string }[]; details: { ok: boolean } };
     expect(res.details.ok).toBe(false);
@@ -185,16 +185,16 @@ describe('createLeadRuntimeTools — 七张卡的运行期形态 (D-3)', () => {
   });
 });
 
-describe('buildLeadFace — INV-8 / D-20', () => {
+describe('buildConductorFace — INV-8 / D-20', () => {
   test('只读四手 + 七张卡; 常驻 prompt ≤ 8000 且不含任何 manual 首行', () => {
-    const face = buildLeadFace(FACTS, { ctx: CTX, runChild: async (p) => fakeExec(p) });
-    expect([...face.toolNames]).toEqual([...LEAD_HAND_TOOLS]);
+    const face = buildConductorFace(FACTS, { ctx: CTX, runChild: async (p) => fakeExec(p) });
+    expect([...face.toolNames]).toEqual([...CONDUCTOR_HAND_TOOLS]);
     expect(face.toolNames).not.toContain('write');
     expect(face.toolNames).not.toContain('edit');
-    expect(face.customTools!.map((t) => t.name)).toEqual([...LEAD_TOOL_NAMES]);
-    expect(face.systemPrompt.length).toBeLessThanOrEqual(LEAD_PROMPT_RESIDENT_MAX);
-    // 证伪: 把任一 manual 拼进 buildLeadSystemPrompt → 这条红 (D-3: manual 只走 tool result)。
-    for (const name of LEAD_TOOL_NAMES) expect(face.systemPrompt).not.toContain(renderManual(name).split('\n')[0]!);
+    expect(face.customTools!.map((t) => t.name)).toEqual([...CONDUCTOR_TOOL_NAMES]);
+    expect(face.systemPrompt.length).toBeLessThanOrEqual(CONDUCTOR_PROMPT_RESIDENT_MAX);
+    // 证伪: 把任一 manual 拼进 buildConductorSystemPrompt → 这条红 (D-3: manual 只走 tool result)。
+    for (const name of CONDUCTOR_TOOL_NAMES) expect(face.systemPrompt).not.toContain(renderManual(name).split('\n')[0]!);
     expect(face.systemPrompt).toContain('bun test src/a.test.ts');
   });
 });
@@ -219,7 +219,7 @@ interface Observed {
 }
 
 /**
- * 假引擎: 记下 plan + cfg; lead 节点 done; accept 按 opts 绿/红; 有 verifier 且 accept 绿时**调一次 verifier**
+ * 假引擎: 记下 plan + cfg; conductor 节点 done; accept 按 opts 绿/红; 有 verifier 且 accept 绿时**调一次 verifier**
  * (模拟引擎的闸红短路: oracle 红时不请强模型)。
  */
 const fakeEngine = (
@@ -236,7 +236,7 @@ const fakeEngine = (
       results[id] =
         n.executor === 'command'
           ? ({ id, status: red ? 'failed' : 'done', kind: 'command', output: red ? '1 fail' : '0 fail', deps: n.depends_on ?? [], usage: { in: 0, out: 0 }, exitCode: red ? 1 : 0 } as never)
-          : ({ id, status: 'done', kind: 'agent', output: 'lead report', deps: n.depends_on ?? [], usage: { in: 1, out: 1 } } as never);
+          : ({ id, status: 'done', kind: 'agent', output: 'conductor report', deps: n.depends_on ?? [], usage: { in: 1, out: 1 } } as never);
     }
     let verification: ExecutorDagResult['verification'];
     if (cfg.verifier && !red) {
@@ -263,7 +263,7 @@ const baseCfg = (cwd: string, extra: Partial<RunGoalConfig> = {}): RunGoalConfig
   }) as RunGoalConfig;
 
 describe('runGoal — 缺省走编排循环 (D-17), 显式关回 v1', () => {
-  test('★ 缺省: plan 名 / 节点 / leafFace 只对 lead / maxEscalations 0 / path; classify 恰 1 次 (INV-12)', async () => {
+  test('★ 缺省: plan 名 / 节点 / leafFace 只对 conductor / maxEscalations 0 / path; classify 恰 1 次 (INV-12)', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omd-loop-default-'));
     const seen: Observed[] = [];
     const calls = { n: 0 };
@@ -271,13 +271,13 @@ describe('runGoal — 缺省走编排循环 (D-17), 显式关回 v1', () => {
     expect(seen).toHaveLength(1);
     const { plan, cfg } = seen[0]!;
     expect(plan.name).toBe(ORCHESTRATING_LOOP_PLAN_NAME);
-    expect(Object.keys(plan.nodes)).toEqual([LEAD_NODE_ID, LOOP_ACCEPT_NODE_ID]);
-    expect(plan.nodes[LEAD_NODE_ID]!.goal).toContain('## 判卷标准');
-    expect(plan.nodes[LEAD_NODE_ID]!.model).toBe('c:m'); // 编排节点坐 conductor 座 (baseCfg 的 conductorModel), 不是 leafModel 'l:m'
+    expect(Object.keys(plan.nodes)).toEqual([CONDUCTOR_NODE_ID, LOOP_ACCEPT_NODE_ID]);
+    expect(plan.nodes[CONDUCTOR_NODE_ID]!.goal).toContain('## 判卷标准');
+    expect(plan.nodes[CONDUCTOR_NODE_ID]!.model).toBe('c:m'); // 编排节点坐 conductor 座 (baseCfg 的 conductorModel), 不是 leafModel 'l:m'
     // 证伪: 把 withLoopConfig 里 leafFace 的 id 判断去掉 → 'other' 也拿到面, 第二条红。
-    expect(cfg.leafFace?.({ id: LEAD_NODE_ID, executor: 'agent' })).toBeDefined();
+    expect(cfg.leafFace?.({ id: CONDUCTOR_NODE_ID, executor: 'agent' })).toBeDefined();
     expect(cfg.leafFace?.({ id: 'other', executor: 'agent' })).toBeUndefined();
-    expect(cfg.leafFace!({ id: LEAD_NODE_ID })!.customTools!.map((t) => t.name)).toEqual([...LEAD_TOOL_NAMES]);
+    expect(cfg.leafFace!({ id: CONDUCTOR_NODE_ID })!.customTools!.map((t) => t.name)).toEqual([...CONDUCTOR_TOOL_NAMES]);
     expect(cfg.maxEscalations).toBe(0);
     expect(calls.n).toBe(1);
     expect(r.path).toBe('orchestrating-loop');
@@ -320,13 +320,13 @@ describe('runGoal — 缺省走编排循环 (D-17), 显式关回 v1', () => {
       ...baseCfg(cwd, { orchestratingLoop: true, _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: fakeEngine(seen) }),
       dag: { conductorModel: 'c:m', leafModel: 'l:m', verifier, continuity: { manager, runId: 'R1', resume: true, repoRoot: cwd } } as ExecutorDagConfig,
     });
-    const face = seen[0]!.cfg.leafFace!({ id: LEAD_NODE_ID })!;
+    const face = seen[0]!.cfg.leafFace!({ id: CONDUCTOR_NODE_ID })!;
     const work = face.customTools!.find((t) => t.name === 'work')!;
     await work.execute('t', { goal: 'g', brief: 'repro output: 1 fail in src/a.test.ts; scope src/a.ts; do not touch b.' });
     // 证伪: runChild 改成直接 import runExecutorDagWithPlan 而不走 config._runDag → seen 仍 1, 这条红。
     expect(seen).toHaveLength(2);
     const child = seen[1]!;
-    expect(child.plan.name.startsWith('lead-work-')).toBe(true);
+    expect(child.plan.name.startsWith('conductor-work-')).toBe(true);
     expect(child.cfg.verifier).toBeUndefined();
     expect(child.cfg.leafFace).toBeUndefined();
     expect(child.cfg.maxEscalations).toBeUndefined();
@@ -340,7 +340,7 @@ describe('D-14 — 终审恰一次 + 单次回灌不复审 (INV-7)', () => {
     return { pass: false, reason: 'edge case for empty input not covered', usage: { in: 1, out: 1 } };
   };
 
-  test('★ 判红 → 第二次 _runDag: lead goal 带回灌锚 + finding, cfg **无 verifier**; verifier 总共 1 次; 回灌后 oracle 绿 → success', async () => {
+  test('★ 判红 → 第二次 _runDag: conductor goal 带回灌锚 + finding, cfg **无 verifier**; verifier 总共 1 次; 回灌后 oracle 绿 → success', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omd-reinject-green-'));
     const seen: Observed[] = [];
     const vcalls = { n: 0 };
@@ -349,8 +349,8 @@ describe('D-14 — 终审恰一次 + 单次回灌不复审 (INV-7)', () => {
       dag: { conductorModel: 'c:m', leafModel: 'l:m', verifier: failingVerifier(vcalls) } as ExecutorDagConfig,
     });
     expect(seen).toHaveLength(2);
-    expect(seen[1]!.plan.nodes[LEAD_NODE_ID]!.goal).toContain(REINJECT_ANCHOR_HEAD);
-    expect(seen[1]!.plan.nodes[LEAD_NODE_ID]!.goal).toContain('edge case for empty input not covered');
+    expect(seen[1]!.plan.nodes[CONDUCTOR_NODE_ID]!.goal).toContain(REINJECT_ANCHOR_HEAD);
+    expect(seen[1]!.plan.nodes[CONDUCTOR_NODE_ID]!.goal).toContain('edge case for empty input not covered');
     // 证伪: 回灌那次不剥 verifier → fakeEngine 会再调一次, vcalls 变 2, 下面两条红。
     expect(seen[1]!.cfg.verifier).toBeUndefined();
     expect(vcalls.n).toBe(1);
@@ -380,7 +380,7 @@ describe('D-14 — 终审恰一次 + 单次回灌不复审 (INV-7)', () => {
       ...baseCfg(cwd, { orchestratingLoop: true, _classify: classify({ n: 0 }, EXPLORE_ACCEPT), _runDag: fakeEngine(seen) }),
       dag: { conductorModel: 'c:m', leafModel: 'l:m', verifier: failingVerifier(vcalls) } as ExecutorDagConfig,
     });
-    expect(Object.keys(seen[0]!.plan.nodes)).toEqual([LEAD_NODE_ID]);
+    expect(Object.keys(seen[0]!.plan.nodes)).toEqual([CONDUCTOR_NODE_ID]);
     expect(seen).toHaveLength(2);
     expect(vcalls.n).toBe(1);
     expect(r.outcome).toBe('verifier-rejected');
@@ -413,9 +413,9 @@ describe('D-14 — 终审恰一次 + 单次回灌不复审 (INV-7)', () => {
 });
 
 describe('R-1 账本: 卡调用计数 / 派发台账 / 常驻字符数 / briefHasRepro', () => {
-  test('★ zod 拒 + help + ok 各计一次; dispatches 带 briefHasRepro; residentPromptChars 由 buildLeadFace 写', async () => {
-    const ledger = createLeadCardLedger();
-    const face = buildLeadFace(FACTS, { ctx: CTX, runChild: async (p) => fakeExec(p), ledger });
+  test('★ zod 拒 + help + ok 各计一次; dispatches 带 briefHasRepro; residentPromptChars 由 buildConductorFace 写', async () => {
+    const ledger = createConductorCardLedger();
+    const face = buildConductorFace(FACTS, { ctx: CTX, runChild: async (p) => fakeExec(p), ledger });
     expect(ledger.residentPromptChars).toBe(face.systemPrompt.length);
     const work = face.customTools!.find((t) => t.name === 'work')!;
     await work.execute('t', { goal: 'g' }); // zod 拒 (brief 缺)
@@ -462,7 +462,7 @@ describe('R-1 账本: runGoal 结果上的 loop', () => {
     });
     expect(r.loop!.residentPromptChars).toBeGreaterThan(1000);
     expect(r.loop!.cards.calls).toBe(0);
-    // R-1 第 4 步: 回灌分界线 —— 第二跑开始时派发数 (这里 lead 一次没派 → 0, **是 0 不是缺席**); 读侧靠它判「回灌后有没有新派发」。
+    // R-1 第 4 步: 回灌分界线 —— 第二跑开始时派发数 (这里 conductor 一次没派 → 0, **是 0 不是缺席**); 读侧靠它判「回灌后有没有新派发」。
     expect(r.loop!.dispatchesBeforeReinject).toBe(0);
     const v1 = await runGoal('修 add()', baseCfg(cwd, { orchestratingLoop: false, _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: async (plan) => ({ plan, sessionId: 's', levels: [], results: { execute: { id: 'execute', status: 'done', kind: 'conductor', output: 'ok', deps: [], usage: { in: 1, out: 1 }, rounds: 1, converged: true }, accept: { id: 'accept', status: 'done', kind: 'command', output: '', deps: ['execute'], usage: { in: 0, out: 0 } } }, usage: { conductor: { in: 0, out: 0 }, leavesIn: 0, leavesOut: 0, leavesCacheHit: 0 }, reusedNodes: [], observations: [] }) as unknown as ExecutorDagResult }));
     expect(v1.loop).toBeUndefined();
@@ -480,7 +480,7 @@ describe('R-1 账本: runGoal 结果上的 loop', () => {
   });
 });
 
-describe('1-B (2026-09-03): 终审否决判据 (target=criterion) → 不回灌 lead, 走 INV-4 判据重建', () => {
+describe('1-B (2026-09-03): 终审否决判据 (target=criterion) → 不回灌 conductor, 走 INV-4 判据重建', () => {
   test('★ 只跑一次; outcome verifier-rejected; loop.verifier {fail, criterion, reinjected false, skipped}; criterionRebuild 触发 (重建者缺席 → 未采纳, 照记); 摘要含 1-B', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omd-1b-'));
     const seen: Observed[] = [];
@@ -504,22 +504,22 @@ describe('1-A (2026-09-03): 判据先落盘冻结', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omd-1a-wire-'));
     const seen: Observed[] = [];
     await runGoal('修 add()', baseCfg(cwd, { orchestratingLoop: true, _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: fakeEngine(seen) }));
-    expect(seen[0]!.cfg.leafFace!({ id: LEAD_NODE_ID })!.systemPrompt!).toContain('Missing now: src/a.test.ts');
+    expect(seen[0]!.cfg.leafFace!({ id: CONDUCTOR_NODE_ID })!.systemPrompt!).toContain('Missing now: src/a.test.ts');
     const cwd2 = mkdtempSync(join(tmpdir(), 'omd-1a-wire2-'));
     mkdirSync(join(cwd2, 'src'), { recursive: true });
     writeFileSync(join(cwd2, 'src/a.test.ts'), 'test');
     const seen2: Observed[] = [];
     await runGoal('修 add()', baseCfg(cwd2, { orchestratingLoop: true, _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: fakeEngine(seen2) }));
-    expect(seen2[0]!.cfg.leafFace!({ id: LEAD_NODE_ID })!.systemPrompt!).not.toContain('Missing now:');
+    expect(seen2[0]!.cfg.leafFace!({ id: CONDUCTOR_NODE_ID })!.systemPrompt!).not.toContain('Missing now:');
   });
 
   test('★ 工具面: 冻住前非 work 拒 (计 rejectedCompile); 第一张 work 写集被强制为判据文件; 回来记 hash; 之后派发在路径禁令里跑; 改动后 tampered 可见', async () => {
     const root = mkdtempSync(join(tmpdir(), 'omd-1a-face-'));
-    const ledger = createLeadCardLedger();
+    const ledger = createConductorCardLedger();
     const guarded: (readonly string[])[] = [];
     const plans: ConductorPlan[] = [];
     const ctx = { ...CTX, cwd: root, writeRoot: root, acceptance: { command: 'bun test tests/a.test.ts', expect_exit: 0 } };
-    const face = buildLeadFace(
+    const face = buildConductorFace(
       { ...FACTS, writeRoot: root, criterionFiles: ['tests/a.test.ts'] },
       {
         ctx,
@@ -565,10 +565,10 @@ describe('1-A (2026-09-03): 判据先落盘冻结', () => {
 
   test('第一张 work 回来文件仍不存在 → 没冻住 (hashes 缺席), 下一次派发继续强制; 回灌第二跑从 ledger 恢复保护', async () => {
     const root = mkdtempSync(join(tmpdir(), 'omd-1a-miss-'));
-    const ledger = createLeadCardLedger();
+    const ledger = createConductorCardLedger();
     const plans: ConductorPlan[] = [];
     const ctx = { ...CTX, cwd: root, writeRoot: root };
-    const face = buildLeadFace({ ...FACTS, writeRoot: root, criterionFiles: ['tests/a.test.ts'] }, { ctx, ledger, criterionFreeze: { files: ['tests/a.test.ts'], root }, runChild: async (p) => { plans.push(p); return fakeExec(p); } });
+    const face = buildConductorFace({ ...FACTS, writeRoot: root, criterionFiles: ['tests/a.test.ts'] }, { ctx, ledger, criterionFreeze: { files: ['tests/a.test.ts'], root }, runChild: async (p) => { plans.push(p); return fakeExec(p); } });
     const work = face.customTools!.find((t) => t.name === 'work')!;
     const r1 = await work.execute('t', { goal: 'g', brief: 'b'.repeat(40) });
     expect((r1 as { content: { text: string }[] }).content[0]!.text).toContain('一个都没写出来');
@@ -580,7 +580,7 @@ describe('1-A (2026-09-03): 判据先落盘冻结', () => {
     writeFileSync(join(root, 'tests/a.test.ts'), 'x');
     ledger.criterionFreeze = { files: ['tests/a.test.ts'], frozenAtDispatch: 2, hashes: { 'tests/a.test.ts': 'abc' } };
     const guarded: (readonly string[])[] = [];
-    const face2 = buildLeadFace({ ...FACTS, writeRoot: root }, { ctx, ledger, withProtected: ((paths, fn) => { guarded.push(paths ?? []); return fn(); }) as typeof withProtectedPaths, runChild: async (p) => fakeExec(p) });
+    const face2 = buildConductorFace({ ...FACTS, writeRoot: root }, { ctx, ledger, withProtected: ((paths, fn) => { guarded.push(paths ?? []); return fn(); }) as typeof withProtectedPaths, runChild: async (p) => fakeExec(p) });
     await face2.customTools!.find((t) => t.name === 'work')!.execute('t', { goal: 'g3', brief: 'd'.repeat(40) });
     expect(guarded).toEqual([['tests/a.test.ts']]);
   });

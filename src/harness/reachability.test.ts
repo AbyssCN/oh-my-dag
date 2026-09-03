@@ -72,9 +72,9 @@ const DYNAMIC_ENTRIES: Record<string, string> = {
     '**benchmark 靶子**: `eval/tasks/medium.ts` 与 `large.ts` 都把这个路径列进目标集 —— ' +
     'eval 会清空它让 fleet 照 SPEC 重建。⚠ `planToMermaid` 生产零消费者, ' +
     '存在的唯一理由就是当靶子; 删它会同时打断两个 fixture。',
-  'src/harness/lead/coverage.ts':
+  'src/harness/conductor/coverage.ts':
     'P3 契约 D-23 / INV-18 覆盖三分法**字面量的落盘处** (CARD_COVERED / COMPILER_COVERED / PRIMITIVE_EXCLUDED): ' +
-    '消费方 = colocated 的 `lead-tools-coverage.test.ts` (三张表两两不相交、并 = PRIMITIVE_IDS、与契约逐元素相等)。' +
+    '消费方 = colocated 的 `conductor-tools-coverage.test.ts` (三张表两两不相交、并 = PRIMITIVE_IDS、与契约逐元素相等)。' +
     '生产零消费者是设计 —— 它是契约绊线的真源, 与 eval fixture 同类; 契约改字面量时改它, 不改测试。',
   'src/harness/goal/pin-legacy-path.ts':
     'P3 S6b 测试夹具: 16 个钉 P3 之前执行路径的测试文件 import 它 (goal/*.test.ts 14 · test/core 2), ' +
@@ -138,9 +138,9 @@ describe('可达性 — 每个非测试 .ts 都从生产入口 import 得到', (
         '而"冻结"只有确定性发生器做得到。消费方 = S2 的实验脚本, 尚未落地。' +
         'S2 若被裁掉, 本条与该文件一起删。',
     },
-    // P3 S1 的 12 条 lead 件豁免 2026-09-02 (S6b) 删除 —— 照它自己写的退出条件: S6b 接上了
-    // (`goal/orchestrating-loop.ts` 与 `mcp/tools/chat.ts` 静态 import `createLeadTools` / `buildLeadSystemPrompt`),
-    // 本闸当场判它们可达。只剩 `lead/coverage.ts` 一件是设计上的生产零消费者, 进 DYNAMIC_ENTRIES (见该条)。
+    // P3 S1 的 12 条 conductor 件豁免 2026-09-02 (S6b) 删除 —— 照它自己写的退出条件: S6b 接上了
+    // (`goal/orchestrating-loop.ts` 与 `mcp/tools/chat.ts` 静态 import `createConductorTools` / `buildConductorSystemPrompt`),
+    // 本闸当场判它们可达。只剩 `conductor/coverage.ts` 一件是设计上的生产零消费者, 进 DYNAMIC_ENTRIES (见该条)。
   };
 
   const tracked = (): Set<string> | null => {

@@ -25,20 +25,20 @@ const fake = (name: string, levels: string[][], nodes: FakeNode[]): ExecutorDagR
   }) as unknown as ExecutorDagResult;
 
 describe('R-1 第 4 步: resultOut 头部 ledger 行', () => {
-  test('★ ledgerHeaderRows: 每账本行一项 (父行 + 同 run_id 的 lead-* 子行), levels 只留每层节点数, 计数格没记 = null', () => {
+  test('★ ledgerHeaderRows: 每账本行一项 (父行 + 同 run_id 的 conductor-* 子行), levels 只留每层节点数, 计数格没记 = null', () => {
     const rec = createDagRecorder({ db: new Database(':memory:') });
-    rec.record(fake('goal-orchestrating-loop', [['lead'], ['accept']], [
-      { id: 'lead', durationMs: 1000, llmCalls: 20, toolCalls: 6, model: 'bench:MiniMax-M3' },
+    rec.record(fake('goal-orchestrating-loop', [['conductor'], ['accept']], [
+      { id: 'conductor', durationMs: 1000, llmCalls: 20, toolCalls: 6, model: 'bench:MiniMax-M3' },
       { id: 'accept', kind: 'command' },
     ]), { runId: 'R', entry: 'solve' });
-    rec.record(fake('lead-work-x', [['d1.a', 'd1.b']], [{ id: 'd1.a', durationMs: 400, llmCalls: 10 }, { id: 'd1.b', durationMs: 300, llmCalls: 5 }]), { runId: 'R', entry: 'solve' });
+    rec.record(fake('conductor-work-x', [['d1.a', 'd1.b']], [{ id: 'd1.a', durationMs: 400, llmCalls: 10 }, { id: 'd1.b', durationMs: 300, llmCalls: 5 }]), { runId: 'R', entry: 'solve' });
     rec.record(fake('goal-execute', [['e']], [{ id: 'e', llmCalls: 99 }]), { runId: 'OTHER', entry: 'solve' });
     const rows = ledgerHeaderRows(rec.listByRun('R'));
-    expect(rows.map((r) => r.plan)).toEqual(['goal-orchestrating-loop', 'lead-work-x']); // OTHER 那行不进
+    expect(rows.map((r) => r.plan)).toEqual(['goal-orchestrating-loop', 'conductor-work-x']); // OTHER 那行不进
     expect(rows[0]!.levels).toEqual([1, 1]);
     expect(rows[1]!.levels).toEqual([2]); // 宽度 2 深度 1
-    expect(rows[0]!.nodes.find((n) => n.id === 'lead')).toEqual({
-      id: 'lead', kind: 'agent', status: 'done', model: 'bench:MiniMax-M3',
+    expect(rows[0]!.nodes.find((n) => n.id === 'conductor')).toEqual({
+      id: 'conductor', kind: 'agent', status: 'done', model: 'bench:MiniMax-M3',
       tokensIn: 1, tokensOut: 1, cacheHitTokens: null, durationMs: 1000, toolCalls: 6, llmCalls: 20,
     });
     // command 叶没这两格 → null (不是 0): 读侧把它当「没记」, 不摊进 worker 调用数。
@@ -70,7 +70,7 @@ describe('R-1 第 4 步: resultOut 头部 ledger 行', () => {
       stages: [], sources: [], repoContext: '', converged: true, rounds: 1, reusedNodes: [], outcome: 'success',
     };
     const line = summarizeGoal({ ...base, loop }).split('\n').find((l) => l.startsWith('循环:'));
-    expect(line).toBe('循环: 终审 1 次 (首判 fail · 对象 criterion) · 回灌 是 → green · 回灌后新派发 0 · 派发 2 次 (卡 ok 2/3) · lead 常驻 prompt 6400 字符');
+    expect(line).toBe('循环: 终审 1 次 (首判 fail · 对象 criterion) · 回灌 是 → green · 回灌后新派发 0 · 派发 2 次 (卡 ok 2/3) · conductor 常驻 prompt 6400 字符');
     expect(summarizeGoal(base)).not.toContain('循环:');
   });
 });

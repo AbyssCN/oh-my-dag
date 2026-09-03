@@ -4,7 +4,7 @@
  *   · 判据陈旧闸 (stale-acceptance): 回灌过 ∧ accept 的绿是复用的 ⇒ 复验;
  *   · 最佳绿底 (best-green-floor): 第一跑判据绿 → 终审否决 → 回灌后红 ⇒ 还原到那次绿;
  *   · 板事件 (board verified): executable 发 verified, 探索型不发;
- *   · rubric 终态 (rubric-unwired): rubric 分型 + 验收步缺席 + lead 跑完 ⇒ 终态字面 rubric-unwired, success 不可达。
+ *   · rubric 终态 (rubric-unwired): rubric 分型 + 验收步缺席 + conductor 跑完 ⇒ 终态字面 rubric-unwired, success 不可达。
  * 外加 2-C: work(resume_of) 的上一次结果由运行时机械回灌进 goal。
  *
  * 反向自检: run-goal 里 `replanned` 去掉 `|| reinjected` → 陈旧闸那条红; adaptCard 去掉 injectPriorResult → 2-C 那条红。
@@ -16,11 +16,11 @@ import { join } from 'node:path';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagConfig, ExecutorDagResult, LeafResult } from '../dag/types';
 import { readBoard } from '../board/run-board';
-import type { LeadCtx } from '../lead/types';
+import type { ConductorCtx } from '../conductor/types';
 import { freezeRubric } from './rubric-spec';
 import type { GoalClassification } from './classify-acceptance';
 import { BEST_GREEN_LABEL, runGoal, TERMINAL_RUBRIC_UNWIRED, type RunGoalConfig } from './run-goal';
-import { createLeadRuntimeTools, LEAD_NODE_ID, RESUME_PRIOR_HEAD } from './orchestrating-loop';
+import { createConductorRuntimeTools, CONDUCTOR_NODE_ID, RESUME_PRIOR_HEAD } from './orchestrating-loop';
 
 const EXEC_ACCEPT: GoalClassification['acceptance'] = { kind: 'executable', command: 'bun test src/a.test.ts', expectExit: 0 };
 const EXPLORE_ACCEPT = { kind: 'exploratory', learningGoal: 'learn', acceptableLoss: 'none' } as unknown as GoalClassification['acceptance'];
@@ -30,10 +30,10 @@ const failingVerifier = async () => ({ pass: false, reason: dissent, target: 'im
 
 interface CallShape {
   acceptStatus?: 'done' | 'failed';
-  /** lead 节点按这个败因判 failed (缺席 = done)。 */
-  leadFailureKind?: string;
+  /** conductor 节点按这个败因判 failed (缺席 = done)。 */
+  conductorFailureKind?: string;
   acceptSkipped?: boolean;
-  leadFiles?: string[];
+  conductorFiles?: string[];
   /** 每次调用前跑一段副作用 (写盘 / 删盘)。 */
   before?: () => void;
 }
@@ -49,7 +49,7 @@ const fakeEngine = (shapes: CallShape[], seen: ConductorPlan[] = []): NonNullabl
     results[id] =
       n.executor === 'command'
         ? ({ id, status: shape.acceptStatus ?? 'done', kind: 'command', output: '', deps: n.depends_on ?? [], usage: { in: 0, out: 0 }, exitCode: (shape.acceptStatus ?? 'done') === 'done' ? 0 : 1, ...(shape.acceptSkipped ? { skipped: true } : {}) } as never)
-        : ({ id, status: shape.leadFailureKind ? 'failed' : 'done', ...(shape.leadFailureKind ? { failureKind: shape.leadFailureKind } : {}), kind: 'agent', output: shape.leadFailureKind ? '[agent-leaf] 529 overloaded_error' : 'lead report', deps: [], usage: { in: 1, out: 1 }, ...(shape.leadFiles ? { filesTouched: shape.leadFiles, artifactRoot: cfg.continuity?.execRoot ?? cfg.continuity?.repoRoot } : {}) } as never);
+        : ({ id, status: shape.conductorFailureKind ? 'failed' : 'done', ...(shape.conductorFailureKind ? { failureKind: shape.conductorFailureKind } : {}), kind: 'agent', output: shape.conductorFailureKind ? '[agent-leaf] 529 overloaded_error' : 'conductor report', deps: [], usage: { in: 1, out: 1 }, ...(shape.conductorFiles ? { filesTouched: shape.conductorFiles, artifactRoot: cfg.continuity?.execRoot ?? cfg.continuity?.repoRoot } : {}) } as never);
   }
   let verification: ExecutorDagResult['verification'];
   if (cfg.verifier && (shape.acceptStatus ?? 'done') === 'done') {
@@ -106,7 +106,7 @@ describe('循环路径 · 最佳绿底 (INV-1)', () => {
       dag: { conductorModel: 'c:m', leafModel: 'l:m', verifier: failingVerifier } as ExecutorDagConfig,
       _classify: classify(EXEC_ACCEPT),
       _runDag: fakeEngine([
-        { acceptStatus: 'done', leadFiles: [artifact], before: () => writeFileSync(artifact, '真交付') },
+        { acceptStatus: 'done', conductorFiles: [artifact], before: () => writeFileSync(artifact, '真交付') },
         { acceptStatus: 'failed', before: () => rmSync(artifact) },
       ]),
     });
@@ -136,7 +136,7 @@ describe('循环路径 · 板事件 verified', () => {
 });
 
 describe('循环路径 · rubric 终态 (INV-5)', () => {
-  test('rubric 分型 + 验收步缺席 + lead 跑完 ⇒ terminalLabel rubric-unwired, success 不可达, 图只有 lead 节点', async () => {
+  test('rubric 分型 + 验收步缺席 + conductor 跑完 ⇒ terminalLabel rubric-unwired, success 不可达, 图只有 conductor 节点', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omd-loop-rubric-'));
     const seen: ConductorPlan[] = [];
     const r = await runGoal('写一份报告', {
@@ -146,7 +146,7 @@ describe('循环路径 · rubric 终态 (INV-5)', () => {
       _classify: async () => ({ tier: 'complex', acceptance: { kind: 'rubric', checklist: freezeRubric([{ id: 'r1', requirement: '点名数据来源' }]) }, route: { kind: 'none' } }),
       _runDag: fakeEngine([{}], seen),
     });
-    expect(Object.keys(seen[0]!.nodes)).toEqual([LEAD_NODE_ID]);
+    expect(Object.keys(seen[0]!.nodes)).toEqual([CONDUCTOR_NODE_ID]);
     expect(r.path).toBe('orchestrating-loop');
     expect(r.terminalLabel).toBe(TERMINAL_RUBRIC_UNWIRED);
     expect(r.converged).toBe(false);
@@ -156,13 +156,13 @@ describe('循环路径 · rubric 终态 (INV-5)', () => {
 });
 
 describe('2-C · work(resume_of) 上一次结果机械回灌', () => {
-  const CTX: LeadCtx = { cwd: '/tmp/x', writeRoot: '/tmp/x', allowlist: [], maxFanout: 2, seats: { worker: 'w', escalation: 'e', verify: 'v' }, researchAvailable: false };
+  const CTX: ConductorCtx = { cwd: '/tmp/x', writeRoot: '/tmp/x', allowlist: [], maxFanout: 2, seats: { worker: 'w', escalation: 'e', verify: 'v' }, researchAvailable: false };
   const exec = (plan: ConductorPlan, status: LeafResult['status']): ExecutorDagResult =>
     ({ plan, sessionId: 's', levels: [], results: Object.fromEntries(Object.keys(plan.nodes).map((id) => [id, { id, status, kind: 'agent', output: `report of ${id}: expected 2 got 3`, deps: [], usage: { in: 1, out: 1 }, filesTouched: ['src/a.ts'] }])), usage: { conductor: { in: 0, out: 0 }, leavesIn: 1, leavesOut: 1, leavesCacheHit: 0 }, reusedNodes: [], observations: [] }) as unknown as ExecutorDagResult;
 
   test('★ 同 id 重派: 节点 id 不再加前缀, goal 末尾带上一次的状态 / 文件 / 报告尾', async () => {
     const seen: ConductorPlan[] = [];
-    const tools = createLeadRuntimeTools({ ctx: CTX, runChild: async (p) => { seen.push(p); return exec(p, seen.length === 1 ? 'failed' : 'done'); } });
+    const tools = createConductorRuntimeTools({ ctx: CTX, runChild: async (p) => { seen.push(p); return exec(p, seen.length === 1 ? 'failed' : 'done'); } });
     const work = tools.find((t) => t.name === 'work')!;
     const brief = 'repro: bun test → 1 fail (expected 2 got 3). scope: src/a.ts. do not touch b.';
     await work.execute('t1', { goal: 'fix add()', brief });
@@ -181,7 +181,7 @@ describe('2-C · work(resume_of) 上一次结果机械回灌', () => {
 
   test('resume_of 指向没跑过的 id ⇒ 不回灌 (fresh 派发), 照常执行', async () => {
     const seen: ConductorPlan[] = [];
-    const tools = createLeadRuntimeTools({ ctx: CTX, runChild: async (p) => { seen.push(p); return exec(p, 'done'); } });
+    const tools = createConductorRuntimeTools({ ctx: CTX, runChild: async (p) => { seen.push(p); return exec(p, 'done'); } });
     const work = tools.find((t) => t.name === 'work')!;
     await work.execute('t1', { goal: 'fix', brief: 'repro output here; scope src/a.ts; do not touch anything else.', resume_of: 'd9.ghost' });
     expect(Object.keys(seen[0]!.nodes)).toEqual(['d9.ghost']);
@@ -190,7 +190,7 @@ describe('2-C · work(resume_of) 上一次结果机械回灌', () => {
 });
 
 describe('D-14 基建守卫 (2026-09-03, code80-p3 首批停批根因)', () => {
-  test('★ lead 首发 infra-error + 终审判红 ⇒ 不回灌 (只跑 1 次), 终态 infra-error 而不是 verifier-rejected', async () => {
+  test('★ conductor 首发 infra-error + 终审判红 ⇒ 不回灌 (只跑 1 次), 终态 infra-error 而不是 verifier-rejected', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omd-loop-infra-'));
     const seen: ConductorPlan[] = [];
     const r = await runGoal('修 add()', {
@@ -198,17 +198,17 @@ describe('D-14 基建守卫 (2026-09-03, code80-p3 首批停批根因)', () => {
       orchestratingLoop: true,
       dag: { conductorModel: 'c:m', leafModel: 'l:m', verifier: failingVerifier } as ExecutorDagConfig,
       _classify: classify(EXEC_ACCEPT),
-      _runDag: fakeEngine([{ acceptStatus: 'done', leadFailureKind: 'infra-error' }, { acceptStatus: 'done' }], seen),
+      _runDag: fakeEngine([{ acceptStatus: 'done', conductorFailureKind: 'infra-error' }, { acceptStatus: 'done' }], seen),
     });
-    // 证伪: run-goal 去掉 leadInfraFailure 守卫 → seen 变 2 且 outcome 落 success/verifier-rejected, 红。
+    // 证伪: run-goal 去掉 conductorInfraFailure 守卫 → seen 变 2 且 outcome 落 success/verifier-rejected, 红。
     expect(seen).toHaveLength(1);
     expect(r.outcome).toBe('infra-error');
     expect(r.stages.at(-1)!.summary).toContain('529');
-    expect(r.loop!.leadInfraFailure).toContain('infra-error');
+    expect(r.loop!.conductorInfraFailure).toContain('infra-error');
     expect(r.loop!.verifier.afterReinject).toBe('skipped');
   });
 
-  test('判别力: lead 语义类败因 (empty-artifact) 照常回灌', async () => {
+  test('判别力: conductor 语义类败因 (empty-artifact) 照常回灌', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omd-loop-semantic-'));
     const seen: ConductorPlan[] = [];
     await runGoal('修 add()', {
@@ -216,14 +216,14 @@ describe('D-14 基建守卫 (2026-09-03, code80-p3 首批停批根因)', () => {
       orchestratingLoop: true,
       dag: { conductorModel: 'c:m', leafModel: 'l:m', verifier: failingVerifier } as ExecutorDagConfig,
       _classify: classify(EXEC_ACCEPT),
-      _runDag: fakeEngine([{ acceptStatus: 'done', leadFailureKind: 'empty-artifact' }, { acceptStatus: 'done' }], seen),
+      _runDag: fakeEngine([{ acceptStatus: 'done', conductorFailureKind: 'empty-artifact' }, { acceptStatus: 'done' }], seen),
     });
     expect(seen).toHaveLength(2);
   });
 });
 
 describe('rubric 判官证据面含盘上产物 (2026-09-03)', () => {
-  test('★ lead 经 bash 写的产物文件内容进判官 prompt', async () => {
+  test('★ conductor 经 bash 写的产物文件内容进判官 prompt', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omd-loop-rubric-artifact-'));
     Bun.spawnSync(['git', 'init', '-q'], { cwd });
     writeFileSync(join(cwd, 'analysis.json'), '{"summary":"FEIGN-PROXY-EVIDENCE-7731"}');

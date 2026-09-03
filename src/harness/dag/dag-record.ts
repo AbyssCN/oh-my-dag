@@ -166,7 +166,7 @@ export interface DagRunNode {
   /**
    * R-1 (2026-09-03): agent leaf 的工具调用次数与 **LLM 调用次数** (来源 LeafResult.toolCalls / llmCalls)。
    * null = 该节点没报 (非 agent 叶 / 老 runner / 老行), **绝不** `?? 0`。`llmCalls` 是「M3 调用/题」按
-   * lead / worker 分解的唯一引擎侧来源 (桥日志一文件一请求只能按批算)。读侧: omd-readout ⑲ 段。
+   * conductor / worker 分解的唯一引擎侧来源 (桥日志一文件一请求只能按批算)。读侧: omd-readout ⑲ 段。
    */
   toolCalls?: number | null;
   llmCalls?: number | null;
@@ -877,7 +877,7 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
   const recent = db.query(`SELECT * FROM omd_dag_runs ORDER BY created_at DESC LIMIT ?`);
   const byRun = db.query(`SELECT * FROM omd_dag_runs WHERE run_id = ? ORDER BY created_at ASC`);
   const upd = db.query(`UPDATE omd_dag_runs SET criteria = ? WHERE run_id = ?`);
-  // R-1: 只回填**父行** (plan_name 点名), 派发出的子 run 行 (plan_name 以 lead- 开头) 这一列保持 NULL —— 它们是分母来源, 不是持有者。
+  // R-1: 只回填**父行** (plan_name 点名), 派发出的子 run 行 (plan_name 以 conductor- 开头) 这一列保持 NULL —— 它们是分母来源, 不是持有者。
   const updLoop = db.query(`UPDATE omd_dag_runs SET loop = ? WHERE run_id = ? AND plan_name = ?`);
   const updSpec = db.query(`UPDATE omd_dag_runs SET spec_write = ? WHERE run_id = ?`);
 

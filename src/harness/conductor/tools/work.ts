@@ -1,11 +1,11 @@
 /**
- * src/harness/lead/tools/work —— `work` 卡:单个 worker,一处有界改动。
+ * src/harness/conductor/tools/work —— `work` 卡:单个 worker,一处有界改动。
  * 契约 S1 change note:「short + zod strict schema(goal / brief min(40) / write_set? /
  * resume_of?)+ compile → 单个 executor:'agent' 节点」。
  */
 import { z } from 'zod';
 import { renderManual } from '../render-manual';
-import type { CompileResult, LeadCtx, LeadTool } from '../types';
+import type { CompileResult, ConductorCtx, ConductorTool } from '../types';
 
 const WorkSchema = z
   .object({
@@ -38,15 +38,15 @@ const SHORT =
   'Start ONE worker for one bounded change. Default for any task with a single owner of the code. ' +
   'Params: goal (one sentence), brief (min 40 chars: reproduction output, scope, what not to touch). ';
 
-export const workTool: LeadTool<WorkParams> = {
+export const workTool: ConductorTool<WorkParams> = {
   name: 'work',
   short: SHORT,
   schema: WorkSchema,
   manual: () => renderManual('work'),
-  compile(params: WorkParams, ctx: LeadCtx): CompileResult {
+  compile(params: WorkParams, ctx: ConductorCtx): CompileResult {
     const id = params.resume_of ?? slugId(params.goal);
     const plan = {
-      name: `lead-work-${id}`,
+      name: `conductor-work-${id}`,
       nodes: {
         [id]: {
           executor: 'agent' as const,

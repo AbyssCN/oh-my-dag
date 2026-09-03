@@ -1,5 +1,5 @@
 /**
- * src/harness/lead/coverage —— 原语覆盖三分法(P3 契约 D-23,2026-09-02)。
+ * src/harness/conductor/coverage —— 原语覆盖三分法(P3 契约 D-23,2026-09-02)。
  *
  * `PRIMITIVE_IDS`(`primitive-registry.ts`)实测恰 13 个;七张卡不可能字面覆盖全部。
  * 上一版契约草案把覆盖测试写成「并集 = 全集减去显式排除项」,而排除表无界 ——
@@ -8,14 +8,14 @@
  * 字面量三分法,`PRIMITIVE_EXCLUDED` 与契约 D-23 逐元素相等 —— 改它 = 改契约,
  * 必须回流,不许在这个文件里就地加宽。
  */
-import type { LeadToolName } from './types';
+import type { ConductorToolName } from './types';
 
 /**
  * 被某张卡直接覆盖的原语:卡的 compile() 产物在语义上顶替了这个原语要解决的问题
  * (即便实现手法不同,如 spawn 编译到 N 个 DAG 兄弟而不是单个 `kind:'primitive'` 节点)。
  * D-23 字面量:5 项。
  */
-export const CARD_COVERED: Readonly<Record<string, LeadToolName>> = {
+export const CARD_COVERED: Readonly<Record<string, ConductorToolName>> = {
   parallel: 'spawn',
   discovery: 'explore',
   judge: 'best_of',
@@ -25,7 +25,7 @@ export const CARD_COVERED: Readonly<Record<string, LeadToolName>> = {
 
 /**
  * 由编译器(而非某张卡)直接消费的原语:循环本体与收尾节点,属于
- * `compileOrchestratingLoop`(S6b)的内部机制,不是 lead 模型能点的卡。D-23 字面量:2 项。
+ * `compileOrchestratingLoop`(S6b)的内部机制,不是 conductor 模型能点的卡。D-23 字面量:2 项。
  */
 export const COMPILER_COVERED: readonly string[] = ['loop-until', 'verify'];
 
@@ -42,7 +42,7 @@ export const PRIMITIVE_EXCLUDED: readonly string[] = [
   'router',
   // 今天没有用例撑起一张 race 卡;best_of 的 mode:'first-green' 已经覆盖了「抢第一个绿」的需求。
   'race',
-  // 今天没有用例撑起一张 saga 卡(补偿回滚属维二红线场景,还没有 lead 层需求)。
+  // 今天没有用例撑起一张 saga 卡(补偿回滚属维二红线场景,还没有 conductor 层需求)。
   'saga',
   // 逃生舱默认关(gated),Router 永不自动选 —— 给它一张常驻卡等于把默认关的口子摆到台面上。
   'escape-hatch',

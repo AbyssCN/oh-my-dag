@@ -1,10 +1,10 @@
 /**
- * src/harness/lead/render-manual —— manual 从真源渲染(P3 契约 S1)。
+ * src/harness/conductor/render-manual —— manual 从真源渲染(P3 契约 S1)。
  *
  * `manual` 只做拼接:取该工具对应的原语参数表(`PRIMITIVE_REGISTRY`,真源
  * `src/harness/primitive-registry.ts`)与对应图式的 when/whenNot/steps/why/example
  * (`GRAPH_SHAPES`,真源 `src/harness/shapes/index.ts`)。**不手抄第二份文本** ——
- * 改一处图式的 `when`,七张卡里引用它的那张 manual 跟着变;`lead-tools-manual.test.ts`
+ * 改一处图式的 `when`,七张卡里引用它的那张 manual 跟着变;`conductor-tools-manual.test.ts`
  * 的快照测试就是钉这一条:改 `GRAPH_SHAPES` 里任一条 `when`,测试必红。
  *
  * `MANUAL_SOURCES` 只回答「这张卡的文档该引用哪些原语/图式」,不是 D-23 三分法的
@@ -16,7 +16,7 @@
 import type { PrimitiveId } from '../primitive-registry';
 import { PRIMITIVE_REGISTRY } from '../primitive-registry';
 import { GRAPH_SHAPES, shapeById } from '../shapes';
-import type { LeadToolName } from './types';
+import type { ConductorToolName } from './types';
 
 /** 每张卡的文档该引用哪些原语参数表 / 哪些图式段落(真源指针,不是内容副本)。 */
 interface ManualSource {
@@ -24,7 +24,7 @@ interface ManualSource {
   shapes: readonly string[];
 }
 
-export const MANUAL_SOURCES: Readonly<Record<LeadToolName, ManualSource>> = {
+export const MANUAL_SOURCES: Readonly<Record<ConductorToolName, ManualSource>> = {
   // work 编译到单个 agent 节点,没有对应的编排原语或图式 —— 它是七张卡里唯一的"叶子"。
   work: { primitives: [], shapes: [] },
   spawn: { primitives: ['parallel'], shapes: ['one-decision-then-fanout', 'full-stack', 'ui-evidence'] },
@@ -40,7 +40,7 @@ export const MANUAL_SOURCES: Readonly<Record<LeadToolName, ManualSource>> = {
 };
 
 /** 每张卡的一行标题(手写;不是从真源渲染的那一段,manual 主体才是)。 */
-const MANUAL_HEADLINE: Readonly<Record<LeadToolName, string>> = {
+const MANUAL_HEADLINE: Readonly<Record<ConductorToolName, string>> = {
   work: 'work — one worker, one bounded change.',
   spawn: 'spawn — N independent workers at once.',
   map: 'map — a worker per runtime item.',
@@ -93,7 +93,7 @@ function renderShapeSection(id: string): string[] {
  * 渲染一张卡的完整 manual(D-3:只走 tool result,永不进 system prompt)。
  * 惰性求值由调用方保证(七张卡的 `manual` 字段是 `() => renderManual(name)` 这个 thunk)。
  */
-export function renderManual(name: LeadToolName): string {
+export function renderManual(name: ConductorToolName): string {
   const src = MANUAL_SOURCES[name];
   const lines: string[] = [MANUAL_HEADLINE[name]];
   if (src.primitives.length > 0) {
