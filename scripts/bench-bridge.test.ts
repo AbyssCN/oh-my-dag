@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { checkAuth, handleChatCompletions, parseBridgeMap, toSingleChunkSse } from './bench-bridge';
+import { normalizeForDeepseek } from './bench-bridge';
 import type { ModelRequest, ModelResponse } from '../src/model/types';
 
 const fakeCall = (capture: ModelRequest[]) => async (req: ModelRequest): Promise<ModelResponse> => {
@@ -151,5 +152,18 @@ describe('JSON 模式 (2026-08-29: 静默丢 response_format 的代价是判官�
       deps(raw) as never,
     );
     expect((r.json as { choices: Array<{ message: { content: string } }> }).choices[0]!.message.content).toBe(raw);
+  });
+});
+
+describe('deepseek 透传形状归一 (2026-09-03)', () => {
+  test('★ developer → system, 其余消息与字段原样; 无 messages 原样返回', () => {
+    const body = { model: 'x', messages: [{ role: 'developer', content: 'sys' }, { role: 'user', content: 'u' }, { role: 'assistant', content: 'a', tool_calls: [] }], tools: [{ type: 'function' }], reasoning_effort: 'medium' };
+    const out = normalizeForDeepseek(body);
+    expect(out.messages!.map((m) => m.role)).toEqual(['system', 'user', 'assistant']); // 证伪: 去掉归一 → ['developer', …] 红 (deepseek 400)
+    expect(out.messages![0]!.content).toBe('sys');
+    expect(out.tools).toBe(body.tools); // 其余字节原样
+    expect(out.reasoning_effort).toBe('medium');
+    const bare: { model: string; messages?: Array<Record<string, unknown>> } = { model: 'x' };
+    expect(normalizeForDeepseek(bare)).toEqual({ model: 'x' });
   });
 });

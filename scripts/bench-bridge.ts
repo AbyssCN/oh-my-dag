@@ -59,6 +59,16 @@ export interface PassthroughRoute {
   modelId: string;
 }
 
+/**
+ * deepseek 透传前的形状归一 (2026-09-03, smoke8-dsw 第二次根因): pi 的 openai-completions 客户端把 system 发成
+ * `role: "developer"` (OpenAI 新形状), minimax 吃, deepseek 400「messages[0].role: unknown variant」。只改这一个字,
+ * 其余字节原样 —— 这不是 translate, 是同一形状里两家方言的一个词。
+ */
+export function normalizeForDeepseek<T extends { messages?: Array<Record<string, unknown>> }>(body: T): T {
+  if (!Array.isArray(body.messages)) return body;
+  return { ...body, messages: body.messages.map((m) => (m.role === 'developer' ? { ...m, role: 'system' } : m)) };
+}
+
 export async function handlePassthrough(
   body: OpenAiChatBody & Record<string, unknown>,
   route: PassthroughRoute,
@@ -346,7 +356,7 @@ if (import.meta.main) {
               modelId: coordForRoute.slice('minimax-cn:'.length),
             })
           : coordForRoute?.startsWith('deepseek:') && deepseekKey
-            ? await handlePassthrough(body, {
+            ? await handlePassthrough(normalizeForDeepseek(body), {
                 url: `${(process.env.DEEPSEEK_BASE_URL?.replace(/\/$/, '') ?? 'https://api.deepseek.com')}/chat/completions`,
                 apiKey: deepseekKey,
                 modelId: coordForRoute.slice('deepseek:'.length),
