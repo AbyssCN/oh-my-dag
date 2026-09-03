@@ -2078,6 +2078,8 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   // 第二次 **不带 verifier** (INV-7: 终审每 run 至多一次, 这里靠"字段不在"机械保证, 不靠计数)。
   // 之后终态由机械 oracle 定 (下方 outcome 的 verifier-rejected 分支)。
   let reinjected = false;
+  /** R-1: 回灌第二跑开始时的派发数 (两跑共用 loopLedger), 读侧据此分「回灌后有没有新派发」。 */
+  let dispatchesBeforeReinject: number | undefined;
   /**
    * 2026-09-03 (code80-p3 首批停批根因): lead 节点死于基建 (529 / 超时 / 停摆 / 缺能力) 时**不回灌** —— 终审对着空产物
    * 判红是必然的, 再派只是再撞一次同一堵墙, 而终态会被标成 verifier-rejected (语义否决), 把引擎故障记成了模型没做对。
@@ -2102,6 +2104,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
       // 基座 = 第一跑的 execCfg (同一份 freezeCriterion / waiveRed / 预算), 只是 verifier 不在 (INV-7 机械保证)。
       const { verifier: _noVerifier, ...noVerifierCfg } = withLoopConfig(loopBase, replanted, config, runnable, task, loopLedger);
       void _noVerifier;
+      dispatchesBeforeReinject = loopLedger.dispatches.length;
       exec = await (config._runDag ?? runExecutorDagWithPlan)(replanted, noVerifierCfg);
       reinjected = true;
     } catch (err) {
@@ -2829,6 +2832,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
           readOnlyShellBlocked: loopLedger.readOnlyShellBlocked,
         },
         dispatches: loopLedger.dispatches,
+        ...(dispatchesBeforeReinject !== undefined ? { dispatchesBeforeReinject } : {}),
       }
     : undefined;
   const result: RunGoalResult = {

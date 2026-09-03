@@ -66,6 +66,12 @@ export interface LoopLedger {
   leadInfraFailure?: string;
   cards: Omit<LeadCardLedger, 'dispatches' | 'residentPromptChars'>;
   dispatches: LoopDispatch[];
+  /**
+   * D-14 回灌第二跑开始那一刻 `dispatches` 的长度 (两跑合并计数, 这是分界线)。只在 `verifier.reinjected` 时有值;
+   * 缺席 = 没回灌 / 老记录。读侧「回灌蒸发率」= 回灌后零新派发 (`dispatches.length === dispatchesBeforeReinject`)
+   * 且 oracle 绿 —— 没有这条线, 读侧只能猜哪些派发是回灌后的。
+   */
+  dispatchesBeforeReinject?: number;
 }
 
 /**

@@ -30,7 +30,7 @@ import type { DagNodeEvent, ExecutorDagConfig } from '../../harness/dag/types';
 import type { CheckpointManager } from '../../harness/continuity/checkpoint-manager';
 import type { RunRegistry } from '../run-registry';
 import type { HudRunRecordLike } from '../../hud/mirror';
-import { recordDagRun, type DagRecorder } from '../../harness/dag/dag-record';
+import { recordDagRun, type DagRecorder, type DagRunRecord } from '../../harness/dag/dag-record';
 import { ORCHESTRATING_LOOP_PLAN_NAME } from '../../harness/goal/orchestrating-loop';
 import type { AcceptanceProbe } from '../../harness/goal/acceptance-gate';
 import type { SpecWrite } from '../../harness/goal/spec-write';
@@ -218,7 +218,80 @@ export function summarizeGoal(r: RunGoalResult): string {
   if (r.specPath) lines.push(`spec: ${r.specPath}`);
   if (r.sources.length) lines.push(`来源 (${r.sources.length}): ${r.sources.slice(0, 5).join(', ')}`);
   if (r.reusedNodes.length) lines.push(`修复轮复用: ${r.reusedNodes.length} 节点`);
+  // R-1 第 4 步 (2026-09-03): 循环路径一行人话。机器读 resultOut 头部的 `loop:` 行 (整份 JSON), 这一行给人第一眼:
+  // 终审调了几次、首判什么、回灌后有没有新派发 (= 1-A/1-B 的判据面「回灌蒸发」)、卡的直达率、常驻 prompt 大小。
+  if (r.loop) {
+    const v = r.loop.verifier;
+    const after =
+      r.loop.dispatchesBeforeReinject !== undefined ? ` · 回灌后新派发 ${r.loop.dispatches.length - r.loop.dispatchesBeforeReinject}` : '';
+    lines.push(
+      `循环: 终审 ${v.calls} 次${v.firstVerdict ? ` (首判 ${v.firstVerdict}${v.target ? ` · 对象 ${v.target}` : ''})` : ' (未调)'}` +
+        ` · 回灌 ${v.reinjected ? `是 → ${v.afterReinject}${after}` : '否'}` +
+        ` · 派发 ${r.loop.dispatches.length} 次 (卡 ok ${r.loop.cards.ok}/${r.loop.cards.calls})` +
+        ` · lead 常驻 prompt ${r.loop.residentPromptChars ?? '未记'} 字符` +
+        `${r.loop.leadInfraFailure ? ` · ${r.loop.leadInfraFailure.slice(0, 80)}` : ''}`,
+    );
+  }
   return lines.join('\n');
+}
+
+// ── R-1 第 4 步 (2026-09-03): resultOut 头部的 `ledger:` 行 ──────────────────────────
+//
+// bench 容器里 `dag-runs.db` 不出容器 (omd-state.tgz 只扫 <cwd>/.omd, 账本在 omd home), 于是父 run 与 lead 派发的
+// 子 run (同 run_id, plan_name `lead-*`) 的**节点用量**只有这条路能出去。形状刻意扁: 每条账本行一项, `levels` 只留
+// 每层节点数 (宽度 = max, 深度 = length), 节点只留读侧要的计数格。三态照搬账本: 节点上没记的格是 null, 不编 0。
+/** `ledger:` 头行里的一条账本行。 */
+export interface LedgerHeaderRow {
+  plan: string;
+  /** 每层节点数 (= levels[i].length)。 */
+  levels: number[];
+  nodes: Array<{
+    id: string;
+    kind: string;
+    status: string;
+    model?: string;
+    tokensIn: number | null;
+    tokensOut: number | null;
+    cacheHitTokens: number | null;
+    durationMs: number | null;
+    toolCalls: number | null;
+    llmCalls: number | null;
+  }>;
+}
+
+/** 账本行 → 头行形状 (纯函数, 测试直接打)。 */
+export function ledgerHeaderRows(records: DagRunRecord[]): LedgerHeaderRow[] {
+  return records.map((rec) => ({
+    plan: rec.planName,
+    levels: rec.levels.map((l) => l.length),
+    nodes: rec.nodes.map((n) => ({
+      id: n.id,
+      kind: n.kind,
+      status: n.status,
+      ...(n.model ? { model: n.model } : {}),
+      tokensIn: n.tokensIn ?? null,
+      tokensOut: n.tokensOut ?? null,
+      cacheHitTokens: n.cacheHitTokens ?? null,
+      durationMs: n.durationMs ?? null,
+      toolCalls: n.toolCalls ?? null,
+      llmCalls: n.llmCalls ?? null,
+    })),
+  }));
+}
+
+/**
+ * 渲染 `ledger:` 头行 (含换行)。recorder 缺席 / 该 runId 零行 → 空串 (头部无此行 = 没记, 读侧不许当零);
+ * 读账本抛错 → 空串 + 一行 warn (fail-open 不吞证据, §静默坑 2)。
+ */
+export function renderLedgerLine(recorder: DagRecorder | undefined, runId: string): string {
+  if (!recorder) return '';
+  try {
+    const rows = ledgerHeaderRows(recorder.listByRun(runId));
+    return rows.length > 0 ? `ledger: ${JSON.stringify(rows)}\n` : '';
+  } catch (err) {
+    logger.warn({ runId, err: (err as Error).message }, '[dag_goal] resultOut 的 ledger 头行读账本失败 (头部缺该行)');
+    return '';
+  }
 }
 
 // ── D-6①③ (SDD 2026-08-11 控制面统一, 切片 6): 一切 run 挂票 · 一切散雾成票 ──────────
@@ -1334,7 +1407,12 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
                 r.acceptance.kind === 'executable'
                   ? `criterion: ${r.acceptance.command}\nexpectExit: ${r.acceptance.expectExit}\n`
                   : '';
-              writeFileSync(resultOut, `outcome: ${r.outcome}\nrunId: ${runId}\nacceptance: ${r.acceptance.kind}\n${criterionLines}${autoCommitLine}\n${summarizeGoal(r)}`);
+              // R-1 第 4 步 (2026-09-03): `loop:` (RunGoalResult.loop 整份 JSON, 只在循环路径出现) + `ledger:` (本 run 全部
+              // 账本行的节点用量, 见 renderLedgerLine)。下游键值头读者 (cli-solve 首行 / afk-hook 前三行 / autoresearch
+              // criterion 两键) 都按键取, 多两键不碍。缺席 = 没记 (非循环路径 / recorder 缺席), 读侧不许当零。
+              const loopLine = r.loop ? `loop: ${JSON.stringify(r.loop)}\n` : '';
+              const ledgerLine = renderLedgerLine(deps.recorder, runId);
+              writeFileSync(resultOut, `outcome: ${r.outcome}\nrunId: ${runId}\nacceptance: ${r.acceptance.kind}\n${criterionLines}${loopLine}${ledgerLine}${autoCommitLine}\n${summarizeGoal(r)}`);
             } catch (e) {
               logger.warn({ err: (e as Error).message, resultOut }, '[dag_goal] resultOut 写失败 (回流将看不到这跑)');
             }

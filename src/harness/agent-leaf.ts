@@ -2165,6 +2165,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     const stepByCall = new Map<string, ToolStep>();
     const snapByCall = new Map<string, Map<string, FileSnapshot>>();
     let toolCalls = 0; // 工具调用计数 (prompt 档的路由效率读数, 见 AgentLeafResult.toolCalls)。
+    let llmCalls = 0; // LLM 调用计数 (R-1): pi 腿数 turn_end (一轮 = 一次模型响应); SDK 腿由 runSdkAgentLoop 去重后给。
     let pendingTools = 0; // 在飞工具数 —— >0 时看门狗不计时 (跑 10 分钟的 bun test 是正当工作)
     let streamedChars = 0; // 已流出的正文字节数 (只作读数, 不再当判据)
     // toolCallId → 候选写路径 (可多: hashline_edit 一个 patch 多 section 多文件)。end 且 !isError 才计入。
@@ -2210,6 +2211,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       // 老判据只数 text_delta, 于是"在想"被读成"没反应"; effort 提到 max 之后那是必然误杀。
       noteProgress();
       advisorRecorder?.note(e);
+      if (e.type === 'turn_end') llmCalls++; // SDK 腿不发 turn_end (只发 message_end), 不会双计。
       if (e.type === 'message_update' && e.assistantMessageEvent.type === 'text_delta') {
         streamedChars += e.assistantMessageEvent.delta.length;
       } else if (e.type === 'tool_execution_start') {
@@ -2918,6 +2920,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
         messages = [{ role: 'user', content: sdkPrompt, timestamp: Date.now() } as AgentMessage, ...out.generated];
         // D2 (owner 验收): 逐消息 usage 折算 out 严重低估 —— totalUsage 取自 result.modelUsage 真源。
         sdkUsage = out.totalUsage;
+        llmCalls = out.llmCalls;
       } else {
         // pi 腿: 有图时首条 user 消息 content 升格 parts (text + ImageContent, 照 chat/agent.ts:378-379
         // 同构 —— 文本逐字保留, 图块追加)。零图时 content 仍是 string, 与现状逐字相同。
@@ -3073,7 +3076,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // 只在真撞过时出现 —— 全 0 的字段进 JSON 只是噪声 (缺席 ≠ 0 的口径同上)。
     const denials = touchSessionStore.getStore()?.writeDenials;
     return {
-      text, usage, promptVersion, filesTouched: [...touched], filesRead: [...readPaths], cwd, toolCalls, stalled, writeEffects,
+      text, usage, promptVersion, filesTouched: [...touched], filesRead: [...readPaths], cwd, toolCalls, llmCalls, stalled, writeEffects,
       ...(denials && denials.size > 0 ? { writeDenials: Object.fromEntries(denials) } : {}),
       // #178 produce-by: 仅触发时出现 (同 spin 惯例); 恒 ≤1 (谓词 firedAt 非空短路)。
       ...(produceByFiredAt !== null ? { produceByNudges: 1 } : {}),

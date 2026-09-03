@@ -61,6 +61,7 @@ import { parseMapMarkdown } from '../src/harness/pathfinder/map-store';
 import { computeCost } from '../src/model/cost-ledger';
 import { shellWriteTargets } from '../src/harness/writeset/shell-writes';
 import { isSpecWrite, type SpecWrite } from '../src/harness/goal/spec-write';
+import type { LoopLedger } from '../src/harness/goal/loop-ledger';
 import type { RollbackAnchorKind } from '../src/harness/writeset/rollback-anchor';
 import { detectRuntimeWriteRace, overlapPairsFromWindows, type NodeWindow } from '../src/harness/plan/observers';
 import { capsFor } from '../src/model/model-caps';
@@ -652,6 +653,54 @@ export interface ReadoutResult {
     /** `true` = 板文件缺席 (这条数是 NULL 不是 0, 与「板存在但零介入」分得开)。 */
     boardMissing: boolean;
   } | null;
+  /**
+   * ⑲ 编排循环 (R-1 第 4 步, 2026-09-03; 设计 docs/plan/2026-09-03-r1-ledger-columns.md §5)。
+   * 分母 = `loop` 列非 NULL 的父行 (plan_name goal-orchestrating-loop); 子行 = 同 run_id 且 plan_name 以 `lead-` 开头
+   * (lead 每派一次一行)。全部三态: 算不出 = null (不是 0); 「因某格缺席不可算」的 run / 节点数单列印出, 不省。
+   * ⚠ 设计稿把它编成 ⑱, 但 ⑱ 已是可避免性率 —— 这里顺延成 ⑲, 段名以本文件为准。
+   */
+  loop_readout: {
+    parents: number;
+    childRows: number;
+    /** 逐子行: 并行宽度 = 各层最大节点数, 关键路径深度 = 层数。原值保留 (读数板印原列表), 三分位空 → null。 */
+    width: number[];
+    depth: number[];
+    widthStats: { min: number; median: number; max: number } | null;
+    depthStats: { min: number; median: number; max: number } | null;
+    /**
+     * 加速比 = Σ 子行节点 durationMs / lead 节点 durationMs。⚠ 分母用 **lead 节点墙钟**代父 run 墙钟 —— 父行 `duration_ms`
+     * 列是 schema 占位恒 NULL (dag-record.ts INSERT 段), lead 节点从第一次派发到收尾一直在跑, 它的墙钟就是循环墙钟。
+     * 任一侧缺席 → 该 run 进 unmeasurable, 不进 ratios。
+     */
+    speedup: { ratios: number[]; median: number | null; unmeasurable: number };
+    verifier: { calls: number; perRun: number | null; firstFail: number; reinjected: number };
+    /**
+     * 回灌蒸发 = reinjected ∧ afterReinject 'green' ∧ 回灌后零新派发 (dispatches.length === dispatchesBeforeReinject)。
+     * 分母 = reinjected 的父 run (设计 §5 的公式); 回灌了但没记 dispatchesBeforeReinject 的老记录 → unknown 单列, 两边都不进。
+     */
+    evaporation: { numerator: number; denominator: number; rate: number | null; unknown: number };
+    cards: {
+      calls: number; ok: number; rejectedSchema: number; help: number; rejectedCompile: number; childRunError: number;
+      /** 工具首次直达率 = ok / calls; calls=0 → null。 */
+      firstPassRate: number | null;
+      byCard: Record<string, number>;
+      readOnlyShellBlocked: number;
+    };
+    dispatches: { total: number; perRun: number | null; briefTrue: number; briefFalse: number; briefNull: number; briefReproRate: number | null };
+    /**
+     * LLM 调用 (M3 调用/题按 lead / worker 分解): lead = 父行 `lead` 节点 llmCalls; worker = 子行全部节点 llmCalls 之和。
+     * 节点 llmCalls 为 null (老 runner / 老行) → 不进和, 计入 unmeasured*; perRun 分母只数量到了的那部分。
+     */
+    llmCalls: { lead: number; worker: number; leadPerRun: number | null; workerPerRun: number | null; unmeasuredLeadRuns: number; unmeasuredWorkerNodes: number };
+    /** 尾块缺席率: 子行 agent 节点里 selfReport.self_report === 'missing' / 记了 selfReport 的 agent 节点; 没记的单列。 */
+    trailer: { agentNodes: number; missing: number; unrecorded: number; missingRate: number | null };
+    /** 尾块 acceptance_ran 与节点 acceptance.ran 都在场且不等的节点数 (父行 + 子行)。 */
+    acceptanceRanMismatch: number;
+    /** 节点 acceptance.last 为 exited+inconclusive 的次数; bare = 没有 why (整仓 pytest 那种)。 */
+    inconclusive: { bare: number; nonBare: number };
+    residentPromptChars: { max: number | null; over8000: number; unrecorded: number };
+    preActionLlmCalls: { sum: number; over1: number; unrecorded: number };
+  };
 }
 
 /** 单面的样本充分性(`enough=false` 时这一面的比例**不许当结论读**)。 */
@@ -970,6 +1019,8 @@ interface ReadoutRow {
   spec_write: string | null;
   plan_name: string | null;
   verification: string | null;
+  /** R-1 loop 列原始 JSON (父行才有; 老库无列 → NULL AS loop)。 */
+  loop: string | null;
 }
 
 interface ParsedRow {
@@ -981,6 +1032,8 @@ interface ParsedRow {
   verification: string | null;
   entry: string | null;
   levelIds: string[];
+  /** R-1 ⑲: 分层原样 (宽度 = 每层长度, 深度 = 层数); levelIds 是它的扁平版, 两者同源。 */
+  levels: string[][];
   nodes: DagRunNode[];
   usage: Usage | null;
   outcome: string | null;
@@ -988,6 +1041,8 @@ interface ParsedRow {
   criteria: { judge: boolean; oracle: boolean } | null;
   acceptanceProbe: AcceptanceProbe | null;
   specWrite: SpecWrite | null;
+  /** R-1: 编排循环父行的读数; null = 没走循环 / 子行 / 老记录 / 坏 JSON。 */
+  loop: LoopLedger | null;
 }
 
 /** 词表校验 (老库可能有词表之外的字面量 → 归 unclassified, 同 ⑦ 段的三态纪律)。 */
@@ -1085,6 +1140,7 @@ function emptyWorld(meta: ReadoutResult['meta'], seats?: Record<string, string>,
     cache_trend: { rows: [], zeroIn: 0, unmeasured: 0 },
     // ⑱ 空世界: 没给 boardRoot → null; 给了但板缺席 → {0,0,null,true} (在 computeAvoidability 里算好, 这里只搬运)。
     avoidability: avoidability ?? null,
+    loop_readout: emptyLoopReadout(),
   };
 }
 
@@ -1303,6 +1359,162 @@ function computeAvoidability(boardRoot: string | null): ReadoutResult['avoidabil
   };
 }
 
+
+// ── ⑲ 编排循环 (R-1 第 4 步) ─────────────────────────────────────────────────────────
+function parseLoop(raw: string | null): LoopLedger | null {
+  if (raw === null) return null;
+  try {
+    const v = JSON.parse(raw) as LoopLedger | null;
+    return v && typeof v === 'object' && v.path === 'orchestrating-loop' ? v : null;
+  } catch {
+    return null; // 坏 JSON = 没记 (同 dag-record.loopOf 的读法)
+  }
+}
+
+function loopStats(xs: number[]): { min: number; median: number; max: number } | null {
+  if (xs.length === 0) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  const median = s.length % 2 === 1 ? s[mid]! : (s[mid - 1]! + s[mid]!) / 2;
+  return { min: s[0]!, median, max: s[s.length - 1]! };
+}
+
+function emptyLoopReadout(): ReadoutResult['loop_readout'] {
+  return {
+    parents: 0, childRows: 0, width: [], depth: [], widthStats: null, depthStats: null,
+    speedup: { ratios: [], median: null, unmeasurable: 0 },
+    verifier: { calls: 0, perRun: null, firstFail: 0, reinjected: 0 },
+    evaporation: { numerator: 0, denominator: 0, rate: null, unknown: 0 },
+    cards: { calls: 0, ok: 0, rejectedSchema: 0, help: 0, rejectedCompile: 0, childRunError: 0, firstPassRate: null, byCard: {}, readOnlyShellBlocked: 0 },
+    dispatches: { total: 0, perRun: null, briefTrue: 0, briefFalse: 0, briefNull: 0, briefReproRate: null },
+    llmCalls: { lead: 0, worker: 0, leadPerRun: null, workerPerRun: null, unmeasuredLeadRuns: 0, unmeasuredWorkerNodes: 0 },
+    trailer: { agentNodes: 0, missing: 0, unrecorded: 0, missingRate: null },
+    acceptanceRanMismatch: 0,
+    inconclusive: { bare: 0, nonBare: 0 },
+    residentPromptChars: { max: null, over8000: 0, unrecorded: 0 },
+    preActionLlmCalls: { sum: 0, over1: 0, unrecorded: 0 },
+  };
+}
+
+/** 父行 = loop 非 NULL; 子行 = 同 run_id 且 plan_name 以 `lead-` 开头。父行没 run_id 的 (不该发生) 只算自己, 子行归不到它。 */
+function computeLoopReadout(parsed: ParsedRow[]): ReadoutResult['loop_readout'] {
+  const out = emptyLoopReadout();
+  const parents = parsed.filter((r) => r.loop !== null);
+  if (parents.length === 0) return out;
+  out.parents = parents.length;
+  const childrenByRun = new Map<string, ParsedRow[]>();
+  for (const r of parsed) {
+    if (r.runId === null || r.loop !== null || !(r.planName ?? '').startsWith('lead-')) continue;
+    const g = childrenByRun.get(r.runId);
+    if (g) g.push(r);
+    else childrenByRun.set(r.runId, [r]);
+  }
+  const nodeAcc = (n: DagRunNode): void => {
+    // 尾块 / 验收对账 / inconclusive: 节点级三态原样数, 父行 lead 节点也算 (它也是 agent 叶)。
+    if (n.kind === 'agent') {
+      if (n.selfReport === undefined) out.trailer.unrecorded++;
+      else {
+        out.trailer.agentNodes++;
+        if (n.selfReport?.self_report === 'missing') out.trailer.missing++;
+      }
+    }
+    const sr = n.selfReport as { acceptance_ran?: unknown } | null | undefined;
+    if (sr && typeof sr.acceptance_ran === 'boolean' && n.acceptance && typeof n.acceptance.ran === 'boolean' && sr.acceptance_ran !== n.acceptance.ran) {
+      out.acceptanceRanMismatch++;
+    }
+    const last = n.acceptance?.last;
+    if (last && last.kind === 'exited' && last.verdict === 'inconclusive') {
+      if (last.why) out.inconclusive.nonBare++;
+      else out.inconclusive.bare++;
+    }
+  };
+  let leadRunsMeasured = 0;
+  let workerNodesMeasured = 0;
+  for (const p of parents) {
+    const loop = p.loop!;
+    const children = p.runId === null ? [] : (childrenByRun.get(p.runId) ?? []);
+    out.childRows += children.length;
+    // verifier / 回灌
+    out.verifier.calls += loop.verifier.calls;
+    if (loop.verifier.firstVerdict === 'fail') out.verifier.firstFail++;
+    if (loop.verifier.reinjected) {
+      out.verifier.reinjected++;
+      if (loop.dispatchesBeforeReinject === undefined) out.evaporation.unknown++;
+      else {
+        out.evaporation.denominator++;
+        if (loop.verifier.afterReinject === 'green' && loop.dispatches.length === loop.dispatchesBeforeReinject) out.evaporation.numerator++;
+      }
+    }
+    // 卡
+    out.cards.calls += loop.cards.calls;
+    out.cards.ok += loop.cards.ok;
+    out.cards.rejectedSchema += loop.cards.rejectedSchema;
+    out.cards.help += loop.cards.help;
+    out.cards.rejectedCompile += loop.cards.rejectedCompile;
+    out.cards.childRunError += loop.cards.childRunError;
+    out.cards.readOnlyShellBlocked += loop.cards.readOnlyShellBlocked ?? 0;
+    for (const [card, n] of Object.entries(loop.cards.byCard ?? {})) out.cards.byCard[card] = (out.cards.byCard[card] ?? 0) + (n ?? 0);
+    // 派发 / brief
+    out.dispatches.total += loop.dispatches.length;
+    for (const d of loop.dispatches) {
+      if (d.briefHasRepro === true) out.dispatches.briefTrue++;
+      else if (d.briefHasRepro === false) out.dispatches.briefFalse++;
+      else out.dispatches.briefNull++;
+    }
+    // 常驻 prompt / 动手前调用
+    if (loop.residentPromptChars === null || loop.residentPromptChars === undefined) out.residentPromptChars.unrecorded++;
+    else {
+      out.residentPromptChars.max = Math.max(out.residentPromptChars.max ?? 0, loop.residentPromptChars);
+      if (loop.residentPromptChars > 8000) out.residentPromptChars.over8000++;
+    }
+    if (loop.preActionLlmCalls === null || loop.preActionLlmCalls === undefined) out.preActionLlmCalls.unrecorded++;
+    else {
+      out.preActionLlmCalls.sum += loop.preActionLlmCalls;
+      if (loop.preActionLlmCalls > 1) out.preActionLlmCalls.over1++;
+    }
+    // lead 节点: LLM 调用 + 墙钟分母
+    const lead = p.nodes.find((n) => n.id === 'lead');
+    if (typeof lead?.llmCalls === 'number') {
+      out.llmCalls.lead += lead.llmCalls;
+      leadRunsMeasured++;
+    } else out.llmCalls.unmeasuredLeadRuns++;
+    for (const n of p.nodes) nodeAcc(n);
+    // 子行: 宽度 / 深度 / 节点墙钟 / worker LLM 调用
+    let childMs = 0;
+    let childMsComplete = children.length > 0;
+    for (const c of children) {
+      const levels = c.levels;
+      out.width.push(levels.length === 0 ? 0 : Math.max(...levels.map((l) => l.length)));
+      out.depth.push(levels.length);
+      for (const n of c.nodes) {
+        nodeAcc(n);
+        if (typeof n.durationMs === 'number') childMs += n.durationMs;
+        else childMsComplete = false;
+        if (typeof n.llmCalls === 'number') {
+          out.llmCalls.worker += n.llmCalls;
+          workerNodesMeasured++;
+        } else out.llmCalls.unmeasuredWorkerNodes++;
+      }
+    }
+    if (childMsComplete && typeof lead?.durationMs === 'number' && lead.durationMs > 0) out.speedup.ratios.push(childMs / lead.durationMs);
+    else out.speedup.unmeasurable++;
+  }
+  out.widthStats = loopStats(out.width);
+  out.depthStats = loopStats(out.depth);
+  out.speedup.median = loopStats(out.speedup.ratios)?.median ?? null;
+  out.verifier.perRun = out.verifier.calls / out.parents;
+  out.evaporation.rate = out.evaporation.denominator > 0 ? out.evaporation.numerator / out.evaporation.denominator : null;
+  out.cards.firstPassRate = out.cards.calls > 0 ? out.cards.ok / out.cards.calls : null;
+  out.dispatches.perRun = out.dispatches.total / out.parents;
+  const judged = out.dispatches.briefTrue + out.dispatches.briefFalse;
+  out.dispatches.briefReproRate = judged > 0 ? out.dispatches.briefTrue / judged : null;
+  out.llmCalls.leadPerRun = leadRunsMeasured > 0 ? out.llmCalls.lead / leadRunsMeasured : null;
+  // worker 按**父 run** 摊 (读数问的是「每题 worker 烧了几次」), 只摊给量到了至少一个节点的 run 数不好定义 → 摊给全部父 run, 缺席节点数在旁边印。
+  out.llmCalls.workerPerRun = workerNodesMeasured > 0 ? out.llmCalls.worker / out.parents : null;
+  out.trailer.missingRate = out.trailer.agentNodes > 0 ? out.trailer.missing / out.trailer.agentNodes : null;
+  return out;
+}
+
 export function readout(opts: { db: Database; limit?: number; dbPath?: string; mapsCwd?: string; mcpDb?: Database; seats?: Record<string, string>; boardRoot?: string | null }): ReadoutResult {
   const limit = opts.limit ?? 20;
   const meta: ReadoutResult['meta'] = { db: opts.dbPath ?? '(injected)', limit, readonly: true };
@@ -1324,7 +1536,7 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
   const optionalCol = (name: string) => (haveCols.includes(name) ? `, ${name}` : `, NULL AS ${name}`);
   const rows = db
     .query(
-      `SELECT id, created_at, levels, nodes, usage${optionalCol('run_id')}${optionalCol('observations')}${optionalCol('entry')}${optionalCol('outcome')}${optionalCol('reused')}${optionalCol('criteria')}${optionalCol('claim_check')}${optionalCol('artifact_move')}${optionalCol('write_race')}${optionalCol('rollback')}${optionalCol('acceptance_probe')}${optionalCol('spec_write')}${optionalCol('plan_name')}${optionalCol('verification')}` +
+      `SELECT id, created_at, levels, nodes, usage${optionalCol('run_id')}${optionalCol('observations')}${optionalCol('entry')}${optionalCol('outcome')}${optionalCol('reused')}${optionalCol('criteria')}${optionalCol('claim_check')}${optionalCol('artifact_move')}${optionalCol('write_race')}${optionalCol('rollback')}${optionalCol('acceptance_probe')}${optionalCol('spec_write')}${optionalCol('plan_name')}${optionalCol('verification')}${optionalCol('loop')}` +
         ` FROM omd_dag_runs ORDER BY created_at ASC`,
     )
     .all() as ReadoutRow[];
@@ -1350,9 +1562,13 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
     }
     // levels/nodes 同 usage 的防御: 坏行不炸整块板, 按"这批节点没记"处理 (归四格「未记」, 审查 F2)。
     let levelIds: string[] = [];
+    let levels: string[][] = [];
     try {
       const l = JSON.parse(r.levels) as unknown;
-      if (Array.isArray(l)) levelIds = (l as string[][]).flat();
+      if (Array.isArray(l)) {
+        levels = (l as unknown[]).map((lv) => (Array.isArray(lv) ? (lv as string[]) : []));
+        levelIds = levels.flat();
+      }
     } catch {
       /* 解析失败 = 没记 */
     }
@@ -1372,6 +1588,7 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
       // (run/solve/map_deliver) —— 同一入口不因改名在分布里裂成两行。真源 = TOOL_RENAMES 同一张表。
       entry: normalizeEntry(r.entry),
       levelIds,
+      levels,
       nodes,
       usage,
       outcome: r.outcome,
@@ -1381,6 +1598,7 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
       specWrite: parseSpecWrite(r.spec_write),
       planName: r.plan_name,
       verification: r.verification,
+      loop: parseLoop(r.loop),
     };
   });
 
@@ -2009,6 +2227,9 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
     seatsRef: opts.seats ?? {},
   };
 
+  // ── ⑲ 编排循环 (R-1 第 4 步): 父行 loop 列 + lead-* 子行 ─────────────────────────
+  const loop_readout = computeLoopReadout(parsed);
+
   // ── ⑰ cache 趋势 (记录级时序, 取**最近** 20 行) ──────────────────────────────
   // ⚠ 与 ⑫ 的展示窗口方向相反: 那边取**最早** limit 个 run, 这里取 created_at 升序的**末尾**
   //   20 条记录 (不归并)。两处切片不同, 数不可比 —— 头注标出, 别读成同一窗口。
@@ -2100,6 +2321,7 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
     mcp_policy: mcpPolicy,
     cache_trend,
     avoidability,
+    loop_readout,
   };
 }
 
@@ -2355,6 +2577,26 @@ function printNewSegments(r: ReadoutResult, dbPath: string): void {
   }
   if (ct.rows.length === 0) console.log(`   (无记录)`);
   console.log(`   leavesIn=0 的行 ${ct.zeroIn} (没跑过 leaf ≠ 0%) · usage 没记的行 ${ct.unmeasured} (标 —)`);
+
+  const lp = r.loop_readout;
+  const pct = (x: number | null): string => (x === null ? '算不出' : `${(x * 100).toFixed(1)}%`);
+  const f2 = (x: number | null): string => (x === null ? '算不出' : x.toFixed(2));
+  console.log(`\n⑲ 编排循环 (R-1 · loop 列非 NULL 的父行 + 同 run_id 的 lead-* 子行)`);
+  console.log(`   ## 为什么单开一段: P3 的判词 (M3 调用/题 < 50 · 终审 ≤ 1 次 · 回灌不该蒸发) 全长在循环路径上, 而 ①-⑱ 把父 run 与派发出的子 run 加成一笔账。这里按父行归并、按 lead / worker 分开数; 每一格「缺席不可算」的数都印出来, 不省。`);
+  if (lp.parents === 0) {
+    console.log(`   无循环父行 (loop 列全 NULL —— 没走过编排循环, 或记录早于本列)`);
+  } else {
+    console.log(`   父 run ${lp.parents} · 子行 ${lp.childRows} · 派发/run ${f2(lp.dispatches.perRun)}`);
+    console.log(`   LLM 调用: lead ${lp.llmCalls.lead} (${f2(lp.llmCalls.leadPerRun)}/run, ${lp.llmCalls.unmeasuredLeadRuns} run 没记) · worker ${lp.llmCalls.worker} (${f2(lp.llmCalls.workerPerRun)}/run, ${lp.llmCalls.unmeasuredWorkerNodes} 节点没记)`);
+    console.log(`   并行宽度 [${lp.width.join(',')}]${lp.widthStats ? ` min/中位/max ${lp.widthStats.min}/${lp.widthStats.median}/${lp.widthStats.max}` : ''} · 关键路径深度 [${lp.depth.join(',')}]${lp.depthStats ? ` min/中位/max ${lp.depthStats.min}/${lp.depthStats.median}/${lp.depthStats.max}` : ''}`);
+    console.log(`   加速比: 中位 ${f2(lp.speedup.median)} (Σ子节点墙钟 / lead 墙钟; 判词 > 1) · ${lp.speedup.unmeasurable} 个 run 因 durationMs 缺席不可算`);
+    console.log(`   终审: 调用 ${lp.verifier.calls} (${f2(lp.verifier.perRun)}/run, 判词 ≤ 1) · 首判红 ${lp.verifier.firstFail} · 回灌 ${lp.verifier.reinjected}`);
+    console.log(`   回灌蒸发率: ${lp.evaporation.numerator}/${lp.evaporation.denominator} = ${pct(lp.evaporation.rate)} (回灌后零新派发且 oracle 绿; 老记录没分界线 ${lp.evaporation.unknown} 个不进分母)`);
+    console.log(`   工具首次直达率: ${lp.cards.ok}/${lp.cards.calls} = ${pct(lp.cards.firstPassRate)} · zod 拒 ${lp.cards.rejectedSchema} · help ${lp.cards.help} · 编译拒 ${lp.cards.rejectedCompile} · 子 run 抛错 ${lp.cards.childRunError} · 只读 bash 拒 ${lp.cards.readOnlyShellBlocked} · 按卡 ${Object.entries(lp.cards.byCard).map(([k, v]) => `${k}×${v}`).join(' ') || '—'}`);
+    console.log(`   brief 含复现输出 (启发式): ${lp.dispatches.briefTrue}/${lp.dispatches.briefTrue + lp.dispatches.briefFalse} = ${pct(lp.dispatches.briefReproRate)} · 无 brief 槽 ${lp.dispatches.briefNull}`);
+    console.log(`   尾块缺席率: ${lp.trailer.missing}/${lp.trailer.agentNodes} = ${pct(lp.trailer.missingRate)} (agent 节点; 没记 selfReport ${lp.trailer.unrecorded}) · acceptance_ran 不一致 ${lp.acceptanceRanMismatch} · inconclusive bare ${lp.inconclusive.bare} / 非 bare ${lp.inconclusive.nonBare}`);
+    console.log(`   lead 常驻 prompt: max ${lp.residentPromptChars.max ?? '没记'} 字符 · >8000 ${lp.residentPromptChars.over8000} · 没记 ${lp.residentPromptChars.unrecorded} · 动手前 LLM 调用 Σ${lp.preActionLlmCalls.sum} (>1 的 run ${lp.preActionLlmCalls.over1}, 没记 ${lp.preActionLlmCalls.unrecorded})`);
+  }
 }
 
 

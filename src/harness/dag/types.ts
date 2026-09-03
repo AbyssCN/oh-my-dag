@@ -955,6 +955,8 @@ export interface LeafResult {
   sources?: string[];
   /** agent leaf 的工具调用次数 (来自 AgentLeafResult.toolCalls; prompt 档的路由效率读数)。 */
   toolCalls?: number;
+  /** agent leaf 的 LLM 调用次数 (来自 AgentLeafResult.llmCalls, R-1 2026-09-03)。缺席 = runner 没报, 不编 0。 */
+  llmCalls?: number;
   /**
    * agent leaf 经 **bash 工具**跑过的命令 + 退出码 (2026-08-05, 来自 AgentLeafResult.shellRuns)。
    *

@@ -4499,6 +4499,7 @@ async function executePlan(
       let filesTouched: string[] = [];
       let filesRead: string[] = [];
       let toolCalls: number | undefined;
+      let llmCalls: number | undefined;
       let toolSteps: LeafResult['toolSteps'];
       let toolStepsDropped: number | undefined;
       // agent leaf 经 bash 跑过的命令 + 退出码 (2026-08-05)。undefined = 这条链上没人报
@@ -4775,6 +4776,7 @@ async function executePlan(
         // 产物根: leaf 自报的 cwd 最准 (它就是写文件的那个进程) > continuity 根 > 本进程 cwd。
         artifactRoot = r.cwd;
         toolCalls = r.toolCalls;
+        llmCalls = r.llmCalls;
         // 「诚实自验」的记录通道 (2026-08-05): agent 真跑过 `bun test` 这件事此前在引擎记录里
         // **完全不存在** —— 于是「产物声称的引擎校验动作 ⊆ 引擎记录的动作」这个谓词的记录集
         // 缺了主要合法元素, 诚实节点与顺手编一句的节点在 facts 上长得一模一样。
@@ -4973,7 +4975,7 @@ async function executePlan(
           // 与 verifier 判词那个坑同形: **最需要证据的那条路径, 恰好是把证据扔掉的那条。**
           // (定义挪到刀①-1 第二支之前 —— 它的 infra 隔离出口也要带这条尾巴。)
           const observabilityTail = (): Partial<LeafResult> => ({
-            ...(toolCalls !== undefined ? { toolCalls } : {}),
+            ...(toolCalls !== undefined ? { toolCalls } : {}), ...(llmCalls !== undefined ? { llmCalls } : {}),
             ...(shellRuns ? { shellRuns } : {}),
             ...(watchdog ? { watchdog } : {}),
             ...(writeCounts ? { writeCounts } : {}),
@@ -5222,7 +5224,7 @@ async function executePlan(
         : [];
       // `artifactRoot` 跟着 `filesTouched` 一起出图: 一组相对路径离开它的根就没有意义,
       // 而 R2 隔离档下这个根与引擎进程的 cwd 不是同一个 (见 LeafResult.artifactRoot 的注)。
-      const leaf: LeafResult = { id, status: 'done', kind: useAgent ? 'agent' : 'inproc', model, output: text, deps: node.depends_on ?? [], usage, filesTouched, ...(artifactRoot ? { artifactRoot } : {}), ...(filesRead.length ? { filesRead } : {}), ...(toolCalls !== undefined ? { toolCalls } : {}), ...(shellRuns ? { shellRuns } : {}), ...(writeCounts ? { writeCounts } : {}), ...(gates ? { gates } : {}), ...(toolSteps ? { toolSteps } : {}), ...(toolStepsDropped ? { toolStepsDropped } : {}), ...(writeCandidates.length ? { writeCandidates } : {}),
+      const leaf: LeafResult = { id, status: 'done', kind: useAgent ? 'agent' : 'inproc', model, output: text, deps: node.depends_on ?? [], usage, filesTouched, ...(artifactRoot ? { artifactRoot } : {}), ...(filesRead.length ? { filesRead } : {}), ...(toolCalls !== undefined ? { toolCalls } : {}), ...(llmCalls !== undefined ? { llmCalls } : {}), ...(shellRuns ? { shellRuns } : {}), ...(writeCounts ? { writeCounts } : {}), ...(gates ? { gates } : {}), ...(toolSteps ? { toolSteps } : {}), ...(toolStepsDropped ? { toolStepsDropped } : {}), ...(writeCandidates.length ? { writeCandidates } : {}),
         // S-1 (2026-08-30): 自修环三态落账。`!== undefined` 是三态的守门条件 —— 与
         // dag-record.ts:859 的读侧逐字同款; 任何 `?? null` 都会把「不适用」抹成「截断」。
         ...(selfRepair !== undefined ? { selfRepair } : {}),
@@ -5257,7 +5259,7 @@ async function executePlan(
         ...(toolStepsDropped ? { toolStepsDropped } : {}),
         // 与失败出口 (47bf576) 对齐 —— 分布要有分母, 见 saveDoneCheckpoint 的 shellRuns 注。
         ...(shellRuns ? { shellRuns } : {}),
-        ...(toolCalls !== undefined ? { toolCalls } : {}),
+        ...(toolCalls !== undefined ? { toolCalls } : {}), ...(llmCalls !== undefined ? { llmCalls } : {}),
         ...(writeCounts ? { writeCounts } : {}),
       });
       return leaf;

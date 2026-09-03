@@ -296,6 +296,13 @@ export interface AgentLeafResult {
    * 才看得见 (同样过闸, 调了 8 次工具还是 30 次, 差的是钱和墙钟)。省略 = 该 runner 不统计。
    */
   toolCalls?: number;
+  /**
+   * 本次 leaf 的 **LLM 调用次数** (R-1, 2026-09-03)。pi 通道 = `turn_end` 事件计数 (一轮 = 一次模型响应);
+   * SDK 通道 = 按 API message id 去重的 assistant 消息数 (同一次调用按 content 块拆成多条, id 相同)。
+   * **与 toolCalls 两回事**: 一轮可发多个工具调用, 也可零工具直接收尾。省略 = 该 runner 不统计 (老 runner / 替身)。
+   * 它是「M3 调用/题」按 lead / worker 分解的引擎侧唯一来源 —— 桥日志一文件一请求只能按批算, 分不到题。
+   */
+  llmCalls?: number;
   /** 早期心跳闸判定的停摆(issue #5): provider 挂起/排队, 未等满硬超时即中止。executor 据此标 failed +
    *  留 stall 败因(而非把近零输出当 done)。省略/false = 正常完成或硬超时。 */
   stalled?: boolean;

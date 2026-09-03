@@ -224,6 +224,11 @@ export interface SdkLoopOut {
   /** success 时必有;tolerateAbort 且中途 abort 时缺席。 */
   result?: SdkResult;
   aborted: boolean;
+  /**
+   * LLM 调用次数 (R-1): 按 API message id 去重的 assistant 消息数 —— SDK 把同一次调用按 content 块拆成
+   * 多条 assistant 消息 (id 相同), 逐条数就是三胞胎; 去重后一 id = 一次调用。全零 usage 的消息不计 (同 ledgerRows 口径)。
+   */
+  llmCalls: number;
 }
 
 /**
@@ -371,6 +376,6 @@ export async function runSdkAgentLoop(o: SdkLoopOpts): Promise<SdkLoopOut> {
     throw new Error(`[claude-sdk] provider 错误: ${result.subtype}${detail ? ` — ${detail}` : ''}`);
   }
   o.onEvent?.({ type: 'agent_end', messages: generated });
-  return { generated, ledgerRows, totalUsage, ...(result ? { result } : {}), aborted };
+  return { generated, ledgerRows, totalUsage, ...(result ? { result } : {}), aborted, llmCalls: usageById.size };
 }
 

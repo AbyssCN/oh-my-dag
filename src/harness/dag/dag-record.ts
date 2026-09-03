@@ -164,6 +164,13 @@ export interface DagRunNode {
   durationMs?: number | null;
   turns?: number | null;
   /**
+   * R-1 (2026-09-03): agent leaf 的工具调用次数与 **LLM 调用次数** (来源 LeafResult.toolCalls / llmCalls)。
+   * null = 该节点没报 (非 agent 叶 / 老 runner / 老行), **绝不** `?? 0`。`llmCalls` 是「M3 调用/题」按
+   * lead / worker 分解的唯一引擎侧来源 (桥日志一文件一请求只能按批算)。读侧: omd-readout ⑲ 段。
+   */
+  toolCalls?: number | null;
+  llmCalls?: number | null;
+  /**
    * ⑥(c) injectedTokens (2026-08-19): 语义 ⊆ tokensIn, 标记**注入**部分 token
    * (来自预置上下文 / prompt cache / 模板 / 工具结果) 与自然生成的比例。Per-node。
    *
@@ -944,6 +951,9 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
           cacheHitTokens: typeof r.usage?.cacheHit === 'number' ? r.usage.cacheHit : null,
           durationMs: typeof (r as { durationMs?: unknown }).durationMs === 'number' ? (r as { durationMs: number }).durationMs : null,
           turns: typeof (r as { turns?: unknown }).turns === 'number' ? (r as { turns: number }).turns : null,
+          // R-1: 两个计数只搬运 (LeafResult 上缺席 → null, 不是 0)。
+          toolCalls: typeof r.toolCalls === 'number' ? r.toolCalls : null,
+          llmCalls: typeof r.llmCalls === 'number' ? r.llmCalls : null,
           // ⑥(c) 同上接住形状: 当前来源链未通 → 一律 null; 采集片接上后本行无需再动。
           injectedTokens: typeof r.injectedTokens === 'number' ? r.injectedTokens : null,
           // C-0 (2026-08-21): 跨轮身份 (引擎在 settle 时写 currentEngineRound)。读侧允许 `null` (= 没记 / 链未接),

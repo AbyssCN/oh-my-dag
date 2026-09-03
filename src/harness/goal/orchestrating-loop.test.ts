@@ -454,6 +454,8 @@ describe('R-1 账本: runGoal 结果上的 loop', () => {
     });
     expect(r.loop!.residentPromptChars).toBeGreaterThan(1000);
     expect(r.loop!.cards.calls).toBe(0);
+    // R-1 第 4 步: 回灌分界线 —— 第二跑开始时派发数 (这里 lead 一次没派 → 0, **是 0 不是缺席**); 读侧靠它判「回灌后有没有新派发」。
+    expect(r.loop!.dispatchesBeforeReinject).toBe(0);
     const v1 = await runGoal('修 add()', baseCfg(cwd, { orchestratingLoop: false, _classify: classify({ n: 0 }, EXEC_ACCEPT), _runDag: async (plan) => ({ plan, sessionId: 's', levels: [], results: { execute: { id: 'execute', status: 'done', kind: 'conductor', output: 'ok', deps: [], usage: { in: 1, out: 1 }, rounds: 1, converged: true }, accept: { id: 'accept', status: 'done', kind: 'command', output: '', deps: ['execute'], usage: { in: 0, out: 0 } } }, usage: { conductor: { in: 0, out: 0 }, leavesIn: 0, leavesOut: 0, leavesCacheHit: 0 }, reusedNodes: [], observations: [] }) as unknown as ExecutorDagResult }));
     expect(v1.loop).toBeUndefined();
   });
@@ -466,5 +468,6 @@ describe('R-1 账本: runGoal 结果上的 loop', () => {
     });
     expect(r.loop!.verifier).toEqual({ calls: 1, firstVerdict: 'pass', target: null, reinjected: false, afterReinject: 'skipped' });
     expect(r.loop!.preActionLlmCalls).toBeNull();
+    expect(r.loop!.dispatchesBeforeReinject).toBeUndefined(); // 没回灌 = 没有分界线 (缺席, 不是 0)
   });
 });

@@ -30,6 +30,7 @@ import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { createDagRecorder } from './dag/dag-record';
 import type { SpecWrite } from './goal/spec-write';
+import type { LoopLedger } from './goal/loop-ledger';
 import type { ExecutorDagResult } from './dag/types';
 import { CLAIM_CHECK_MIN_NODES, LOOP_NO_MOVE_MIN_N, faceSufficiency, readout, reconstructWriteRace, summarizeFaces, summarizeLoopRounds, type ReadoutResult } from '../../scripts/omd-readout';
 import type { NodeWindow } from './plan/observers';
@@ -1846,5 +1847,96 @@ describe('#209 spec_write_sampling', () => {
     expect(r.runs[0]!.specWrite).toBeNull();
     expect(r.spec_write_sampling).toEqual({ denominator: 0, wrote: 0, missing: 0, notNeeded: 0, contractRuns: 0, missRate: null });
     db.close();
+  });
+});
+
+describe('omd-readout · ⑲ 编排循环 (R-1 第 4 步, 2026-09-03)', () => {
+  const loopOf = (over: Partial<LoopLedger>): string =>
+    JSON.stringify({
+      path: 'orchestrating-loop', route: { kind: 'none', chainHit: false }, preActionLlmCalls: 1, residentPromptChars: 6400,
+      verifier: { calls: 1, firstVerdict: 'pass', target: null, reinjected: false, afterReinject: 'skipped' },
+      cards: { calls: 1, ok: 1, rejectedSchema: 0, help: 0, rejectedCompile: 0, childRunError: 0, byCard: { work: 1 }, readOnlyShellBlocked: 0 },
+      dispatches: [{ seq: 1, card: 'work', nodes: 1, briefHasRepro: null, failed: 0 }],
+      ...over,
+    });
+  const ins = (db: Database, id: string, at: number, plan: string, runId: string, levels: string[][], nodes: unknown[], loop: string | null): void => {
+    db.run(
+      `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, entry, levels, nodes, usage, loop) VALUES (?, ?, ?, ?, NULL, ?, 'solve', ?, ?, ?, ?)`,
+      [id, at, plan, nodes.length, runId, JSON.stringify(levels), JSON.stringify(nodes), JSON.stringify({ conductorIn: 0, conductorOut: 0, leavesIn: 0, leavesOut: 0, leavesCacheHit: 0 }), loop],
+    );
+  };
+  const makeLoopFixture = (): Database => {
+    const db = new Database(':memory:');
+    createDagRecorder({ db });
+    // P1: 终审红 → 回灌 → 绿, 回灌后零新派发 (= 蒸发); 两次派发 (brief 有/无复现); lead 20 次 LLM 调用, 墙钟 1000ms。
+    ins(db, 'p1', 100, 'goal-orchestrating-loop', 'P1', [['lead'], ['accept']], [
+      { id: 'lead', kind: 'agent', status: 'done', deps: [], durationMs: 1000, llmCalls: 20, selfReport: { self_report: 'leaf', acceptance_ran: true }, acceptance: { ran: false, rounds: 0, last: null } },
+      { id: 'accept', kind: 'command', status: 'done', deps: ['lead'] },
+    ], loopOf({
+      verifier: { calls: 1, firstVerdict: 'fail', target: 'criterion', reinjected: true, afterReinject: 'green' },
+      cards: { calls: 3, ok: 2, rejectedSchema: 1, help: 0, rejectedCompile: 0, childRunError: 0, byCard: { work: 1, spawn: 1 }, readOnlyShellBlocked: 0 },
+      dispatches: [{ seq: 1, card: 'work', nodes: 1, briefHasRepro: true, failed: 0 }, { seq: 2, card: 'spawn', nodes: 2, briefHasRepro: false, failed: 0 }],
+      dispatchesBeforeReinject: 2,
+    }));
+    ins(db, 'c1', 101, 'lead-work-a', 'P1', [['d1.a']], [{ id: 'd1.a', kind: 'agent', status: 'done', deps: [], durationMs: 400, llmCalls: 10, selfReport: { self_report: 'missing' } }], null);
+    ins(db, 'c2', 102, 'lead-spawn', 'P1', [['d2.x', 'd2.y']], [
+      { id: 'd2.x', kind: 'agent', status: 'done', deps: [], durationMs: 300, llmCalls: 5, acceptance: { ran: true, rounds: 1, last: { kind: 'exited', verdict: 'inconclusive' } } },
+      { id: 'd2.y', kind: 'agent', status: 'done', deps: [], durationMs: 300, llmCalls: null },
+    ], null);
+    // P2: 没回灌; lead 墙钟没记 (→ 加速比不可算); 一次派发无 brief 槽; 老 runner 的 lead 没报 llmCalls。
+    ins(db, 'p2', 200, 'goal-orchestrating-loop', 'P2', [['lead']], [{ id: 'lead', kind: 'agent', status: 'done', deps: [], durationMs: null, llmCalls: null }], loopOf({}));
+    ins(db, 'c3', 201, 'lead-work-b', 'P2', [['d1.b']], [{ id: 'd1.b', kind: 'agent', status: 'done', deps: [], durationMs: 100, llmCalls: 3 }], null);
+    // 非循环行 (v1 solve 的执行段): 一格都不进 —— 它的 99 次调用若混进 worker, lead/worker 分解就假了。
+    ins(db, 'x1', 300, 'goal-execute', 'X', [['execute']], [{ id: 'execute', kind: 'conductor', status: 'done', deps: [], llmCalls: 99 }], null);
+    return db;
+  };
+
+  test('★ 父行归并 / lead-worker 分解 / 宽度深度 / 加速比缺席单列 / 回灌蒸发 / 直达率 / brief 三态 / 尾块三态', () => {
+    const lp = readout({ db: makeLoopFixture() }).loop_readout;
+    expect(lp.parents).toBe(2);
+    expect(lp.childRows).toBe(3);
+    expect(lp.width).toEqual([1, 2, 1]);
+    expect(lp.depth).toEqual([1, 1, 1]);
+    expect(lp.widthStats).toEqual({ min: 1, median: 1, max: 2 });
+    // 加速比: P1 = (400+300+300)/1000 = 1.0; P2 lead 墙钟 NULL → 「1 个 run 因 durationMs 缺席不可算」, **不并进分母**。
+    expect(lp.speedup).toEqual({ ratios: [1], median: 1, unmeasurable: 1 });
+    // LLM 调用: lead 20 (P2 没报 → unmeasuredLeadRuns 1, /run 只摊给量到的 1 个); worker 10+5+3 = 18 (d2.y 没报 → 1 节点); x1 的 99 不进。
+    expect(lp.llmCalls).toEqual({ lead: 20, worker: 18, leadPerRun: 20, workerPerRun: 9, unmeasuredLeadRuns: 1, unmeasuredWorkerNodes: 1 });
+    expect(lp.verifier).toEqual({ calls: 2, perRun: 1, firstFail: 1, reinjected: 1 });
+    // 回灌蒸发: 分母 = 回灌过的 (只有 P1); P1 回灌后零新派发 ∧ 绿 → 1/1。P2 没回灌不进分母 (设计 §5 的公式; §6 例子里的「1/2」把没回灌的也算进了分母, 以 §5 为准)。
+    expect(lp.evaporation).toEqual({ numerator: 1, denominator: 1, rate: 1, unknown: 0 });
+    expect(lp.cards.calls).toBe(4);
+    expect(lp.cards.ok).toBe(3);
+    expect(lp.cards.firstPassRate).toBeCloseTo(0.75, 10);
+    expect(lp.cards.byCard).toEqual({ work: 2, spawn: 1 });
+    expect(lp.dispatches).toEqual({ total: 3, perRun: 1.5, briefTrue: 1, briefFalse: 1, briefNull: 1, briefReproRate: 0.5 });
+    // 尾块: 记了 selfReport 的 agent 节点 2 个 (lead@P1 leaf · d1.a missing) → 1/2; 其余 4 个 agent 节点没记 → 单列, 不进分母。
+    expect(lp.trailer).toEqual({ agentNodes: 2, missing: 1, unrecorded: 4, missingRate: 0.5 });
+    expect(lp.acceptanceRanMismatch).toBe(1); // lead@P1: 尾块说跑了, 记录说没跑
+    expect(lp.inconclusive).toEqual({ bare: 1, nonBare: 0 });
+    expect(lp.residentPromptChars).toEqual({ max: 6400, over8000: 0, unrecorded: 0 });
+    expect(lp.preActionLlmCalls).toEqual({ sum: 2, over1: 0, unrecorded: 0 });
+  });
+
+  test('回灌了但老记录没 dispatchesBeforeReinject → unknown 单列, 分子分母都不动', () => {
+    const db = new Database(':memory:');
+    createDagRecorder({ db });
+    ins(db, 'p', 1, 'goal-orchestrating-loop', 'P', [['lead']], [{ id: 'lead', kind: 'agent', status: 'done', deps: [] }],
+      loopOf({ verifier: { calls: 1, firstVerdict: 'fail', target: 'implementation', reinjected: true, afterReinject: 'green' }, dispatches: [] }));
+    expect(readout({ db }).loop_readout.evaporation).toEqual({ numerator: 0, denominator: 0, rate: null, unknown: 1 });
+  });
+
+  test('空库 / 老库无 loop 列 → parents 0, 全部比率 null (不编 0)', () => {
+    const db = new Database(':memory:');
+    createDagRecorder({ db });
+    const lp = readout({ db }).loop_readout;
+    expect(lp.parents).toBe(0);
+    expect(lp.llmCalls.leadPerRun).toBeNull();
+    expect(lp.evaporation.rate).toBeNull();
+    expect(lp.speedup.median).toBeNull();
+    const old = new Database(':memory:');
+    old.run(`CREATE TABLE omd_dag_runs (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, plan_name TEXT NOT NULL, node_count INTEGER NOT NULL, question TEXT, levels TEXT NOT NULL, nodes TEXT NOT NULL, usage TEXT NOT NULL)`);
+    old.run(`INSERT INTO omd_dag_runs VALUES ('o', 1, 'goal-orchestrating-loop', 1, NULL, '[["lead"]]', '[]', '{"conductorIn":0,"conductorOut":0,"leavesIn":0,"leavesOut":0,"leavesCacheHit":0}')`);
+    expect(readout({ db: old }).loop_readout.parents).toBe(0); // 列不在 = 没记, 不是「循环 run」
   });
 });

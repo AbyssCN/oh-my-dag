@@ -173,6 +173,27 @@ describe('留痕的派生面 — 命令原文 + 效果指标计数', () => {
     rec.close();
   });
 
+  test('R-1 (2026-09-03): toolCalls / llmCalls 原样进节点 JSON; 没报 → null (不是 0)', () => {
+    const rec = createDagRecorder({ path: ':memory:' });
+    const id = rec.record(
+      withNodes(
+        { a: { goal: 'x' }, o: { goal: 'z' } },
+        {
+          a: { id: 'a', kind: 'agent', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 }, toolCalls: 7, llmCalls: 3 },
+          o: { id: 'o', kind: 'inproc', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 } },
+        },
+      ),
+      { runId: 'run-calls' },
+    );
+    const nodes = rec.get(id)!.nodes;
+    expect(nodes.find((n) => n.id === 'a')!.llmCalls).toBe(3);
+    expect(nodes.find((n) => n.id === 'a')!.toolCalls).toBe(7);
+    // 证伪: 写成 `?? 0` → 下面两条红 —— 读数板会把「没记」念成「零次调用」, lead/worker 分解的分母就假了。
+    expect(nodes.find((n) => n.id === 'o')!.llmCalls).toBeNull();
+    expect(nodes.find((n) => n.id === 'o')!.toolCalls).toBeNull();
+    rec.close();
+  });
+
   /**
    * 闸在场态进留痕 (2026-09-02) —— 端到端一条链: **注入的 agentRunner 报 gates → 引擎 →
    * ExecutorDagResult → 留痕库 → 读回来能数出"多少节点根本没配写闸"**。
