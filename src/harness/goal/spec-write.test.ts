@@ -26,10 +26,6 @@ import type { ExecutorDagResult, ExecutorDagConfig } from '../dag/types';
 import type { AgentLeafRunner } from '../leaf-runners';
 import { runGoal, type RunGoalConfig } from './run-goal';
 import { classifySpecWrite, isSpecWrite, type SpecWrite } from './spec-write';
-import { pinLegacyExecutionPath } from './pin-legacy-path';
-
-// P3 S6b (2026-09-02): 本文件钉 P3 之前的执行路径 (fake _runDag 产 `execute` 节点); 循环路径的判据见 orchestrating-loop.test.ts。
-pinLegacyExecutionPath();
 
 // ── 纯核 ────────────────────────────────────────────────────────────────────────
 
@@ -63,9 +59,9 @@ describe('classifySpecWrite —— 三值矩阵', () => {
 /** 执行段的假图 (内环判收敛) —— 与 acceptance-probe.test.ts 同款。 */
 const fakeExecuteDag = (): ExecutorDagResult =>
   ({
-    plan: { name: 'goal-execute', nodes: {} },
+    plan: { name: 'goal-orchestrating-loop', nodes: {} },
     results: {
-      execute: { id: 'execute', status: 'done', kind: 'conductor', output: '[conductor 子图]', deps: [], usage: { in: 1, out: 1 }, rounds: 1, converged: true },
+      conductor: { id: 'conductor', status: 'done', kind: 'agent', output: '[conductor 子图]', deps: [], usage: { in: 1, out: 1 }, },
     },
     reusedNodes: [],
   }) as unknown as ExecutorDagResult;
@@ -189,7 +185,7 @@ describe('账本 spec_write 列', () => {
       { kind: 'not-needed', source: 'tier-simple' },
     ];
     for (const [i, sw] of all.entries()) {
-      await recordDagRun(rec, { runId: `r-${i}`, entry: 'solve', specWrite: sw })(fakeResult('goal-execute'));
+      await recordDagRun(rec, { runId: `r-${i}`, entry: 'solve', specWrite: sw })(fakeResult('goal-orchestrating-loop'));
       const [row] = rec.listByRun(`r-${i}`);
       expect(row!.specWrite).toEqual(sw);
       expect(rawSpec(db, row!.id)).toBe(JSON.stringify(sw));
@@ -238,7 +234,7 @@ describe('账本 spec_write 列', () => {
     const sw: SpecWrite = { kind: 'wrote', source: 'contract', path: '/repo/docs/plan/x.md' };
     rec.updateSpecWrite('g1', sw);
     // 执行段那张图之后才落, 走 meta (两条路一起才让两行同值)。
-    await recordDagRun(rec, { runId: 'g1', entry: 'solve', specWrite: sw })(fakeResult('goal-execute'));
+    await recordDagRun(rec, { runId: 'g1', entry: 'solve', specWrite: sw })(fakeResult('goal-orchestrating-loop'));
     const rows = rec.listByRun('g1');
     expect(rows).toHaveLength(2);
     expect(rows.map((r) => r.specWrite)).toEqual([sw, sw]);

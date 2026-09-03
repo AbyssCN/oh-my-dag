@@ -31,10 +31,6 @@ import { runGoal, type RunGoalConfig } from './run-goal';
 import type { AcceptanceSpec, GoalClassification, GoalTier } from './classify-acceptance';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagConfig, ExecutorDagResult } from '../dag/types';
-import { pinLegacyExecutionPath } from './pin-legacy-path';
-
-// P3 S6b (2026-09-02): 本文件钉 P3 之前的执行路径 (fake _runDag 产 `execute` 节点); 循环路径的判据见 orchestrating-loop.test.ts。
-pinLegacyExecutionPath();
 
 const ACC_EXEC: AcceptanceSpec = { kind: 'executable', command: 'bun test', expectExit: 0 };
 const cls =
@@ -56,20 +52,20 @@ function contractDag(): ExecutorDagResult {
  */
 function executeDag(opts: { acceptSkipped?: boolean; escalated?: boolean; acceptStatus?: 'done' | 'failed' | 'skipped' } = {}): ExecutorDagResult {
   return {
-    plan: { name: 'goal-execute', nodes: {} },
+    plan: { name: 'goal-orchestrating-loop', nodes: {} },
     results: {
       accept: {
         id: 'accept',
         status: opts.acceptStatus ?? 'done',
         kind: 'command',
         output: '',
-        deps: ['execute'],
+        deps: ['conductor'],
         usage: { in: 0, out: 0 },
         ...(opts.acceptSkipped ? { skipped: true } : {}),
       },
-      execute: {
-        id: 'execute', status: 'done', kind: 'conductor', output: '[子图]', deps: [],
-        usage: { in: 1, out: 1 }, rounds: 1, converged: true,
+      conductor: {
+        id: 'conductor', status: 'done', kind: 'agent', output: '[子图]', deps: [],
+        usage: { in: 1, out: 1 },
       },
     },
     reusedNodes: [],
@@ -80,7 +76,7 @@ function executeDag(opts: { acceptSkipped?: boolean; escalated?: boolean; accept
 }
 
 const dagRouter = (execute: () => Promise<ExecutorDagResult>) =>
-  (async (plan: ConductorPlan) => (plan.name === 'goal-execute' ? await execute() : contractDag())) as never;
+  (async (plan: ConductorPlan) => (plan.name === 'goal-orchestrating-loop' ? await execute() : contractDag())) as never;
 
 /** `bun test` 被调了几次 —— D-1 基线恒占 1 次, 复验再加 1 次。 */
 const n = (calls: string[]): number => calls.filter((c) => c === 'bun test').length;

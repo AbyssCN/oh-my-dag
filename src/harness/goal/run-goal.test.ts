@@ -2,8 +2,11 @@
  * runGoal 契约测试 — INV-GOAL-1 (全自主) / INV-GOAL-4 (无环 + 有界)。
  * 全注入 (_classify / _runDag / researchRunner / agentRunner) — 零 live 模型、零真检索。
  *
- * **D-F (2026-07-30) 之后两段都是图**: 契约段 `goal-contract` 与执行段 `goal-execute` 各是一张
- * 单 conductor 节点的图, 共用 `_runDag` 注入口, 靠 `plan.name` 分辨 —— 所以这里的注入器是个路由器。
+ * **两段都是图**: 契约段 `goal-contract` 与执行段 `goal-orchestrating-loop` (P3 编排循环, v1 规划式
+ * conductor 已于 2026-09-03 退役) 共用 `_runDag` 注入口, 靠 `plan.name` 分辨 —— 所以这里的注入器是个路由器。
+ *
+ * 循环路径的裁决位 (run-goal.ts `loopOk`): 有可执行判据 ⇒ 停止规则唯一 = 环外 `accept` 节点 (冻结判据);
+ * 无判据 (探索型 / rubric) ⇒ `conductor` 节点跑完 (status done)。没有内环 judge, 没有 rounds。
  */
 import { describe, expect, test } from 'bun:test';
 import { mkdtempSync } from 'node:fs';
@@ -50,27 +53,24 @@ function contractDag(opts: { survey?: string; sources?: string[]; specFile?: str
 }
 
 /**
- * 造一份「执行段 conductor 节点」的执行结果 (D-F: 环封在这个节点内)。
- * `converged` / `rounds` 是内环 judge 盖在 leaf 上的 —— runGoal 的整段结论就取自它俩。
+ * 造一份「编排循环」的执行结果: `conductor` (agent 叶) + 环外 `accept` (冻结判据)。
+ * 有可执行判据时 runGoal 的整段结论只取自 `accept` 的状态; `conductor` 的 status 只影响
+ * 「图内有没有红节点」(delivered-with-red) 与无判据分型的环结论。
  */
 function executeDag(
   opts: {
-    converged?: boolean;
-    /** judge 自己那一票 (LeafResult.judgeConverged) —— 判据停时与 converged 可以不同向。 */
-    judgeConverged?: boolean;
-    rounds?: number;
     reused?: string[];
     status?: 'done' | 'failed';
     /**
      * D-I 环外闸 (2026-07-30): 执行型验收会在图上多一个 `accept` command 节点, 它的退出码是
-     * **冻结判据**。缺省 done —— 大部分用例关心的是判词那一侧; 要测"判词说成了但判据没过"
-     * 这个 D-I 核心场景, 显式传 'failed'。
+     * **冻结判据**。缺省 done; 'failed' = 冻结判据没过 (循环路径上这就是 not-converged 的唯一来源);
+     * 'absent' = 引擎没跑到它 (取消 / 级联压死), 没被证明过就不算成。
      */
     accept?: 'done' | 'failed' | 'absent';
     /** accept 节点的输出正文 —— S-37 那条闸的判据面(`(fail)` 名字集从这里抽)。 */
     acceptOutput?: string;
     /**
-     * S4 终态 emit 的注入面: N5 outcome 阶梯 (run-goal.ts) 的各停止轴都能经 execute 节点 /
+     * S4 终态 emit 的注入面: N5 outcome 阶梯 (run-goal.ts) 的各停止轴都能经 conductor 节点 /
      * dag 结果注入 —— 测"每个可达终态都真 append 过 terminal", 不靠投影表冒充端到端。
      */
     cancelled?: string;
@@ -81,26 +81,24 @@ function executeDag(
 ): ExecutorDagResult {
   const accept = opts.accept ?? 'done';
   return {
-    plan: { name: 'goal-execute', nodes: {} },
+    plan: { name: 'goal-orchestrating-loop', nodes: {} },
     results: {
       ...(accept === 'absent'
         ? {}
         : {
             accept: {
               id: 'accept', status: accept, kind: 'command', output: opts.acceptOutput ?? (accept === 'done' ? '' : '[exit 1]'),
-              deps: ['execute'], usage: { in: 0, out: 0 }, timedOut: false, signal: null,
+              deps: ['conductor'], usage: { in: 0, out: 0 }, timedOut: false, signal: null,
             },
           }),
-      execute: {
-        id: 'execute',
+      conductor: {
+        id: 'conductor',
         status: opts.status ?? 'done',
-        kind: 'conductor',
-        output: '[conductor 子图: 2/2 成功]',
+        kind: 'agent',
+        output: '[conductor 派工 2 次, 均成功]',
         deps: [],
         usage: { in: 1, out: 1 },
-        rounds: opts.rounds ?? 1,
-        ...(opts.converged === undefined ? {} : { converged: opts.converged }),
-        ...(opts.judgeConverged === undefined ? {} : { judgeConverged: opts.judgeConverged }),
+        filesTouched: [],
         ...(opts.blocked === undefined ? {} : { blocked: opts.blocked }),
         ...(opts.budgetStopped === undefined ? {} : { budgetStopped: opts.budgetStopped }),
         ...(opts.infraStopped === undefined ? {} : { infraStopped: opts.infraStopped }),
@@ -122,8 +120,8 @@ const dagRouter = (h: {
   execute?: (plan: ConductorPlan) => Promise<ExecutorDagResult>;
 }) =>
   (async (plan: ConductorPlan) =>
-    plan.name === 'goal-execute'
-      ? await (h.execute ?? (async () => executeDag({ converged: true })))(plan)
+    plan.name === 'goal-orchestrating-loop'
+      ? await (h.execute ?? (async () => executeDag()))(plan)
       : await (h.contract ?? (async () => contractDag({})))(plan)) as never;
 
 function cfg(dag: Partial<ExecutorDagConfig> = {}, extra: Partial<RunGoalConfig> = {}): RunGoalConfig {
@@ -153,10 +151,10 @@ describe('runGoal — INV-GOAL-1 全自主 (阶段间零人工介入)', () => {
         },
         execute: async (plan) => {
           seen.push('execute');
-          const n = plan.nodes.execute!;
-          expect(n.executor).toBe('conductor');
+          const n = plan.nodes.conductor!;
+          expect(n.executor).toBe('agent');
           expect(String(n.goal)).toContain('## 判卷标准'); // 判据仍流到 execute 任务文本 (D-I)
-          return executeDag({ converged: true });
+          return executeDag();
         },
       }),
     });
@@ -182,8 +180,8 @@ describe('runGoal — INV-GOAL-1 全自主 (阶段间零人工介入)', () => {
       _classify: cls('simple'),
       _runDag: dagRouter({
         execute: async (plan) => {
-          task = String(plan.nodes.execute!.goal);
-          return executeDag({ converged: true });
+          task = String(plan.nodes.conductor!.goal);
+          return executeDag();
         },
       }),
     });
@@ -219,64 +217,51 @@ describe('D-I 冻结判据 — 环外确定性闸', () => {
     let seen: ConductorPlan | undefined;
     await runGoal('写个文件', execCfg({
       _runDag: (async (plan: ConductorPlan) => {
-        if (plan.name === 'goal-execute') seen = plan;
-        return executeDag({ converged: true });
+        if (plan.name === 'goal-orchestrating-loop') seen = plan;
+        return executeDag();
       }) as never,
     }));
     const accept = seen!.nodes.accept!;
     expect(accept.executor).toBe('command');
     expect(accept.command).toBe('grep -qx "hello" a.md');
     expect(accept.expect_exit).toBe(0);
-    expect(accept.depends_on).toEqual(['execute']); // 环跑完才判 —— 它是环外的闸不是环内的一步
+    expect(accept.depends_on).toEqual(['conductor']); // 环跑完才判 —— 它是环外的闸不是环内的一步
   });
 
-  test('判词说成了但**冻结判据没过** → 不算收敛 (D-I 要抓的正是这种"作弊达标")', async () => {
+  test('conductor 说成了但**冻结判据没过** → 不算收敛, 终态 not-converged (D-I 要抓的正是这种"作弊达标")', async () => {
     const r = await runGoal('写个文件', execCfg({
-      _runDag: (async () => executeDag({ converged: true, accept: 'failed' })) as never,
+      _runDag: (async () => executeDag({ accept: 'failed' })) as never,
     }));
     expect(r.converged).toBe(false);
+    // 循环路径没有 judge 票: criteria.judge 就是环结论, 而环结论 = 判据 —— 两格同向, 不存在「判词✅/判据❌打架」。
+    expect(r.criteria).toEqual({ judge: false, oracle: false });
+    expect(r.outcome).toBe('not-converged');
     expect(r.stages.at(-1)!.summary).toContain('冻结判据没过');
   });
 
   test('accept 节点**根本没跑** → 也不算收敛 (没被证明过就不算成, 同 converged 缺席那条纪律)', async () => {
     const r = await runGoal('写个文件', execCfg({
-      _runDag: (async () => executeDag({ converged: true, accept: 'absent' })) as never,
+      _runDag: (async () => executeDag({ accept: 'absent' })) as never,
     }));
     expect(r.converged).toBe(false);
   });
 
-  test('判据过了但判词说没成 → 仍不算收敛 (判据是必要非充分)', async () => {
+  // #148 的循环版: 裁决位 = 判据 (D-I 以判据为准)。conductor 节点自己红了 (派工失败 / 报告没写完)
+  // 而环外 accept 绿 → 交付已被独立判据证实, 算成; 节点红不漂白, 终态词是 delivered-with-red (#165①)。
+  // 怎么让它红: 把 run-goal 的 loopOk 改成 `execLeaf.status === 'done'` 优先即红。
+  test('conductor 节点红但**冻结判据绿** → converged, 终态 delivered-with-red (判据是裁决位, 节点红只改终态词)', async () => {
     const r = await runGoal('写个文件', execCfg({
-      _runDag: (async () => executeDag({ converged: false, accept: 'done' })) as never,
-    }));
-    expect(r.converged).toBe(false);
-  });
-
-  // #148 (B0 run 6251afc4 的形状): 环按判据绿收敛 (converged=true), judge 的票是反对
-  // (judgeConverged=false, 当时还是 D-4 合成的), 环外 accept 也绿 → 终态必须是 success ——
-  // 旧代码让观测位压裁决位, 判 not-converged 且指引「加轮数 resume」(resume 进环判据仍绿,
-  // round 1 再停, 不动点)。怎么让它红: 把 run-goal 的 loopOk 换回 judgeConverged 优先即红。
-  test('#148 判据绿收敛 + judge 异议 → success (judge 票只观测不裁决), 异议进摘要', async () => {
-    const r = await runGoal('写个文件', execCfg({
-      _runDag: (async () => executeDag({ converged: true, judgeConverged: false, accept: 'done' })) as never,
+      _runDag: (async () => executeDag({ status: 'failed', accept: 'done' })) as never,
     }));
     expect(r.converged).toBe(true);
-    expect(r.outcome).toBe('success');
-    expect(r.criteria).toEqual({ judge: false, oracle: true }); // 判据轴仍看得见那格异议
-    expect(r.stages.at(-1)!.summary).toContain('judge 异议');
-  });
-
-  test('#148 反向: 判据绿收敛 + judge 异议 + 环外 accept 红 → oracle-failed (异议不救判据红)', async () => {
-    const r = await runGoal('写个文件', execCfg({
-      _runDag: (async () => executeDag({ converged: true, judgeConverged: false, accept: 'failed' })) as never,
-    }));
-    expect(r.converged).toBe(false);
-    expect(r.outcome).toBe('oracle-failed');
+    expect(r.outcome).toBe('delivered-with-red');
+    expect(r.criteria).toEqual({ judge: true, oracle: true });
+    expect(r.stages.at(-1)!.summary).not.toContain('judge 异议'); // 循环路径没有 judge 票, 这一格不该出现
   });
 
   test('两边都过 → 收敛, 摘要里两条结论都在', async () => {
     const r = await runGoal('写个文件', execCfg({
-      _runDag: (async () => executeDag({ converged: true, accept: 'done' })) as never,
+      _runDag: (async () => executeDag({ accept: 'done' })) as never,
     }));
     expect(r.converged).toBe(true);
     expect(r.stages.at(-1)!.summary).toContain('冻结判据 ✅');
@@ -288,8 +273,8 @@ describe('D-I 冻结判据 — 环外确定性闸', () => {
       acceptance: { kind: 'exploratory', learningGoal: '学到什么', affordableLoss: '一轮' },
       tier: 'simple',
       _runDag: (async (plan: ConductorPlan) => {
-        if (plan.name === 'goal-execute') seen = plan;
-        return executeDag({ converged: true });
+        if (plan.name === 'goal-orchestrating-loop') seen = plan;
+        return executeDag();
       }) as never,
     }));
     expect(seen!.nodes.accept).toBeUndefined();
@@ -328,7 +313,7 @@ describe('runGoal — D-1 mode 感知基线 delta (SDD cairness-distill D-1, 挂
     const r = await runGoal('写个文件', deltaCfg(
       // 基线红且复跑同样红 ⇒ 复现确认放行, B 是真回归。
       { commandRunner: cmdRunnerSeq({ exitCode: 1, text: failLines('A') }, { exitCode: 1, text: failLines('A', 'B') }) },
-      async () => executeDag({ converged: true, accept: 'failed', acceptOutput: failLines('A', 'B') }),
+      async () => executeDag({ accept: 'failed', acceptOutput: failLines('A', 'B') }),
     ));
     expect(r.verifyDelta!.red).toBe(true);
     expect(r.verifyDelta!.newFailures).toEqual(['test:B']);
@@ -340,7 +325,7 @@ describe('runGoal — D-1 mode 感知基线 delta (SDD cairness-distill D-1, 挂
     // 人照样学会无视它 —— 那是 S-37 的另一个极端, 不是修好)。
     const r = await runGoal('写个文件', deltaCfg(
       { commandRunner: cmdRunnerSeq({ exitCode: 1, text: failLines('A') }, { exitCode: 1, text: failLines('A') }) },
-      async () => executeDag({ converged: true, accept: 'failed', acceptOutput: failLines('A', 'B') }),
+      async () => executeDag({ accept: 'failed', acceptOutput: failLines('A', 'B') }),
     ));
     expect(r.verifyDelta!.red).toBe(false);
     expect(r.verifyDelta!.newFailures).toEqual([]);
@@ -351,7 +336,7 @@ describe('runGoal — D-1 mode 感知基线 delta (SDD cairness-distill D-1, 挂
     // 证伪: 若实现不判红 / 不挂 delta → 本次跑批引入的失败被当老账, 闸形同虚设 (G-1 主路)。
     const r = await runGoal('写个文件', deltaCfg(
       { commandRunner: cmdRunner(0) },
-      async () => executeDag({ converged: true, accept: 'failed' }),
+      async () => executeDag({ accept: 'failed' }),
     ));
     expect(r.verifyDelta).toBeDefined();
     expect(r.verifyDelta!.red).toBe(true);
@@ -365,7 +350,7 @@ describe('runGoal — D-1 mode 感知基线 delta (SDD cairness-distill D-1, 挂
     // 证伪: 若实现把老失败判红 → 存量语料首跑全红, 与引擎回归混算。
     const r = await runGoal('写个文件', deltaCfg(
       { commandRunner: cmdRunner(1) },
-      async () => executeDag({ converged: true, accept: 'failed' }),
+      async () => executeDag({ accept: 'failed' }),
     ));
     expect(r.verifyDelta!.red).toBe(false);
     expect(r.verifyDelta!.newFailures).toEqual([]);
@@ -375,7 +360,7 @@ describe('runGoal — D-1 mode 感知基线 delta (SDD cairness-distill D-1, 挂
   test('D-1: 基线 pass → accept done → 零 delta 不红 (G-2)', async () => {
     const r = await runGoal('写个文件', deltaCfg(
       { commandRunner: cmdRunner(0) },
-      async () => executeDag({ converged: true, accept: 'done' }),
+      async () => executeDag({ accept: 'done' }),
     ));
     expect(r.verifyDelta!.red).toBe(false);
     expect(r.verifyDelta!.steps).toEqual([]);
@@ -387,7 +372,7 @@ describe('runGoal — D-1 mode 感知基线 delta (SDD cairness-distill D-1, 挂
     // 证伪: 若实现把缺席当零 delta → 漏报 —— 「没被证明过就不算成」, 与 D-I 同一条纪律。
     const r = await runGoal('写个文件', deltaCfg(
       { commandRunner: cmdRunner(0) },
-      async () => executeDag({ converged: true, accept: 'absent' }),
+      async () => executeDag({ accept: 'absent' }),
     ));
     expect(r.verifyDelta!.red).toBe(true);
     expect(r.verifyDelta!.newFailures).toEqual(['accept']);
@@ -397,7 +382,7 @@ describe('runGoal — D-1 mode 感知基线 delta (SDD cairness-distill D-1, 挂
   test('D-1 fail-open: 没配 commandRunner → verifyDelta 缺席 (闸缺席 ≠ 零 delta)', async () => {
     const r = await runGoal('写个文件', deltaCfg(
       {},
-      async () => executeDag({ converged: true, accept: 'failed' }),
+      async () => executeDag({ accept: 'failed' }),
     ));
     expect(r.verifyDelta).toBeUndefined();
   });
@@ -424,68 +409,25 @@ describe('runGoal — 降级路径都留痕, 不假装', () => {
 });
 
 describe('runGoal — INV-GOAL-4 有界 / INV-GOAL-3 可证', () => {
-  // D-F: 轮数上限现在是**节点上的 max_rounds** (环在节点内), 不再是 iterate 的配置项。
-  test('执行轮数上限默认 2 (= 1 轮修复), 可覆盖', async () => {
-    const seen: (number | undefined)[] = [];
-    const spy = dagRouter({
-      execute: async (plan) => {
-        seen.push(plan.nodes.execute!.max_rounds);
-        return executeDag({ converged: true });
-      },
-    });
-    await runGoal('g', { ...cfg(), _classify: cls('simple'), _runDag: spy });
-    await runGoal('g', { ...cfg(), maxRounds: 4, _classify: cls('simple'), _runDag: spy });
-    expect(seen).toEqual([2, 4]);
-  });
-
-  /**
-   * D-F 的兜底: 撤了外层 fixpoint 之后, 「整体目标成了吗」这个问题只剩内环 judge 会问 ——
-   * 而内环**最后一轮默认不请 judge**。执行段的节点若忘了写 `judge_final`, runGoal 就只能拿
-   * "跑完了"当"成了"。这条钉的就是那个开关恒在。
-   */
-  test('执行段节点恒带 judge_final (撤外层之后 converged 的唯一来源)', async () => {
-    let jf: boolean | undefined;
-    await runGoal('g', {
-      ...cfg(),
-      _classify: cls('simple'),
-      _runDag: dagRouter({
-        execute: async (plan) => {
-          jf = plan.nodes.execute!.judge_final;
-          return executeDag({ converged: true });
-        },
-      }),
-    });
-    expect(jf).toBe(true);
-  });
-
-  test('内环判未收敛 → 整段 failed 且 converged=false (不因"跑完了"就算成)', async () => {
+  // 循环路径的有界性 = 引擎 `maxEscalations: 0` + D-14 回灌恰一次 (钉在 orchestrating-loop.test.ts);
+  // 这里只钉「跑完了 ≠ 成了」与可证面。
+  test('conductor 跑完但冻结判据没过 → 整段 failed 且 converged=false (不因"跑完了"就算成)', async () => {
     const r = await runGoal('g', {
       ...cfg(),
       _classify: cls('simple'),
-      _runDag: dagRouter({ execute: async () => executeDag({ converged: false, rounds: 2 }) }),
+      _runDag: dagRouter({ execute: async () => executeDag({ accept: 'failed' }) }),
     });
     expect(r.converged).toBe(false);
-    expect(r.rounds).toBe(2);
     expect(r.stages.at(-1)!.status).toBe('failed');
-    expect(r.stages.at(-1)!.summary).toContain('未收敛');
+    expect(r.stages.at(-1)!.summary).toContain('冻结判据没过');
   });
 
-  // 缺席 ≠ 未收敛, 但**一律不算成**: 没人判过就说成了, 正是谎报完成最舒服的入口。
-  test('leaf 上没有 converged (没人判过) → 不算成', async () => {
-    const r = await runGoal('g', {
-      ...cfg(),
-      _classify: cls('simple'),
-      _runDag: dagRouter({ execute: async () => executeDag({}) }), // converged 缺席
-    });
-    expect(r.converged).toBe(false);
-  });
-
-  test('execute 节点根本没结果 → failed 留痕 (不静默当收敛)', async () => {
+  test('conductor 节点根本没结果 → failed 留痕 (不静默当收敛)', async () => {
     const r = await runGoal('g', {
       ...cfg(),
       _classify: cls('simple'),
       _runDag: dagRouter({
-        execute: async () => ({ plan: { name: 'goal-execute', nodes: {} }, results: {} }) as unknown as ExecutorDagResult,
+        execute: async () => ({ plan: { name: 'goal-orchestrating-loop', nodes: {} }, results: {} }) as unknown as ExecutorDagResult,
       }),
     });
     expect(r.converged).toBe(false);
@@ -501,10 +443,9 @@ describe('runGoal — INV-GOAL-4 有界 / INV-GOAL-3 可证', () => {
     const r = await runGoal('g', {
       ...cfg(),
       _classify: cls('simple'),
-      _runDag: dagRouter({ execute: async () => executeDag({ converged: true, rounds: 2, reused: ['a', 'b'] }) }),
+      _runDag: dagRouter({ execute: async () => executeDag({ reused: ['a', 'b'] }) }),
     });
     expect(r.reusedNodes).toEqual(['a', 'b']);
-    expect(r.rounds).toBe(2);
   });
 });
 
@@ -613,7 +554,7 @@ describe('闸 C — 续跑复用 classify (goal-state 锚)', () => {
     _classify: async () => (counters.classify++, { tier: 'complex' as GoalTier, acceptance: ACC_EXEC }),
     _runDag: async () => {
       counters.exec++;
-      return executeDag({ converged: true, rounds: 1 });
+      return executeDag();
     },
   });
 
@@ -664,13 +605,13 @@ describe('runGoal — D-2 写集声明 + 跑后 diff 对账 (SDD cairness-distil
       tier: 'simple',
       writeSet: { _collectChangedFiles: () => opts.diff ?? [], ...opts.extra },
       _runDag: (async () => {
-        const base = executeDag({ converged: true, accept: opts.accept ?? 'done' });
+        const base = executeDag({ accept: opts.accept ?? 'done' });
         return {
           ...base,
           plan: {
-            name: 'goal-execute',
+            name: 'goal-orchestrating-loop',
             nodes: {
-              execute: { executor: 'conductor', goal: 'g', ...(opts.declared?.execute ? { write_set: opts.declared.execute } : {}) },
+              conductor: { executor: 'conductor', goal: 'g', ...(opts.declared?.execute ? { write_set: opts.declared.execute } : {}) },
               accept: { executor: 'command', command: 'true' },
               // G-4 探针: 声明了但本轮 results 无条目 (= 没跑) 的节点 —— wiring 必须把它滤出声明面。
               ...(opts.declared?.history ? { history: { executor: 'command', command: 'true', write_set: opts.declared.history } } : {}),
@@ -687,7 +628,7 @@ describe('runGoal — D-2 写集声明 + 跑后 diff 对账 (SDD cairness-distil
     expect(r.writeSet!.red).toBe(true);
     expect(r.writeSet!.orphans).toEqual(['b.ts']);
     expect(r.writeSet!.files).toEqual([
-      { file: 'a.ts', kind: 'node-owned', declaredBy: ['execute'] },
+      { file: 'a.ts', kind: 'node-owned', declaredBy: ['conductor'] },
       { file: 'b.ts', kind: 'orphan' },
     ]);
     expect(r.stages.at(-1)!.summary).toContain('D-2 写集: 写集越界 1 [b.ts]');
@@ -765,7 +706,7 @@ describe('runGoal — D-2 声明写集面 (S-2, run 级 runtime 面)', () => {
         ...(opts.declared ? { declared: opts.declared } : {}),
         ...opts.extra,
       },
-      _runDag: (async () => executeDag({ converged: true })) as never,
+      _runDag: (async () => executeDag()) as never,
     });
 
   test('S-2 fallback 阶梯: declared 缺席 → 回落缺省面, 本 run 落点全 allowed 不红', async () => {
@@ -867,10 +808,6 @@ describe('runGoal — D-2 声明写集面 (S-2, run 级 runtime 面)', () => {
 import { resolveBackend } from '../pathfinder/backend';
 import { loadMap } from '../pathfinder/map-store';
 import { computeFrontier } from '../pathfinder/frontier';
-import { pinLegacyExecutionPath } from './pin-legacy-path';
-
-// P3 S6b (2026-09-02): 本文件钉 P3 之前的执行路径 (fake _runDag 产 `execute` 节点); 循环路径的判据见 orchestrating-loop.test.ts。
-pinLegacyExecutionPath();
 
 /** 一份带未决段的 spec 正文 (经 `_readSpec` 注入, 不真正写入磁盘)。 */
 const SPEC_WITH_OPEN = [
@@ -915,7 +852,7 @@ describe('D-2 散雾出口 — 任一 run 挂票 (G-1 / G-2)', () => {
       ...base,
       sddPath,
       _classify: cls('complex', { kind: 'exploratory', learningGoal: 'x', affordableLoss: 'y' }),
-      _runDag: dagRouter({ execute: async () => executeDag({ converged: true }) }),
+      _runDag: dagRouter({ execute: async () => executeDag() }),
       tickets: {
         ...tickets,
         _readSpec: (p) => {
@@ -949,7 +886,7 @@ describe('D-2 散雾出口 — 任一 run 挂票 (G-1 / G-2)', () => {
     const { tickets } = mapCfg(base, 'run-g2');
     const stalledDag = (): ExecutorDagResult =>
       ({
-        ...executeDag({ converged: false, rounds: 3 }),
+        ...executeDag({ accept: 'failed' }),
         verification: { pass: false, reason: '连撞同一根因: 产物缺失', attempts: 2, escalated: true, conductorModel: 'c:m', circuitBroken: true },
         blameRetry: { blameSize: 2, closureSize: 4, reuseHits: 1, rerunWallMs: 42 },
       }) as ExecutorDagResult;
@@ -996,7 +933,7 @@ describe('D-2 散雾出口 — 任一 run 挂票 (G-1 / G-2)', () => {
     const r = await runGoal('修个东西', {
       ...base,
       _classify: cls('simple'),
-      _runDag: dagRouter({ execute: async () => executeDag({ converged: false, rounds: 1 }) }),
+      _runDag: dagRouter({ execute: async () => executeDag({ accept: 'failed' }) }),
       tickets: { slug: 'no-such-map', sink: resolveBackend(base.cwd, { env: {} }), runId: 'run-y' },
     });
     expect(r.outcome).toBe('not-converged'); // 开票炸了不改 run 结论
@@ -1076,20 +1013,23 @@ describe('runGoal — S4 run 生命周期接线 (board: claimed → terminal)', 
     }
   });
   // ── 终态 emit 的端到端面: 不只测投影表, 每个可达终态 outcome 都真 append 过 terminal ──
-  // 可达 run 终态 = N5 outcome 阶梯 (run-goal.ts) 能产出的 8 个; stage 级 outcome
+  // 可达 run 终态 = N5 outcome 阶梯 (run-goal.ts) 能产出的那些; stage 级 outcome
   // (missing-capability / not-needed / empty-result / unclassified) 到不了 run 终态, 由投影表测试兜底。
+  // 循环路径上「conductor 说成了而判据红」落 not-converged (停止规则唯一 = 判据), oracle-failed 只在
+  // rubric 分型可达 (rubric-wiring.test.ts); verifier-rejected 走 D-14 (orchestrating-loop.test.ts)。
+  // 外部事件 / 资源轴那几格 accept 用 'absent' —— 引擎在那一刻没跑到它, 这是真实形状。
   const TERMINAL_CASES: {
     kind: RunOutcomeKind;
     want: 'converged' | 'failed' | 'cancelled' | 'not-converged';
     dag: () => ExecutorDagResult;
   }[] = [
-    { kind: 'success', want: 'converged', dag: () => executeDag({ converged: true }) },
-    { kind: 'not-converged', want: 'not-converged', dag: () => executeDag({ converged: false }) },
-    { kind: 'oracle-failed', want: 'failed', dag: () => executeDag({ converged: true, accept: 'failed' }) },
-    { kind: 'cancelled', want: 'cancelled', dag: () => executeDag({ converged: false, cancelled: '外部叫停' }) },
-    { kind: 'blocked', want: 'failed', dag: () => executeDag({ converged: false, blocked: '等 owner 拍板' }) },
-    { kind: 'budget-exhausted', want: 'failed', dag: () => executeDag({ converged: false, budgetStopped: '预算用尽' }) },
-    { kind: 'infra-error', want: 'failed', dag: () => executeDag({ converged: false, infraStopped: 'judge 调不通' }) },
+    { kind: 'success', want: 'converged', dag: () => executeDag() },
+    { kind: 'not-converged', want: 'not-converged', dag: () => executeDag({ accept: 'failed' }) },
+    { kind: 'delivered-with-red', want: 'not-converged', dag: () => executeDag({ status: 'failed', accept: 'done' }) },
+    { kind: 'cancelled', want: 'cancelled', dag: () => executeDag({ accept: 'absent', cancelled: '外部叫停' }) },
+    { kind: 'blocked', want: 'failed', dag: () => executeDag({ accept: 'absent', blocked: '等 owner 拍板' }) },
+    { kind: 'budget-exhausted', want: 'failed', dag: () => executeDag({ accept: 'absent', budgetStopped: '预算用尽' }) },
+    { kind: 'infra-error', want: 'failed', dag: () => executeDag({ accept: 'absent', infraStopped: 'conductor 座 529' }) },
   ];
   for (const c of TERMINAL_CASES) {
     test(`终态 emit: ${c.kind} → terminal(${c.want}), 与 claimed 配对同 runId`, async () => {
@@ -1141,7 +1081,7 @@ describe('runGoal — S4 run 生命周期接线 (board: claimed → terminal)', 
           return contractDag({ survey: 'src/a.ts:1 — 事实', specText: '# SDD 正文契约' });
         }
         counters.exec++;
-        return executeDag({ converged: true, rounds: 1 });
+        return executeDag();
       },
     });
     const r1 = await runGoal('目标甲', mk());
@@ -1436,7 +1376,7 @@ describe('#165① delivered-with-red: accept 没跑而判据复验绿', () => {
     const r = await runGoal('goal', {
       ...cfg({ commandRunner: cmdRunner(0) }),
       _classify: cls('complex'),
-      _runDag: dagRouter({ execute: async () => executeDag({ converged: false, accept: 'absent', status: 'failed' }) }),
+      _runDag: dagRouter({ execute: async () => executeDag({ accept: 'absent', status: 'failed' }) }),
     });
     expect(r.outcome).toBe('delivered-with-red');
     expect(r.converged).toBe(false);
@@ -1449,26 +1389,27 @@ describe('#165① delivered-with-red: accept 没跑而判据复验绿', () => {
     const r = await runGoal('goal', {
       ...cfg({ commandRunner: cmdRunner(1) }),
       _classify: cls('complex'),
-      _runDag: dagRouter({ execute: async () => executeDag({ converged: false, accept: 'absent', status: 'failed' }) }),
+      _runDag: dagRouter({ execute: async () => executeDag({ accept: 'absent', status: 'failed' }) }),
     });
     expect(r.outcome).toBe('not-converged');
   });
 
-  test('accept 真跑真红 → 不复验 (交付没达标如实报 oracle-failed, 抖动那半归 S-37)', async () => {
+  test('accept 真跑真红 → 不复验 (交付没达标如实报 not-converged, 抖动那半归 S-37)', async () => {
     // commandRunner 给 0: 若实现错把「真红」也拿去复验, 会误判 delivered-with-red —— 本断言即闸。
     const r = await runGoal('goal', {
       ...cfg({ commandRunner: cmdRunner(0) }),
       _classify: cls('complex'),
-      _runDag: dagRouter({ execute: async () => executeDag({ converged: true, accept: 'failed' }) }),
+      _runDag: dagRouter({ execute: async () => executeDag({ accept: 'failed' }) }),
     });
-    expect(r.outcome).toBe('oracle-failed');
+    expect(r.outcome).toBe('not-converged');
+    expect(r.criteria?.oracle).toBe(false);
   });
 
   test('无 commandRunner → 不复验, 行为与今天一致', async () => {
     const r = await runGoal('goal', {
       ...cfg(),
       _classify: cls('complex'),
-      _runDag: dagRouter({ execute: async () => executeDag({ converged: false, accept: 'absent', status: 'failed' }) }),
+      _runDag: dagRouter({ execute: async () => executeDag({ accept: 'absent', status: 'failed' }) }),
     });
     expect(r.outcome).toBe('not-converged');
   });

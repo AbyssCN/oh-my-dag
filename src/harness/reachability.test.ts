@@ -76,10 +76,6 @@ const DYNAMIC_ENTRIES: Record<string, string> = {
     'P3 契约 D-23 / INV-18 覆盖三分法**字面量的落盘处** (CARD_COVERED / COMPILER_COVERED / PRIMITIVE_EXCLUDED): ' +
     '消费方 = colocated 的 `conductor-tools-coverage.test.ts` (三张表两两不相交、并 = PRIMITIVE_IDS、与契约逐元素相等)。' +
     '生产零消费者是设计 —— 它是契约绊线的真源, 与 eval fixture 同类; 契约改字面量时改它, 不改测试。',
-  'src/harness/goal/pin-legacy-path.ts':
-    'P3 S6b 测试夹具: 16 个钉 P3 之前执行路径的测试文件 import 它 (goal/*.test.ts 14 · test/core 2), ' +
-    'beforeAll/afterAll 设 OMD_ORCHESTRATING_LOOP=0。测试刻意不算根, 所以它是可预期的孤儿。' +
-    '退出条件: v1 / flat-first / chain 路径退役时, 连同那 16 个文件里的旧路径用例一起删。',
   'src/mcp/client/fixtures/stdio-ping-server.ts':
     'MCP client 真传输测试的 fixture server, 按**路径字符串**拉起: `mcp/client/pool.test.ts` 的 ' +
     'FIXTURE = 这个路径 → `StdioClientTransport({ command: "bun", args: [<它>] })` 起真子进程。' +

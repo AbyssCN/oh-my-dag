@@ -28,16 +28,12 @@ import { runGoal } from './run-goal';
 import type { GoalTier } from './classify-acceptance';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagConfig, ExecutorDagResult } from '../dag/types';
-import { pinLegacyExecutionPath } from './pin-legacy-path';
-
-// P3 S6b (2026-09-02): 本文件钉 P3 之前的执行路径 (fake _runDag 产 `execute` 节点); 循环路径的判据见 orchestrating-loop.test.ts。
-pinLegacyExecutionPath();
 
 const executeDag = (): ExecutorDagResult =>
   ({
-    plan: { name: 'goal-execute', nodes: {} },
+    plan: { name: 'goal-orchestrating-loop', nodes: {} },
     results: {
-      execute: { id: 'execute', status: 'done', kind: 'conductor', output: 'ok', deps: [], usage: { in: 1, out: 1 }, rounds: 1, converged: true },
+      conductor: { id: 'conductor', status: 'done', kind: 'agent', output: 'ok', deps: [], usage: { in: 1, out: 1 }, },
     },
     reusedNodes: [],
   }) as unknown as ExecutorDagResult;
@@ -144,13 +140,13 @@ describe('INV-11 ② —— 有 sdd + prior.contract 命中 → 走闸 C 复用�
     });
 
     // 不重转录: execute 之外没有第二次 _runDag 调用 (契约段没有一个独立子图要跑)。
-    expect(runDagCalls).toEqual(['goal-execute']);
+    expect(runDagCalls).toEqual(['goal-orchestrating-loop']);
     // P1 回流修正 (review 264df08b): sdd 在场时 specPath/evidence 取本轮 sdd, 不许被旧契约
     // 顶掉 —— 复用分支只并入不冲突的旧勘察增量 (repoContext/sources)。
     expect(r.specPath).toBe(sddPath);
     expect(r.repoContext).toBe('src/a.ts:1 — 老勘察事实');
-    const execPlan = plans.find((p) => p.name === 'goal-execute')!;
-    const execGoal = String((execPlan.nodes.execute as { goal?: unknown }).goal ?? '');
+    const execPlan = plans.find((p) => p.name === 'goal-orchestrating-loop')!;
+    const execGoal = String((execPlan.nodes.conductor as { goal?: unknown }).goal ?? '');
     expect(execGoal).toContain('NEW_SDD_MARKER');
     expect(execGoal).not.toContain('旧契约正文');
     const survey = r.stages.find((s) => s.stage === 'survey')!;

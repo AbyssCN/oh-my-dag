@@ -36,10 +36,6 @@ import type { GoalClassification } from './classify-acceptance';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagConfig, ExecutorDagResult } from '../dag/types';
 import type { VerifierVerdict } from '../verifier';
-import { pinLegacyExecutionPath } from './pin-legacy-path';
-
-// P3 S6b (2026-09-02): 本文件钉 P3 之前的执行路径 (fake _runDag 产 `execute` 节点); 循环路径的判据见 orchestrating-loop.test.ts。
-pinLegacyExecutionPath();
 
 // ── 纯核 ①: 终态棘轮判定 ─────────────────────────────────────────────────────
 
@@ -145,7 +141,9 @@ const leaf = (over: Record<string, unknown>): Record<string, unknown> => ({
   ...over,
 });
 
-describe('INV-1 接线 (GWT-1): 第 1 轮绿 → 否决 → 回滚 → 终态还原到那次绿', () => {
+// 循环路径上「第 1 轮 / 第 2 轮」的形状 (P3 S6b, maxEscalations 0): 第一跑带 verifier, 判卷官看见的就是那棵树;
+// 否决 → D-14 回灌 → 第二跑 **不带 verifier** (INV-7 恰一次)。fake 引擎按 `dagCfg.verifier` 在不在分辨自己是哪一跑。
+describe('INV-1 接线 (GWT-1): 第 1 跑绿 → 否决 → 回灌重跑丢绿 → 终态还原到那次绿', () => {
   test('★ 终态树含绿快照的写集内容 · 摘要含 best-green · verifier 异议原文进 result', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omd-best-green-'));
     const artifact = join(cwd, 'delivered.txt');
@@ -165,34 +163,25 @@ describe('INV-1 接线 (GWT-1): 第 1 轮绿 → 否决 → 回滚 → 终态还
         acceptance: { kind: 'executable', command: 'true', expectExit: 0 },
       })) as RunGoalConfig['_classify'],
       _runDag: (async (plan: ConductorPlan, dagCfg: ExecutorDagConfig): Promise<ExecutorDagResult> => {
-        // 第 1 轮: 活真干了、冻结判据真绿 —— 判卷官在这一刻看见的就是这棵树。
-        writeFileSync(artifact, '真交付');
-        await dagCfg.verifier!({
-          task: '',
-          plan,
-          results: {
-            execute: leaf({ id: 'execute', filesTouched: [artifact], artifactRoot: cwd }),
+        if (dagCfg.verifier) {
+          // 第 1 跑: 活真干了、冻结判据真绿 —— 判卷官在这一刻看见的就是这棵树。
+          writeFileSync(artifact, '真交付');
+          const green = {
+            conductor: leaf({ id: 'conductor', filesTouched: [artifact], artifactRoot: cwd }),
             accept: leaf({ id: 'accept', kind: 'command', exitCode: 0 }),
-          } as never,
-        });
-        // 否决 → 重规划 → 毒集丢绿 + 半回滚: 盘上那份真交付**没了**。
+          };
+          await dagCfg.verifier({ task: '', plan, results: green as never });
+          return { plan, results: green, reusedNodes: [] } as unknown as ExecutorDagResult;
+        }
+        // 否决 → 回灌重跑: conductor 这一发把盘改坏, 那份真交付**没了**。
         rmSync(artifact);
-        await dagCfg.verifier!({
-          task: '',
-          plan,
-          results: {
-            execute: leaf({ id: 'execute', status: 'failed' }),
-            accept: leaf({ id: 'accept', kind: 'command', status: 'failed', exitCode: 1 }),
-          } as never,
-        });
         return {
           plan,
           results: {
-            execute: leaf({ id: 'execute', kind: 'conductor', rounds: 2, converged: false }),
+            conductor: leaf({ id: 'conductor', status: 'failed' }),
             accept: leaf({ id: 'accept', kind: 'command', status: 'failed', exitCode: 1 }),
           },
           reusedNodes: [],
-          verification: { pass: false, reason: dissent, attempts: 2, escalated: true, conductorModel: 'c:m' },
         } as unknown as ExecutorDagResult;
       }) as never,
     });
@@ -225,24 +214,19 @@ describe('INV-1 接线 (GWT-1): 第 1 轮绿 → 否决 → 回滚 → 终态还
         acceptance: { kind: 'executable', command: 'true', expectExit: 0 },
       })) as RunGoalConfig['_classify'],
       _runDag: (async (plan: ConductorPlan, dagCfg: ExecutorDagConfig): Promise<ExecutorDagResult> => {
-        writeFileSync(artifact, '半成品');
-        await dagCfg.verifier!({
-          task: '',
-          plan,
-          results: {
-            execute: leaf({ id: 'execute', filesTouched: [artifact], artifactRoot: cwd }),
-            accept: leaf({ id: 'accept', kind: 'command', status: 'failed', exitCode: 1 }),
-          } as never,
-        });
+        const red = {
+          conductor: leaf({ id: 'conductor', filesTouched: [artifact], artifactRoot: cwd }),
+          accept: leaf({ id: 'accept', kind: 'command', status: 'failed', exitCode: 1 }),
+        };
+        if (dagCfg.verifier) {
+          // 第 1 跑: 半成品, 判据红 —— 一轮都没绿过。
+          writeFileSync(artifact, '半成品');
+          await dagCfg.verifier({ task: '', plan, results: red as never });
+          return { plan, results: red, reusedNodes: [] } as unknown as ExecutorDagResult;
+        }
+        // 回灌重跑仍红, 且把半成品也丢了 —— 棘轮没有地板可守, 不许动盘。
         rmSync(artifact);
-        return {
-          plan,
-          results: {
-            execute: leaf({ id: 'execute', kind: 'conductor', rounds: 1, converged: false }),
-            accept: leaf({ id: 'accept', kind: 'command', status: 'failed', exitCode: 1 }),
-          },
-          reusedNodes: [],
-        } as unknown as ExecutorDagResult;
+        return { plan, results: red, reusedNodes: [] } as unknown as ExecutorDagResult;
       }) as never,
     });
     expect(existsSync(artifact)).toBe(false);
@@ -271,7 +255,7 @@ describe('INV-2 接线 (GWT-2): 陈旧红的两个红因走不同字面', () => 
         ({
           plan,
           results: {
-            execute: leaf({ id: 'execute', kind: 'conductor', rounds: 2, converged: true }),
+            conductor: leaf({ id: 'conductor' }),
             // accept 的绿是 resume 复用来的 (skipped), 而本 run 重规划过 ⇒ 判据陈旧闸开火。
             accept: leaf({ id: 'accept', kind: 'command', exitCode: 0, skipped: true }),
           },
@@ -306,7 +290,7 @@ describe('INV-2 接线 (GWT-2): 陈旧红的两个红因走不同字面', () => 
         ({
           plan,
           results: {
-            execute: leaf({ id: 'execute', kind: 'conductor', rounds: 2, converged: true }),
+            conductor: leaf({ id: 'conductor' }),
             accept: leaf({ id: 'accept', kind: 'command', status: 'failed', exitCode: 1 }),
           },
           reusedNodes: [],

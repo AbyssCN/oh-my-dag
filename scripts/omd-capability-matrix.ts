@@ -256,7 +256,7 @@ export function extractMatrix(sources: SourceFiles): Matrix {
     run: runKeys.has(k),
   }));
 
-  // §5 绊线 (硬编码字面量, 不派生): 层数=3, map_*=8, 行数=19
+  // §5 绊线 (硬编码字面量, 不派生): 层数=3, map_*=8, 行数=18
   const layers = new Set(tools.map((t) => t.layer));
   if (layers.size !== 3 || !(layers.has('map') && layers.has('solve') && layers.has('run'))) {
     throw new Error(
@@ -267,8 +267,8 @@ export function extractMatrix(sources: SourceFiles): Matrix {
   if (mapCount !== 8) {
     throw new Error(`勘察计数与代码冲突: 期望 map_* 层工具数=8, 实际 ${mapCount}`);
   }
-  if (rows.length !== 19) {
-    throw new Error(`勘察计数与代码冲突: 期望 矩阵行数=19, 实际 ${rows.length}`);
+  if (rows.length !== 18) {
+    throw new Error(`勘察计数与代码冲突: 期望 矩阵行数=18, 实际 ${rows.length}`);
   }
 
   return { promise, tools, rows };

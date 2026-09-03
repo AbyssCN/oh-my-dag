@@ -17,10 +17,6 @@ import { runGoal, type RunGoalConfig } from './run-goal';
 import type { AcceptanceSpec, GoalClassification, GoalTier } from './classify-acceptance';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagConfig, ExecutorDagResult } from '../dag/types';
-import { pinLegacyExecutionPath } from './pin-legacy-path';
-
-// P3 S6b (2026-09-02): 本文件钉 P3 之前的执行路径 (fake _runDag 产 `execute` 节点); 循环路径的判据见 orchestrating-loop.test.ts。
-pinLegacyExecutionPath();
 
 const card = (): string => BUILTIN_AGENT_TEMPLATES.find((t) => t.name === 'spec-author')!.body;
 
@@ -82,15 +78,15 @@ describe('D-J — 防作弊条款, 且必须被抄进契约本身', () => {
 /** D-F: 执行段也是一张单 conductor 节点的图; 裁决盖在 leaf 的 converged 上。 */
 const okExecute = (): ExecutorDagResult =>
   ({
-    plan: { name: 'goal-execute', nodes: {} },
-    results: { execute: { id: 'execute', status: 'done', kind: 'conductor', output: 'ok', deps: [], usage: { in: 1, out: 1 }, rounds: 1, converged: true } },
+    plan: { name: 'goal-orchestrating-loop', nodes: {} },
+    results: { conductor: { id: 'conductor', status: 'done', kind: 'agent', output: 'ok', deps: [], usage: { in: 1, out: 1 }, } },
     reusedNodes: [],
   }) as unknown as ExecutorDagResult;
 
 /** 两段共用 `_runDag`, 按 plan.name 路由 (契约段没给就返一个"什么都没分解出来"的空结果)。 */
 const router = (h: { contract?: (p: ConductorPlan) => Promise<ExecutorDagResult>; execute?: (p: ConductorPlan) => Promise<ExecutorDagResult> }) =>
   (async (plan: ConductorPlan) =>
-    plan.name === 'goal-execute'
+    plan.name === 'goal-orchestrating-loop'
       ? await (h.execute ?? (async () => okExecute()))(plan)
       : await (h.contract ?? (async () => ({ plan: { name: 'goal-contract', nodes: {} }, results: {} }) as unknown as ExecutorDagResult))(plan)) as never;
 
@@ -127,7 +123,7 @@ describe('D-I — 判卷标准流到每一处该到的地方', () => {
       _classify: cls('complex', EXEC),
       _runDag: router({
         execute: async (plan) => {
-          task = String(plan.nodes.execute!.goal);
+          task = String(plan.nodes.conductor!.goal);
           return okExecute();
         },
       }),
@@ -144,7 +140,7 @@ describe('D-I — 判卷标准流到每一处该到的地方', () => {
       _classify: cls('simple', EXEC),
       _runDag: router({
         execute: async (plan) => {
-          task = String(plan.nodes.execute!.goal);
+          task = String(plan.nodes.conductor!.goal);
           return okExecute();
         },
       }),
@@ -160,7 +156,7 @@ describe('D-I — 判卷标准流到每一处该到的地方', () => {
       _classify: cls('complex', { kind: 'exploratory', learningGoal: '有哪几种可行布局', affordableLoss: '两轮执行' }),
       _runDag: router({
         execute: async (plan) => {
-          task = String(plan.nodes.execute!.goal);
+          task = String(plan.nodes.conductor!.goal);
           return okExecute();
         },
       }),

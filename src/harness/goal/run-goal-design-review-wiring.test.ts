@@ -7,23 +7,19 @@ import type { ExecutorDagConfig, ExecutorDagResult } from '../dag/types';
 import type { AgentLeafInput, AgentLeafResult } from '../leaf-runners';
 import { fingerprintOf } from '../profiles/review-ledger';
 import { runGoal, type RunGoalConfig } from './run-goal';
-import { pinLegacyExecutionPath } from './pin-legacy-path';
-
-// P3 S6b (2026-09-02): 本文件钉 P3 之前的执行路径 (fake _runDag 产 `execute` 节点); 循环路径的判据见 orchestrating-loop.test.ts。
-pinLegacyExecutionPath();
 
 const screenshotCommand = './.omd/screenshot.sh';
 
 function executeResult(): ExecutorDagResult {
   return {
-    plan: { name: 'goal-execute', nodes: {} },
+    plan: { name: 'goal-orchestrating-loop', nodes: {} },
     results: {
-      execute: {
-        id: 'execute', status: 'done', kind: 'conductor', output: 'done', deps: [],
-        usage: { in: 1, out: 1 }, converged: true, rounds: 1,
+      conductor: {
+        id: 'conductor', status: 'done', kind: 'agent', output: 'done', deps: [],
+        usage: { in: 1, out: 1 },  
       },
       accept: {
-        id: 'accept', status: 'done', kind: 'command', output: '', deps: ['execute'], usage: { in: 0, out: 0 },
+        id: 'accept', status: 'done', kind: 'command', output: '', deps: ['conductor'], usage: { in: 0, out: 0 },
       },
     },
   } as unknown as ExecutorDagResult;

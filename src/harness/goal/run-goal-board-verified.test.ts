@@ -22,10 +22,6 @@ import type { AcceptanceSpec, GoalClassification, GoalTier } from './classify-ac
 import type { ExecutorDagConfig, ExecutorDagResult } from '../dag/types';
 import type { ConductorPlan } from '../conductor-plan';
 import { readBoard, type BoardEntry } from '../board/run-board';
-import { pinLegacyExecutionPath } from './pin-legacy-path';
-
-// P3 S6b (2026-09-02): 本文件钉 P3 之前的执行路径 (fake _runDag 产 `execute` 节点); 循环路径的判据见 orchestrating-loop.test.ts。
-pinLegacyExecutionPath();
 
 const ACC_EXEC: AcceptanceSpec = { kind: 'executable', command: 'bun test', expectExit: 0 };
 const ACC_EXPLORE: AcceptanceSpec = { kind: 'exploratory', learningGoal: '学到什么', affordableLoss: '一轮' };
@@ -34,16 +30,15 @@ const cls =
   async (): Promise<GoalClassification> => ({ tier, acceptance });
 
 /**
- * 造一份执行段 conductor 节点的结果: `converged=true` + `accept` 节点按 opts 控绿/红/缺席。
+ * 造一份编排循环的结果: `conductor` 跑完 + `accept` 节点按 opts 控绿/红/缺席 (循环路径的裁决位就是它)。
  * 契段段走 contractDag() 的"全空"版即可 —— 本测试不关心契约段, 只关心终态前的 verified 发射。
  */
 function executeDag(opts: {
-  converged?: boolean;
   accept?: 'done' | 'failed' | 'absent';
 } = {}): ExecutorDagResult {
   const accept = opts.accept ?? 'done';
   return {
-    plan: { name: 'goal-execute', nodes: {} },
+    plan: { name: 'goal-orchestrating-loop', nodes: {} },
     results: {
       ...(accept === 'absent'
         ? {}
@@ -53,19 +48,17 @@ function executeDag(opts: {
               status: accept,
               kind: 'command',
               output: accept === 'done' ? '' : '[exit 1]',
-              deps: ['execute'],
+              deps: ['conductor'],
               usage: { in: 0, out: 0 },
             },
           }),
-      execute: {
-        id: 'execute',
+      conductor: {
+        id: 'conductor',
         status: 'done',
-        kind: 'conductor',
-        output: '[conductor 子图: 2/2 成功]',
+        kind: 'agent',
+        output: '[conductor 报告]',
         deps: [],
         usage: { in: 1, out: 1 },
-        rounds: 1,
-        ...(opts.converged === undefined ? {} : { converged: opts.converged }),
       },
     },
   } as unknown as ExecutorDagResult;
@@ -73,7 +66,7 @@ function executeDag(opts: {
 
 const dagRouter = (executeReturn: ExecutorDagResult) =>
   (async (plan: ConductorPlan) => {
-    if (plan.name === 'goal-execute') return executeReturn;
+    if (plan.name === 'goal-orchestrating-loop') return executeReturn;
     // 契约段: 空结果, 不影响终态。
     return { plan: { name: 'goal-contract', nodes: {} }, results: {} } as unknown as ExecutorDagResult;
   }) as never;
@@ -167,7 +160,7 @@ describe('runGoal — #160 D-2 终态前 verified 发射', () => {
       {
         _classify: cls('simple'),
         acceptance: { kind: 'executable', command: 'bun test', expectExit: 0 },
-        _runDag: dagRouter(executeDag({ converged: true, accept: 'done' })),
+        _runDag: dagRouter(executeDag({ accept: 'done' })),
       },
     ));
 
@@ -189,7 +182,7 @@ describe('runGoal — #160 D-2 终态前 verified 发射', () => {
       {
         _classify: cls('simple'),
         acceptance: { kind: 'executable', command: 'bun test', expectExit: 0 },
-        _runDag: dagRouter(executeDag({ converged: true, accept: 'failed' })),
+        _runDag: dagRouter(executeDag({ accept: 'failed' })),
         sessionId: 'sess-s1-v-fail',
       },
     ));
@@ -212,7 +205,7 @@ describe('runGoal — #160 D-2 终态前 verified 发射', () => {
       {
         _classify: cls('simple', ACC_EXPLORE),
         acceptance: ACC_EXPLORE,
-        _runDag: dagRouter(executeDag({ converged: true })),
+        _runDag: dagRouter(executeDag()),
         sessionId: 'sess-s1-explore',
       },
     ));
@@ -235,7 +228,7 @@ describe('runGoal — #160 D-2 终态前 verified 发射', () => {
       {
         _classify: cls('simple'),
         acceptance: { kind: 'executable', command: 'bun test', expectExit: 0 },
-        _runDag: dagRouter(executeDag({ converged: false, accept: 'absent' })), // 无 commandRunner → 复验不发生
+        _runDag: dagRouter(executeDag({ accept: 'absent' })), // 无 commandRunner → 复验不发生
         sessionId: 'sess-s1-v-absent',
       },
     ));
@@ -260,7 +253,7 @@ describe('runGoal — #160 D-2 终态前 verified 发射', () => {
       {
         _classify: cls('simple'),
         acceptance: { kind: 'executable', command: 'bun test', expectExit: 0 },
-        _runDag: dagRouter(executeDag({ converged: true, accept: 'done' })),
+        _runDag: dagRouter(executeDag({ accept: 'done' })),
         sessionId: 'sess-s1-v-failopen',
       },
     ));

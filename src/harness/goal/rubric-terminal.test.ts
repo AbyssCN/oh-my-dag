@@ -23,10 +23,6 @@ import { runGoal, rubricAcceptanceUnwired, TERMINAL_RUBRIC_UNWIRED, type RunGoal
 import { freezeRubric, type RubricItem } from './rubric-spec';
 import type { GoalClassification } from './classify-acceptance';
 import type { ExecutorDagConfig, ExecutorDagResult } from '../dag/types';
-import { pinLegacyExecutionPath } from './pin-legacy-path';
-
-// P3 S6b (2026-09-02): 本文件钉 P3 之前的执行路径 (fake _runDag 产 `execute` 节点); 循环路径的判据见 orchestrating-loop.test.ts。
-pinLegacyExecutionPath();
 
 // ── 纯函数面 ────────────────────────────────────────────────────────────────
 
@@ -63,18 +59,16 @@ const frozenSpec = freezeRubric([...items]);
 
 const executeDag = (): ExecutorDagResult =>
   ({
-    plan: { name: 'goal-execute', nodes: {} },
+    plan: { name: 'goal-orchestrating-loop', nodes: {} },
     results: {
-      execute: {
-        id: 'execute',
+      conductor: {
+        id: 'conductor',
         status: 'done',
-        kind: 'conductor',
-        output: '[conductor 子图: 1/1 成功]',
+        kind: 'agent',
+        output: '[conductor 报告]',
         deps: [],
         usage: { in: 1, out: 1 },
-        rounds: 1,
-        // 内环收敛 —— GWT-5 的 Given 第三条。
-        converged: true,
+        // conductor 跑完 (status done) —— GWT-5 的 Given 第三条「内环收敛」在循环路径上的形状。
       },
     },
     reusedNodes: [],
@@ -113,7 +107,7 @@ describe('INV-5 接线: rubric 分型 + 验收步缺席 + 内环收敛 ⇒ 终�
     expect(r.criteria?.oracle).toBe(false);
   });
 
-  test('★ 判别力 (执行型没被顺手改): 环说成了而冻结判据没过 ⇒ 仍是 oracle-failed', async () => {
+  test('★ 判别力 (执行型没被顺手改): conductor 说成了而冻结判据没过 ⇒ 走判据分支 (not-converged), 不是 rubric-unwired', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omd-rubric-terminal-exec-'));
     const r = await runGoal('做一件事', {
       cwd,
@@ -125,16 +119,18 @@ describe('INV-5 接线: rubric 分型 + 验收步缺席 + 内环收敛 ⇒ 终�
       })) as RunGoalConfig['_classify'],
       _runDag: (async () =>
         ({
-          plan: { name: 'goal-execute', nodes: {} },
+          plan: { name: 'goal-orchestrating-loop', nodes: {} },
           results: {
-            execute: { id: 'execute', status: 'done', kind: 'conductor', output: '', deps: [], usage: { in: 1, out: 1 }, rounds: 1, converged: true },
+            conductor: { id: 'conductor', status: 'done', kind: 'agent', output: '', deps: [], usage: { in: 1, out: 1 }, },
             // accept 真跑真红 —— 冻结判据没过那一格。
-            accept: { id: 'accept', status: 'failed', kind: 'command', output: '', deps: ['execute'], usage: { in: 0, out: 0 }, exitCode: 1 },
+            accept: { id: 'accept', status: 'failed', kind: 'command', output: '', deps: ['conductor'], usage: { in: 0, out: 0 }, exitCode: 1 },
           },
           reusedNodes: [],
         }) as unknown as ExecutorDagResult) as never,
     });
-    expect(r.outcome).toBe('oracle-failed');
-    expect(r.terminalLabel).toBe('oracle-failed');
+    // 循环路径: 有可执行判据 ⇒ 停止规则唯一 = 冻结判据, 判据红即 not-converged (run-goal.ts loopOk)。
+    expect(r.outcome).toBe('not-converged');
+    expect(r.terminalLabel).toBe('not-converged');
+    expect(r.terminalLabel).not.toBe(TERMINAL_RUBRIC_UNWIRED);
   });
 });

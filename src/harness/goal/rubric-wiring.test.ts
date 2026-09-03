@@ -56,10 +56,6 @@ import type { ProbeItemOutcome } from './acceptance-gate';
 import type { GoalClassification } from './classify-acceptance';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagConfig, ExecutorDagResult } from '../dag/types';
-import { pinLegacyExecutionPath } from './pin-legacy-path';
-
-// P3 S6b (2026-09-02): 本文件钉 P3 之前的执行路径 (fake _runDag 产 `execute` 节点); 循环路径的判据见 orchestrating-loop.test.ts。
-pinLegacyExecutionPath();
 
 // ── 夹具 ────────────────────────────────────────────────────────────────────
 
@@ -73,18 +69,16 @@ const frozenSpec = freezeRubric([...items]);
 const trace = (itemId: string, pass: boolean, reason: string): RubricItemTrace =>
   ({ itemId, pass, reason });
 
-const executeDag = (opts: { converged?: boolean; rounds?: number } = {}): ExecutorDagResult => ({
-  plan: { name: 'goal-execute', nodes: {} },
+const executeDag = (): ExecutorDagResult => ({
+  plan: { name: 'goal-orchestrating-loop', nodes: {} },
   results: {
-    execute: {
-      id: 'execute',
+    conductor: {
+      id: 'conductor',
       status: 'done',
-      kind: 'conductor',
-      output: '[conductor 子图: 1/1 成功]',
+      kind: 'agent',
+      output: '[conductor 报告]',
       deps: [],
       usage: { in: 1, out: 1 },
-      rounds: opts.rounds ?? 1,
-      ...(opts.converged === undefined ? {} : { converged: opts.converged }),
     },
   },
   reusedNodes: [],
@@ -106,7 +100,7 @@ const rubricCfg = (
   dag: { conductorModel: 'c:m', leafModel: 'l:m' } as ExecutorDagConfig,
   _today: () => '2026-08-28',
   _classify: cls(),
-  _runDag: (async () => executeDag({ converged: true })) as never,
+  _runDag: (async () => executeDag()) as never,
   rubricVerdictInputs: inputs,
   ...over,
 });
@@ -131,8 +125,8 @@ describe('RUBRIC_TWELVE_BRANCHES_TYPED — rubric 验收步在 run-goal 里的�
       },
       {
         _runDag: (async (plan: ConductorPlan) => {
-          if (plan.name === 'goal-execute') seenPlan = plan;
-          return executeDag({ converged: true });
+          if (plan.name === 'goal-orchestrating-loop') seenPlan = plan;
+          return executeDag();
         }) as never,
       },
     ));

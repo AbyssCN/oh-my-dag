@@ -44,10 +44,6 @@ import type { GoalClassification } from './classify-acceptance';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagConfig, ExecutorDagResult } from '../dag/types';
 import type { VerifierVerdict } from '../verifier';
-import { pinLegacyExecutionPath } from './pin-legacy-path';
-
-// P3 S6b (2026-09-02): 本文件钉 P3 之前的执行路径 (fake _runDag 产 `execute` 节点); 循环路径的判据见 orchestrating-loop.test.ts。
-pinLegacyExecutionPath();
 
 // ── 纯核 ①: 触发谓词 ────────────────────────────────────────────────────────
 
@@ -172,7 +168,12 @@ const leaf = (over: Record<string, unknown>): Record<string, unknown> => ({
   ...over,
 });
 
-/** 两轮判据 exitCode 均为 4、两轮 leaf 都有非空 diff 的一次 run。 */
+/**
+ * 终审否决分型 target=criterion 的一次 run —— 循环路径上判据重建**唯一可达**的触发路
+ * (P3 S6b: maxEscalations 0 ⇒ 每跑只有一次判卷, 「两轮 exitCode 纹丝不动」那条路只在纯核可测;
+ * 生产读数里 target=criterion 正是终审打回的多数形状, 见 2026-09-02-next-session.md)。
+ * criterion 否决不回灌 (D-14: 判据错了, 再派也没用), 终态 verifier-rejected。
+ */
 const rebuildRun = async (over: Partial<RunGoalConfig> = {}): Promise<Awaited<ReturnType<typeof runGoal>>> => {
   const cwd = mkdtempSync(join(tmpdir(), 'omd-criterion-rebuild-'));
   writeFileSync(join(cwd, 'out.txt'), 'OK\n');
@@ -191,7 +192,7 @@ const rebuildRunIn = async (
   const verifier = (async (): Promise<VerifierVerdict> => ({
     pass: false,
     reason: '判据命令指向仓里不存在的目录',
-    target: 'implementation',
+    target: 'criterion',
     usage: { in: 0, out: 0 },
   })) as ExecutorDagConfig['verifier'];
   return runGoal('做一件事', {
@@ -212,35 +213,24 @@ const rebuildRunIn = async (
     })) as RunGoalConfig['_classify'],
     _rebuildCriterion: (async () => ({ command: 'grep -q OK out.txt', expectExit: 0 })) as RunGoalConfig['_rebuildCriterion'],
     _runDag: (async (plan: ConductorPlan, dagCfg: ExecutorDagConfig): Promise<ExecutorDagResult> => {
-      for (let round = 1; round <= 2; round += 1) {
-        await dagCfg.verifier!({
-          task: '',
-          plan,
-          results: {
-            execute: leaf({ id: 'execute', filesTouched: [join(cwd, 'out.txt')], artifactRoot: cwd }),
-            accept: leaf({ id: 'accept', kind: 'command', status: 'failed', exitCode: 4 }),
-          } as never,
-        });
-      }
-      return {
-        plan,
-        results: {
-          execute: leaf({ id: 'execute', kind: 'conductor', rounds: 2, converged: false }),
-          accept: leaf({ id: 'accept', kind: 'command', status: 'failed', exitCode: 4 }),
-        },
-        reusedNodes: [],
-        verification: { pass: false, reason: '判据命令指向仓里不存在的目录', attempts: 2, escalated: true, conductorModel: 'c:m' },
-      } as unknown as ExecutorDagResult;
+      const results = {
+        conductor: leaf({ id: 'conductor', filesTouched: [join(cwd, 'out.txt')], artifactRoot: cwd }),
+        accept: leaf({ id: 'accept', kind: 'command', status: 'failed', exitCode: 4 }),
+      };
+      // 循环路径每跑判卷恰一次; criterion 否决之后不回灌, 所以这个 fake 只会被调一次 (带 verifier)。
+      if (dagCfg.verifier) await dagCfg.verifier({ task: '', plan, results: results as never });
+      return { plan, results, reusedNodes: [] } as unknown as ExecutorDagResult;
     }) as never,
     ...over,
   });
 };
 
-describe('INV-4 接线 (GWT-4): 两轮同 exitCode + 两轮非空 diff ⇒ 走判据重建分支', () => {
+describe('INV-4 接线 (GWT-4): 终审否决 target=criterion ⇒ 走判据重建分支', () => {
   test('★ 留痕含 criterion-rebuild (result 与摘要两面都要看得见)', async () => {
     const r = await rebuildRun();
     expect(r.criterionRebuild).toBeDefined();
-    expect(r.criterionRebuild!.trigger).toContain('exitCode');
+    expect(r.criterionRebuild!.trigger).toContain('criterion');
+    expect(r.outcome).toBe('verifier-rejected'); // criterion 否决不回灌 (D-14)
     expect(r.stages.at(-1)!.summary).toContain(CRITERION_REBUILD_LABEL);
   });
 
@@ -266,7 +256,7 @@ describe('INV-4 接线 (GWT-4): 两轮同 exitCode + 两轮非空 diff ⇒ 走�
     expect(r.criterionRebuild!.why).toContain('重建者缺席');
   });
 
-  test('★ 判别力: 判据没纹丝不动 (两轮 exitCode 不同) ⇒ 整段不触发', async () => {
+  test('★ 判别力: 否决分型指向实装 (target=implementation) 且只有一次判卷 ⇒ 整段不触发', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omd-criterion-norebuild-'));
     const verifier = (async (): Promise<VerifierVerdict> => ({
       pass: false,
@@ -284,24 +274,13 @@ describe('INV-4 接线 (GWT-4): 两轮同 exitCode + 两轮非空 diff ⇒ 走�
       })) as RunGoalConfig['_classify'],
       _rebuildCriterion: (async () => ({ command: 'grep -q OK out.txt' })) as RunGoalConfig['_rebuildCriterion'],
       _runDag: (async (plan: ConductorPlan, dagCfg: ExecutorDagConfig): Promise<ExecutorDagResult> => {
-        for (const exitCode of [4, 1]) {
-          await dagCfg.verifier!({
-            task: '',
-            plan,
-            results: {
-              execute: leaf({ id: 'execute', filesTouched: [join(cwd, 'out.txt')], artifactRoot: cwd }),
-              accept: leaf({ id: 'accept', kind: 'command', status: 'failed', exitCode }),
-            } as never,
-          });
-        }
-        return {
-          plan,
-          results: {
-            execute: leaf({ id: 'execute', kind: 'conductor', rounds: 2, converged: false }),
-            accept: leaf({ id: 'accept', kind: 'command', status: 'failed', exitCode: 1 }),
-          },
-          reusedNodes: [],
-        } as unknown as ExecutorDagResult;
+        const results = {
+          conductor: leaf({ id: 'conductor', filesTouched: [join(cwd, 'out.txt')], artifactRoot: cwd }),
+          accept: leaf({ id: 'accept', kind: 'command', status: 'failed', exitCode: 4 }),
+        };
+        // implementation 否决 → D-14 回灌 → 第二跑不带 verifier: 判据观察仍只有一轮, 「两轮纹丝不动」凑不齐。
+        if (dagCfg.verifier) await dagCfg.verifier({ task: '', plan, results: results as never });
+        return { plan, results, reusedNodes: [] } as unknown as ExecutorDagResult;
       }) as never,
     });
     expect(r.criterionRebuild).toBeUndefined();
@@ -337,12 +316,12 @@ describe('INV-4 回写: 采纳的判据冻进下一轮 (本轮终态不动)', ()
     expect(st.criterionHistory).toHaveLength(1);
     expect(st.criterionHistory[0]!.from).toBe('grep -q OK missing-dir/out.txt');
     expect(st.criterionHistory[0]!.to).toBe('grep -q OK out.txt');
-    expect(st.criterionHistory[0]!.trigger).toContain('exitCode');
+    expect(st.criterionHistory[0]!.trigger).toContain('criterion');
   });
 
   test('★ W-2 (承重): **本轮终态不受影响** —— 换判据不许把这一轮判绿', async () => {
     const { r } = await runWithState();
-    // 这一轮本来就是没收敛的 (verifier 判 fail, accept 节点 exitCode 4)。
+    // 这一跑本来就是没收敛的 (verifier 判 fail target=criterion, accept 节点 exitCode 4)。
     // 回写若泄进本轮判定, 这里会翻绿 —— 那正是"环内产出的判据给环内产出的东西打分"。
     expect(r.converged).toBe(false);
   });

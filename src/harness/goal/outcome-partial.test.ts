@@ -24,10 +24,6 @@ import { runGoal, type RunGoalConfig } from './run-goal';
 import type { AcceptanceSpec, GoalClassification, GoalTier } from './classify-acceptance';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagConfig, ExecutorDagResult } from '../dag/types';
-import { pinLegacyExecutionPath } from './pin-legacy-path';
-
-// P3 S6b (2026-09-02): 本文件钉 P3 之前的执行路径 (fake _runDag 产 `execute` 节点); 循环路径的判据见 orchestrating-loop.test.ts。
-pinLegacyExecutionPath();
 
 const ACC_EXEC: AcceptanceSpec = { kind: 'executable', command: 'bun test', expectExit: 0 };
 const cls =
@@ -48,13 +44,12 @@ function contractDag(): ExecutorDagResult {
 }
 
 /**
- * 造一份「执行段 conductor 节点」的执行结果 (同 run-goal.test.ts 的注入面)。
- * `converged` 是内环结论 (runGoal 的 loopOk 取自它); `redLeaf` 往图里塞一个
- * status === 'failed' 的叶子节点 —— outcome-partial 真值表「图红」那一列的判据。
+ * 造一份「编排循环」的执行结果 (同 run-goal.test.ts 的注入面)。
+ * 有可执行判据时 runGoal 的 loopOk 就是 `accept` 的状态 (循环路径没有内环 judge); `redLeaf` 往图里
+ * 塞一个 status === 'failed' 的叶子节点 —— outcome-partial 真值表「图红」那一列的判据。
  */
 function executeDag(
   opts: {
-    converged?: boolean;
     accept?: 'done' | 'failed' | 'absent';
     status?: 'done' | 'failed';
     redLeaf?: boolean;
@@ -62,33 +57,32 @@ function executeDag(
 ): ExecutorDagResult {
   const accept = opts.accept ?? 'done';
   return {
-    plan: { name: 'goal-execute', nodes: {} },
+    plan: { name: 'goal-orchestrating-loop', nodes: {} },
     results: {
       ...(accept === 'absent'
         ? {}
         : {
             accept: {
               id: 'accept', status: accept, kind: 'command', output: accept === 'done' ? '' : '[exit 1]',
-              deps: ['execute'], usage: { in: 0, out: 0 }, timedOut: false, signal: null,
+              deps: ['conductor'], usage: { in: 0, out: 0 }, timedOut: false, signal: null,
             },
           }),
       ...(opts.redLeaf
         ? {
-            'execute::leaf-b': {
-              id: 'execute::leaf-b', status: 'failed', kind: 'agent',
-              output: '[子节点红了]', deps: ['execute'], usage: { in: 1, out: 1 }, filesTouched: [],
+            'conductor::leaf-b': {
+              id: 'conductor::leaf-b', status: 'failed', kind: 'agent',
+              output: '[子节点红了]', deps: ['conductor'], usage: { in: 1, out: 1 }, filesTouched: [],
             },
           }
         : {}),
-      execute: {
-        id: 'execute',
+      conductor: {
+        id: 'conductor',
         status: opts.status ?? 'done',
-        kind: 'conductor',
-        output: '[conductor 子图: 1/2 成功]',
+        kind: 'agent',
+        output: '[conductor 派工 2 次, 1 次失败]',
         deps: [],
         usage: { in: 1, out: 1 },
-        rounds: 1,
-        ...(opts.converged === undefined ? {} : { converged: opts.converged }),
+        filesTouched: [],
       },
     },
     reusedNodes: [],
@@ -101,8 +95,8 @@ const dagRouter = (h: {
   execute?: (plan: ConductorPlan) => Promise<ExecutorDagResult>;
 }) =>
   (async (plan: ConductorPlan) =>
-    plan.name === 'goal-execute'
-      ? await (h.execute ?? (async () => executeDag({ converged: true })))(plan)
+    plan.name === 'goal-orchestrating-loop'
+      ? await (h.execute ?? (async () => executeDag()))(plan)
       : await (h.contract ?? (async () => contractDag()))(plan)) as never;
 
 const dirs: string[] = [];
@@ -128,7 +122,7 @@ describe('#165① outcome-partial: 终态语义闸 (delivered-with-red 只在判
     const r = await runGoal('goal', {
       ...cfg(),
       _classify: cls('complex'),
-      _runDag: dagRouter({ execute: async () => executeDag({ converged: true }) }),
+      _runDag: dagRouter({ execute: async () => executeDag() }),
     });
     expect(r.converged).toBe(true);
     expect(r.outcome).toBe('success');
@@ -140,12 +134,12 @@ describe('#165① outcome-partial: 终态语义闸 (delivered-with-red 只在判
     const r = await runGoal('goal', {
       ...cfg(),
       _classify: cls('complex'),
-      _runDag: dagRouter({ execute: async () => (execResult = executeDag({ converged: true, redLeaf: true })) }),
+      _runDag: dagRouter({ execute: async () => (execResult = executeDag({ redLeaf: true })) }),
     });
     expect(r.converged).toBe(true);
     expect(r.outcome).toBe('delivered-with-red');
     // 终态词不许把红节点漂白: 注入进 runGoal 的那份结果里, 红叶子的 status 必须原样是 failed。
-    expect(execResult!.results['execute::leaf-b']!.status).toBe('failed');
+    expect(execResult!.results['conductor::leaf-b']!.status).toBe('failed');
   });
 
   // 反向自检: 删掉「判据红优先失败」判断，用例 #165①-3 红。
@@ -153,7 +147,7 @@ describe('#165① outcome-partial: 终态语义闸 (delivered-with-red 只在判
     const r = await runGoal('goal', {
       ...cfg(),
       _classify: cls('complex'),
-      _runDag: dagRouter({ execute: async () => executeDag({ converged: false }) }),
+      _runDag: dagRouter({ execute: async () => executeDag({ accept: 'failed' }) }),
     });
     expect(r.converged).toBe(false);
     expect(r.outcome).not.toBe('delivered-with-red');
@@ -165,7 +159,7 @@ describe('#165① outcome-partial: 终态语义闸 (delivered-with-red 只在判
     const r = await runGoal('goal', {
       ...cfg(),
       _classify: cls('complex'),
-      _runDag: dagRouter({ execute: async () => executeDag({ converged: false, redLeaf: true }) }),
+      _runDag: dagRouter({ execute: async () => executeDag({ accept: 'failed', redLeaf: true }) }),
     });
     expect(r.converged).toBe(false);
     expect(r.outcome).not.toBe('delivered-with-red');

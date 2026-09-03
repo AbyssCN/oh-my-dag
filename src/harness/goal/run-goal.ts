@@ -1743,7 +1743,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
     loopPlan = compiledLoop;
     logger.info(
       { nodes: Object.keys(compiledLoop.nodes), acceptance: runnable !== null },
-      '[run-goal] P3 编排循环默认路径 → conductor 节点 + 机械 oracle (D-17; OMD_ORCHESTRATING_LOOP=0 回到下一档)',
+      '[run-goal] P3 编排循环 → conductor 节点 + 机械 oracle (D-17; v1 / chain / flat-first 梯子已退役, 这是 solve 唯一的非 SDD 路径)',
     );
   }
   // v1 规划式 conductor 回落图已退役 (owner 2026-09-03): solve 只剩 sdd-direct (flatPlan) 与编排循环 (loopPlan) 两条路。

@@ -20,42 +20,38 @@ import { summarizeGoal } from '../../src/mcp/tools/goal';
 import { createDagRecorder } from '../../src/harness/dag/dag-record';
 import { RUN_OUTCOME_INFO, RUN_OUTCOME_ORDER, deriveRunOutcome, type RunOutcomeKind } from '../../src/harness/run-outcome';
 import type { ExecutorDagResult } from '../../src/harness/dag/types';
-import { pinLegacyExecutionPath } from '../../src/harness/goal/pin-legacy-path';
 
-// P3 S6b (2026-09-02): 本文件钉 P3 之前的执行路径 (v1 conductor 内环轮语义 / fake _runDag 产 `execute` 节点);
-// 循环路径的判据见 src/harness/goal/orchestrating-loop.test.ts。
-pinLegacyExecutionPath();
-
-// ── goal 侧夹具: simple 档 (不走契约段) + 注入式 _runDag, 一个 execute 节点定生死 ──────
-const leaf = (over: Record<string, unknown>) => ({ id: 'execute', kind: 'conductor', deps: [], output: '', usage: { in: 1, out: 1 }, rounds: 2, ...over });
+// ── goal 侧夹具: simple 档 (不走契约段) + 注入式 _runDag, 编排循环的 conductor 节点定生死 ──────
+// (探索型没有环外判据, run-goal 的环结论 = conductor 节点 status; v1 内环的 converged/rounds 已随 v1 退役。)
+const leaf = (over: Record<string, unknown>) => ({ id: 'conductor', kind: 'agent', deps: [], output: '', usage: { in: 1, out: 1 }, filesTouched: [], ...over });
 const goalCfg = (execute: Record<string, unknown>, extra: Partial<ExecutorDagResult> = {}): RunGoalConfig =>
   ({
     cwd: '/tmp',
     dag: { conductorModel: 'm', leafModel: 'l' },
     tier: 'simple',
-    // 探索型 = 没有环外冻结判据节点, 于是这组用例只由 execute 那个节点的收尾决定 outcome。
+    // 探索型 = 没有环外冻结判据节点, 于是这组用例只由 conductor 那个节点的收尾决定 outcome。
     acceptance: { kind: 'exploratory', learningGoal: 'x', affordableLoss: 'y' },
     _classify: async () => ({ tier: 'simple', acceptance: { kind: 'exploratory', learningGoal: 'x', affordableLoss: 'y' } }),
     _runDag: async () =>
-      ({ plan: { name: 'goal-execute', nodes: {} }, sessionId: 's', levels: [['execute']], results: { execute: leaf(execute) }, usage: { conductor: { in: 1, out: 1 }, leavesIn: 1, leavesOut: 1, leavesCacheHit: 0 }, ...extra }) as unknown as ExecutorDagResult,
+      ({ plan: { name: 'goal-orchestrating-loop', nodes: {} }, sessionId: 's', levels: [['conductor']], results: { conductor: leaf(execute) }, usage: { conductor: { in: 1, out: 1 }, leavesIn: 1, leavesOut: 1, leavesCacheHit: 0 }, ...extra }) as unknown as ExecutorDagResult,
   }) as unknown as RunGoalConfig;
 
 describe('N5 · 阻塞 vs 未收敛 (整张表的原型对 —— 来自 2026-07-31 第二跑 live)', () => {
   test('环判定推不动 → blocked (BLOCKED: 加轮数没用)', async () => {
-    const r = await runGoal('g', goalCfg({ status: 'failed', converged: false, blocked: '同一条命令逐字相同地失败 2 次' }));
+    const r = await runGoal('g', goalCfg({ status: 'failed', blocked: '同一条命令逐字相同地失败 2 次' }));
     expect(r.outcome).toBe('blocked');
     expect(RUN_OUTCOME_INFO.blocked.resumable).toBe(false);
   });
 
   test('轮数用尽而 judge 说没达标 → not-converged (STALLED: 再给几轮可能就成)', async () => {
-    const r = await runGoal('g', goalCfg({ status: 'failed', converged: false }));
+    const r = await runGoal('g', goalCfg({ status: 'failed' }));
     expect(r.outcome).toBe('not-converged');
     expect(RUN_OUTCOME_INFO['not-converged'].resumable).toBe(true);
   });
 
   test('★ 两者的 status 一模一样 —— 靠 status 分不开, 靠 outcome 分得开', async () => {
-    const blocked = await runGoal('g', goalCfg({ status: 'failed', converged: false, blocked: '材料自相矛盾, 再转多少轮都一样' }));
-    const stalled = await runGoal('g', goalCfg({ status: 'failed', converged: false }));
+    const blocked = await runGoal('g', goalCfg({ status: 'failed', blocked: '材料自相矛盾, 再转多少轮都一样' }));
+    const stalled = await runGoal('g', goalCfg({ status: 'failed' }));
     const stageOf = (r: Awaited<ReturnType<typeof runGoal>>) => r.stages.find((s) => s.stage === 'execute')!;
     // ← 此前唯一能读到的那一位: 相同 (两者都是 failed, 而其中一次判定完全正确)
     expect(stageOf(blocked).status).toBe(stageOf(stalled).status);
@@ -67,7 +63,7 @@ describe('N5 · 阻塞 vs 未收敛 (整张表的原型对 —— 来自 2026-07
   });
 
   test('预算停 ≠ 阻塞: 前者加预算就能续, 后者加多少轮都一样', async () => {
-    const r = await runGoal('g', goalCfg({ status: 'failed', converged: false, budgetStopped: '预算触顶' }));
+    const r = await runGoal('g', goalCfg({ status: 'failed', budgetStopped: '预算触顶' }));
     expect(r.outcome).toBe('budget-exhausted');
     expect(RUN_OUTCOME_INFO['budget-exhausted'].loopState).toBe('EXHAUSTED');
     // 两格的 resumable 都是 false, 但**理由不同** —— 所以下一句话必须不同, 否则该合并
@@ -75,34 +71,35 @@ describe('N5 · 阻塞 vs 未收敛 (整张表的原型对 —— 来自 2026-07
   });
 
   test('被叫停 → cancelled: 唯一"原样 resume 就接着跑"的格', async () => {
-    const r = await runGoal('g', goalCfg({ status: 'failed', converged: false }, { cancelled: { reason: 'owner 叫停', at: 'n', notRun: [] } }));
+    const r = await runGoal('g', goalCfg({ status: 'failed' }, { cancelled: { reason: 'owner 叫停', at: 'n', notRun: [] } }));
     expect(r.outcome).toBe('cancelled');
     expect(RUN_OUTCOME_INFO.cancelled.resumable).toBe(true);
   });
 
-  test('judge 说成了 + 冻结判据没过 → oracle-failed (D-I 作弊达标 / G4 虚判据, 二者的修法相反)', async () => {
+  test('conductor 说成了 + 冻结判据没过 → not-converged (循环路径: 有可执行判据时停止规则唯一 = 判据); oracle-failed 词条仍在表里', async () => {
     const cfg = {
-      ...goalCfg({ status: 'done', converged: true }),
+      ...goalCfg({ status: 'done' }),
       acceptance: { kind: 'executable' as const, command: 'grep -q x f', expectExit: 0 },
       _classify: async () => ({ tier: 'simple' as const, acceptance: { kind: 'executable' as const, command: 'grep -q x f', expectExit: 0 } }),
       _runDag: async () =>
         ({
-          plan: { name: 'goal-execute', nodes: {} },
+          plan: { name: 'goal-orchestrating-loop', nodes: {} },
           sessionId: 's',
-          levels: [['execute']],
-          results: { execute: leaf({ status: 'done', converged: true }), accept: { id: 'accept', kind: 'command', deps: ['execute'], status: 'failed', output: '', usage: { in: 0, out: 0 } } },
+          levels: [['conductor'], ['accept']],
+          results: { conductor: leaf({ status: 'done' }), accept: { id: 'accept', kind: 'command', deps: ['conductor'], status: 'failed', output: '', usage: { in: 0, out: 0 } } },
           usage: { conductor: { in: 1, out: 1 }, leavesIn: 1, leavesOut: 1, leavesCacheHit: 0 },
         }) as unknown as ExecutorDagResult,
     } as unknown as RunGoalConfig;
     const r = await runGoal('g', cfg);
     expect(r.converged).toBe(false);
-    expect(r.outcome).toBe('oracle-failed');
-    // 「不知道该归哪边」在这里是真的不知道 —— 拍一个 true/false 会挡掉另外半边
+    expect(r.outcome).toBe('not-converged');
+    expect(r.criteria?.oracle).toBe(false);
+    // oracle-failed 这一格在循环路径上只剩 rubric 分型可达; 词条本身留着 —— 「不知道该归哪边」是真的不知道
     expect(RUN_OUTCOME_INFO['oracle-failed'].resumable).toBeNull();
   });
 
   test('收敛 → success, 且它是唯一一个 status=done 的格', async () => {
-    const r = await runGoal('g', goalCfg({ status: 'done', converged: true }));
+    const r = await runGoal('g', goalCfg({ status: 'done' }));
     expect(r.outcome).toBe('success');
     expect(r.stages.find((s) => s.stage === 'execute')!.status).toBe('done');
   });
@@ -119,7 +116,7 @@ describe('N5 · 「不需要」vs「跑了空手而归」(stage 级此前被 ski
       _runDag: async (plan: { name: string }) =>
         (plan.name === 'goal-contract'
           ? { plan, sessionId: 's', levels: [['contract']], results: { contract: { id: 'contract', kind: 'conductor', deps: [], status: 'done', output: '正文', usage: { in: 1, out: 1 } }, ...kids }, usage: { conductor: { in: 1, out: 1 }, leavesIn: 1, leavesOut: 1, leavesCacheHit: 0 } }
-          : { plan, sessionId: 's', levels: [['execute']], results: { execute: leaf({ status: 'done', converged: true }) }, usage: { conductor: { in: 1, out: 1 }, leavesIn: 1, leavesOut: 1, leavesCacheHit: 0 } }) as unknown as ExecutorDagResult,
+          : { plan, sessionId: 's', levels: [['conductor']], results: { conductor: leaf({ status: 'done' }) }, usage: { conductor: { in: 1, out: 1 }, leavesIn: 1, leavesOut: 1, leavesCacheHit: 0 } }) as unknown as ExecutorDagResult,
     }) as unknown as RunGoalConfig;
 
   test('conductor 没分解出调研步 → not-needed (什么都不用做)', async () => {
@@ -209,7 +206,7 @@ describe('N5 · 词表结构性守卫', () => {
 
 describe('N5 · 摘要念对了没有 (G5「触发**并被正确读**」的后半句)', () => {
   test('★ 一次正确的 BLOCKED 不再被念成 failed', async () => {
-    const r = await runGoal('g', goalCfg({ status: 'failed', converged: false, blocked: '同一条命令逐字相同地失败 2 次' }));
+    const r = await runGoal('g', goalCfg({ status: 'failed', blocked: '同一条命令逐字相同地失败 2 次' }));
     const text = summarizeGoal(r);
     // 上一跑 live 印的原文是 `[failed] execute — 2 轮阻塞: …`
     expect(text).not.toContain('[failed] execute');
@@ -219,13 +216,13 @@ describe('N5 · 摘要念对了没有 (G5「触发**并被正确读**」的后�
   });
 
   test('未收敛与阻塞在摘要上分得开 (两者的下一步相反)', async () => {
-    const stalled = summarizeGoal(await runGoal('g', goalCfg({ status: 'failed', converged: false })));
+    const stalled = summarizeGoal(await runGoal('g', goalCfg({ status: 'failed' })));
     expect(stalled).toContain('[not-converged/failed] execute');
     expect(stalled).toContain('加 maxRounds');
   });
 
   test('成了的时候不印"下一步" (成了就没有下一步这回事)', async () => {
-    expect(summarizeGoal(await runGoal('g', goalCfg({ status: 'done', converged: true })))).not.toContain('终止原因');
+    expect(summarizeGoal(await runGoal('g', goalCfg({ status: 'done' })))).not.toContain('终止原因');
   });
 });
 
