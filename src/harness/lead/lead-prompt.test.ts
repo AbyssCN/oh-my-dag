@@ -4,7 +4,7 @@
  * 往前缀里加 20k 画图说明 → ①红。
  */
 import { describe, expect, test } from 'bun:test';
-import { buildLeadSystemPrompt, LEAD_PROMPT_BOUNDARY, LEAD_PROMPT_RESIDENT_MAX, renderLeadPrefix } from './lead-prompt';
+import { buildLeadSystemPrompt, LEAD_PROMPT_BOUNDARY, LEAD_PROMPT_PREFIX_MAX, LEAD_PROMPT_RESIDENT_MAX, renderLeadPrefix } from './lead-prompt';
 import { createLeadTools, LEAD_TOOL_NAMES } from './tools/index';
 import { renderManual } from './render-manual';
 import type { LeadCtx, LeadTool } from './types';
@@ -12,7 +12,16 @@ import { conductorSystemPrompt } from '../conductor-plan';
 
 const ctx: LeadCtx = { cwd: '/w', writeRoot: '/w', acceptance: { command: 'bun test', expect_exit: 0 }, allowlist: ['bun'], maxFanout: 6, seats: { worker: 'a', escalation: 'b', verify: 'c' }, researchAvailable: false };
 const FULL_FACTS = {
-  goal: 'Fix the flaky retry in src/harness/agent-leaf.ts so that a timed-out leaf reports budgetStopped instead of done.',
+  // 2026-09-03: goal 按 bench 真题面的长度给 (实测 800–900 字符) —— 2026-09-02 首批 INV-8 超限 (8217/8299)
+  // 就是因为这里此前只放了一句 100 字符的 goal, 满槽不满。
+  goal: ('Fix the flaky retry in src/harness/agent-leaf.ts so that a timed-out leaf reports budgetStopped instead of done. ' +
+    'Context: the leaf loop in agent-leaf.ts wraps the provider call with a deadline; when the deadline fires the loop returns the partial ' +
+    'assistant message and the caller currently maps it to done because filesTouched is non-empty. Reproduce with ' +
+    'OMD_LEAF_TIMEOUT_MS=10 bun test src/harness/dag/budget-leaf-timeout.test.ts and observe the status column. The fix must keep the ' +
+    'partial output (do not drop it), set budgetStopped with the elapsed time, and leave the checkpoint untouched so a resume can reuse it. ' +
+    'Do not touch run-goal.ts; the terminal-state mapping there is owned by another change. Add one red test first, then make it green. ' +
+    'Report the before/after failure set of the acceptance command and the exit codes verbatim. ' +
+    'Keep the change under fifty lines and do not reformat untouched code.').slice(0, 900),
   writeRoot: '/home/nick/repos/oh-my-dag',
   protectedPaths: ['docs/plan/NOTES.md', 'src/model/seats.ts'],
   acceptance: { command: 'bun test src/harness/dag/budget-leaf-timeout.test.ts', expect_exit: 0 },
@@ -30,7 +39,10 @@ describe('lead prompt', () => {
     const p = buildLeadSystemPrompt(FULL_FACTS, tools);
     const old = conductorSystemPrompt().length;
     console.log(`lead resident=${p.length} chars · conductor full=${old} chars`);
+    expect(FULL_FACTS.goal.length).toBeGreaterThanOrEqual(850); // 满槽是真满: 题面按 bench 实测长度
     expect(p.length).toBeLessThanOrEqual(LEAD_PROMPT_RESIDENT_MAX);
+    // 前缀自己的上限: 给事实留 ≥ 1400 字符 (2026-09-03)。删掉任一节的精简 → 这条先红。
+    expect(renderLeadPrefix(tools).length).toBeLessThanOrEqual(LEAD_PROMPT_PREFIX_MAX);
     expect(old).toBeGreaterThan(p.length * 2);
   });
 

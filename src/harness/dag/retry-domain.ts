@@ -162,3 +162,39 @@ export function retryBudgetFor(
   // 白名单而不是全给 —— 理由见 REPAIRABLE_BY_CAUSE 与上方 §R-1。
   return failureKind !== undefined && REPAIRABLE_BY_CAUSE.has(failureKind) ? 1 : 0;
 }
+
+// ── 瞬时 provider 故障 (2026-09-03, code80-p3 首批塌于 MiniMax 529) ──────────────────────────
+//
+// L0 重试对「抛错」只补一次且**零退避**: 首发 529 overloaded → 立刻再发 → 又 529 → 节点 failed,
+// 前后不到 2 秒。集群过载是以秒到分钟计的, 两发连打等于没重试。而 leaf 这一层的 429/5xx 不经
+// `callModel` 的退避 (pi agent-loop 把 provider 错放进 stopReason:'error', agent-leaf 再抛出来),
+// 所以退避只能落在这里。
+//
+// 判据是**错误原文**而不是 kind: 抛到 L0 的已经是 `Error(string)`, ModelError 的 kind/status 在
+// agent-leaf.ts:2978 那一跳就没了; 与其为了传 status 改三层签名, 不如认原文里的 HTTP 码与
+// 提供方词 (overloaded / rate limit / 传输层断连)。**不认 401/403/404/400**: 那些再等也一样。
+
+/** 总尝试次数 (含首发)。三发 = 首发 + 两次退避重试; 退避总时长 ≈ base × (1 + 3) = 20s (base 5s)。 */
+export const TRANSIENT_PROVIDER_ATTEMPTS = 3;
+
+const TRANSIENT_RE = /\b(429|502|503|504|529)\b|overloaded|rate[ _-]?limit|too many requests|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|socket hang up|fetch failed/i;
+
+/** 失败原文是否是「再等一会儿可能就好」的 provider 侧故障。 */
+export function isTransientProviderFailure(message: string | undefined): boolean {
+  if (!message) return false;
+  // 客户端错误显式排除 —— 原文里同时出现 401 与 529 时 (罕见) 按不瞬时处理, 宁可少重试。
+  if (/\b(400|401|403|404)\b/.test(message)) return false;
+  // 配额耗尽不是瞬时: 60 秒内不会恢复, 重试只会加倍花钱 (P2a 「传输类不重试」的那条理由在这里仍成立)。
+  if (/quota|配额|insufficient_quota|billing|exceeded your current/i.test(message)) return false;
+  return TRANSIENT_RE.test(message);
+}
+
+/**
+ * 第 `attempt` 次失败后 (0 基) 等多久再发: base × 3^attempt, 封顶 60s。
+ * base 读 `OMD_PROVIDER_RETRY_BASE_MS` (缺省 5000; 测试置 0)。每次调用都读 env —— 不在模块加载期烤死。
+ */
+export function transientProviderDelayMs(attempt: number): number {
+  const raw = Number(process.env.OMD_PROVIDER_RETRY_BASE_MS);
+  const base = Number.isFinite(raw) && raw >= 0 ? raw : 5000;
+  return Math.min(60_000, base * 3 ** Math.max(0, attempt));
+}

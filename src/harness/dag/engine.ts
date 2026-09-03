@@ -207,7 +207,7 @@ import type { FalsifyMutate, FalsifyNodeExtras } from './types';
 // 等于「读源码复制粘贴」, 仓规 S-39 那条记忆写过这是同一件事声明第二遍。 wiring 见
 // budgetFor (runNode 内) · runVerifier 包装 (verify 段) · partial-quorum-failure 发射点
 // (executePlan 的 pump 循环)。
-import { classifyRetryDomain, retryBudgetFor } from './retry-domain';
+import { classifyRetryDomain, retryBudgetFor, isTransientProviderFailure, transientProviderDelayMs, TRANSIENT_PROVIDER_ATTEMPTS } from './retry-domain';
 import { append, emptyLedger, infraObserved, terminal, type VerdictEntry, type VerdictKind, type VerdictLedger } from './verdict-ledger';
 import {
   appendClaimEvidence,
@@ -5496,7 +5496,21 @@ async function executePlan(
         break;
       }
       if (leaf && leaf.status !== 'failed') break; // done / skipped — 重试无意义
-      if (attempt >= budgetFor(thrown, leaf)) break; // 预算用尽 (oracle 域判否越过 max_retry; 抛错补一次, 见 budgetFor)
+      // 瞬时 provider 故障 (529 overloaded / 429 / 5xx / 传输断连): 预算抬到 TRANSIENT_PROVIDER_ATTEMPTS 发,
+      // 且发前**退避** —— 此前抛错只补一次且零退避, 两发连打在集群过载下等于没重试 (2026-09-03 code80-p3
+      // 首批 24/36 题就是这样 0–2 分钟内 failed 的)。oracle 域不在此列 (确定性判否, 与 provider 无关)。
+      // 只看**抛错**路径: agent-leaf 的 provider 错是抛出来的 (agent-leaf.ts:2978); 返回 failed 叶的路径
+      // (conductor 展开失败 / 产物闸 / oracle 判否) 各有自己的重试契约 (P2a 展开期原地重试 · R-1 带败因重修 ·
+      // INV-2 oracle 不重试), 这里不再叠一层 —— 叠了就是 engine.test 「传输类不重试」那条被翻。
+      const transientMsg = thrown !== undefined ? (thrown instanceof Error ? thrown.message : String(thrown)) : undefined;
+      const transient = isTransientProviderFailure(transientMsg);
+      const cap = transient ? Math.max(budgetFor(thrown, leaf), TRANSIENT_PROVIDER_ATTEMPTS - 1) : budgetFor(thrown, leaf);
+      if (attempt >= cap) break; // 预算用尽 (oracle 域判否越过 max_retry; 抛错补一次, 见 budgetFor; 瞬时 provider 故障抬到三发)
+      if (transient) {
+        const delayMs = transientProviderDelayMs(attempt);
+        logger.warn({ node: id, attempt, delayMs, cause: transientMsg?.slice(0, 160) }, '[omd/executor-dag] 瞬时 provider 故障 → 退避后重试');
+        await new Promise<void>((r) => setTimeout(r, delayMs));
+      }
       // S3 片 5 / INV-2 闸登记面: oracle 域判否越过 max_retry 这一动作的判词。同一 id 在多个出口
       // 不重复登记 (gate-registry.ts 的 GATE_REGISTRY 单条), 但只要这条闸**真的**拦下过 retry,
       // 这行日志就是它的活体证据 (gate-coverage 闸扫整串)。
