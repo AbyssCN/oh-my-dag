@@ -2,7 +2,7 @@
  * src/mcp/tool-renames —— 三层改名的**唯一真源**(owner 裁决 2026-08-04, slow-loop-hitl t7)。
  *
  * 三层各说出自己的承诺: `map_*`(慢回路决策图, 人在场)⊃ `solve`(目标收敛, 含修复轮)⊃
- * `run`(改法已定照图执行)。旧名 `path_*` / `dag_goal` / `dag_run` 是**deprecated alias**,
+ * `run`(任务直进编排循环, 无验收)。旧名 `path_*` / `dag_goal` / `dag_run` 是**deprecated alias**,
  * 行为与新名完全相同, 留一版后拆(拆时删本表条目即可, alias 自动消失)。
  *
  * ## 为什么在装配层改而不动源码字面量

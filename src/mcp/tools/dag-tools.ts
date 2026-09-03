@@ -177,7 +177,11 @@ export function dispatchBriefing(plan: ConductorPlan, config: ExecutorDagConfig)
   return `${summary}\n${ascii}`;
 }
 
-/** Engine seam — callers inject real implementations, tests inject fakes. */
+/**
+ * Engine seam — callers inject real implementations, tests inject fakes.
+ * `runExecutorDag` = 任务入口 (生产绑定 = loop-run.ts 的编排循环: conductor 节点 + 七张卡, 2026-09-03 起);
+ * `runExecutorDagWithPlan` = 预构造图入口 (dag_run_plan / solve 的 sdd-direct 平铺图)。
+ */
 export interface DagEngine {
   runExecutorDag(task: string, config: ExecutorDagConfig): Promise<ExecutorDagResult>;
   runExecutorDagWithPlan(plan: ConductorPlan, config: ExecutorDagConfig): Promise<ExecutorDagResult>;
@@ -844,7 +848,7 @@ function makeDagRun(deps: DagToolDeps): OmdMcpTool {
   const { runRegistry, ...rest } = deps;
   return {
     name: 'dag_run',
-     description: 'Execute a task via conductor DAG planning + leaf fan-out (S2: detached child). resume=<runId> skips green nodes.',
+     description: 'Run a task via the orchestrating loop (conductor + dispatch cards; no acceptance). resume=<runId> skips green nodes.',
     inputSchema: {
       task: z.string().describe('Task description for the conductor to plan and execute. 可选分区: 「## 提示」区 = 建议不构成验收判据; 「## 硬约束」区 = 逐条硬判 (verifier 按此裁)'),
       conductorModel: z.string().optional().describe('Conductor model (provider:modelId)'),

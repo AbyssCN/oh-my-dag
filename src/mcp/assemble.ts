@@ -54,7 +54,8 @@ import { createDagRecorder, type DagRecorder } from '../harness/dag/dag-record';
 import { createRunStore } from './run-store';
 import { createOwnerInbox, type OwnerInbox } from './owner-inbox';
 import { createTriageTools } from './tools/triage';
-import { runExecutorDag, runExecutorDagWithPlan } from '../harness/dag/engine';
+import { runExecutorDagWithPlan } from '../harness/dag/engine';
+import { runOrchestratingLoop } from '../harness/goal/loop-run';
 import type { DagNodeEvent, ExecutorDagConfig } from '../harness/dag/types';
 import { extNodeEventSink } from '../harness/ext-tools';
 import type { ConductorPlan } from '../harness/conductor-plan';
@@ -95,8 +96,12 @@ import { checkWeeklyBudget, usageLedgerDir } from './budget';
 import { createOmdSessionStore, type OmdSessionStore } from '../harness/chat/session-store';
 import { notifyOwner, type NotifyDeps } from '../harness/notify';
 
-/** 生产引擎接缝 (真 DAG 引擎)。 */
-const PROD_ENGINE: DagEngine = { runExecutorDag, runExecutorDagWithPlan };
+/**
+ * 生产引擎接缝 (真 DAG 引擎)。`runExecutorDag` 这一位 = `run` 的任务入口: 2026-09-03 起走编排循环
+ * (任务原文 → conductor 节点 + 七张卡, 无 accept 节点; loop-run.ts), 不再是引擎里的 v1 规划式 conductor
+ * (`engine.runExecutorDag` 只剩 iterate.ts / eval oracles 在用)。预构造图入口 `runExecutorDagWithPlan` 不变。
+ */
+const PROD_ENGINE: DagEngine = { runExecutorDag: runOrchestratingLoop, runExecutorDagWithPlan };
 
 /**
  * owner 推式桥接缝 (SDD F1 片 2) —— 引擎事件 → ownerNotifyEvent 翻译器。

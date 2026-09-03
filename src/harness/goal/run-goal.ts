@@ -44,7 +44,6 @@ import {
   checklistDiscriminationReason,
   isPytestHarnessInconclusive,
   type ProbeItemOutcome,
-  missingPathArgs,
 } from './acceptance-gate';
 // P2b-runtime (2026-09-02): 冻结判据 harness-inconclusive 的运行尾巴要落进人读的 receipt,
 // 但必须有界 —— 复用既有的头+尾裁剪, 不新写第二份。
@@ -90,17 +89,13 @@ import { withProtectedPaths } from '../agent-tools';
 import {
   CONDUCTOR_INFRA_FAILURE_KINDS,
   CONDUCTOR_NODE_ID,
-  buildConductorFace,
   compileOrchestratingLoop,
   withReinjectedFinding,
   checkCriterionFreeze,
   renderCriterionFreezeTruth,
 } from './orchestrating-loop';
-import type { ConductorCtx } from '../conductor/types';
 import { createConductorCardLedger, type ConductorCardLedger, type LoopLedger } from './loop-ledger';
-import { allowlistForRoot } from '../command-leaf';
-import { tryResolveSeatModel } from '../../model/role-models';
-import { AGENT_DEFAULT_FANOUT } from '../fleet';
+import { conductorCtxOf, withLoopConfig, type LoopHost } from './loop-run';
 
 // D-I: 两条轴的类型与分类器都归 ./acceptance (那里是判据轴的单一真源); 此处 re-export 保旧调用面。
 export type { AcceptanceSpec, GoalClassification, GoalTier } from './classify-acceptance';
@@ -955,100 +950,6 @@ export const BEST_GREEN_LABEL = 'best-green';
 
 
 
-/**
- * **D4 切片 3: 阶段链路由开关的合并判据** (INV-4 零回归那一半)。
- *   · config 显式布尔值 (test / 装配层注入) ⇒ 直接用, 压过环境变量;
- *   · config 缺席 ⇒ 读环境变量 `OMD_CHAIN` (`'1'` / `'true'` 视为开, 余下视作关);
- *   · 两都缺席 ⇒ 关。
- *
- * 每次调用重读环境变量 —— 测试可在中途翻转, 不依赖模块级捕获。
- *
- * 镜像 `flatFirstEnabled` 的形状, 两开关**同源同真源**, 装配层 A/B 时只动 env 就行。
- */
-/**
- * P3 S6b: conductor 卡 compile 的执行上下文 (契约 D-2 `ConductorCtx`)。全部从 run 的 config 与座位表**透传**,
- * 不在这里第二次解析环境 (D-25: maxFanout 沿用装配层 `effectiveFanout` 的结果; 测试 / 无装配时回落
- * fleet 的缺省 36, 与引擎「不限」同义)。座位: worker = agent 座, escalation = 升级座 (decompose 卡的
- * conductor 用它), verify = verifier 座 (今天没有卡消费, 透传给 prompt/读数)。
- */
-function conductorCtxOf(config: RunGoalConfig, runnable: { command: string; expectExit?: number } | null): ConductorCtx {
-  const seat = (id: 'agent' | 'escalation' | 'verifier'): string | undefined => {
-    try {
-      return tryResolveSeatModel(id)?.model;
-    } catch (err) {
-      // 座位表读不出来 (测试 / 无 config) = 这一格缺席, 留一行证据, 不掀桌。
-      logger.warn({ seat: id, err: String(err).slice(0, 120) }, '[run-goal] conductor 座位坐标解析失败 → 缺席');
-      return undefined;
-    }
-  };
-  return {
-    cwd: config.cwd,
-    writeRoot: config.cwd,
-    ...(runnable ? { acceptance: { command: runnable.command, expect_exit: runnable.expectExit ?? 0 } } : {}),
-    allowlist: allowlistForRoot(config.cwd),
-    maxFanout: config.dag.maxFanout ?? AGENT_DEFAULT_FANOUT,
-    seats: {
-      worker: config.dag.agentLeafModel ?? config.dag.leafModel ?? seat('agent') ?? '',
-      escalation: config.dag.conductorEscalationModel ?? seat('escalation') ?? config.dag.conductorModel ?? '',
-      verify: seat('verifier') ?? '',
-    },
-    researchAvailable: Boolean(config.dag.researchRunner),
-  };
-}
-
-/**
- * P3 S6b: 循环路径的引擎 config —— 在 `base` 上加 (a) `maxEscalations: 0` (D-14 不开重规划轮) 与
- * (b) `leafFace` (只对 `conductor` id 返回整副面)。卡的 `runChild` 跑派发出的子图: 同一 `_runDag` 注入口
- * (D-5 唯一执行入口), 子 run 的 config = base 剥掉 verifier / maxEscalations / leafFace / freezeCriterion
- * (子图节点各自带 self_check; 终审只在父 run 打一次), continuity 派生 runId `<runId>:d<n>` (子节点 checkpoint
- * 与父 run 不撞; `onComplete` / `onNodeEvent` 保留 —— 留痕库按 run_id 归组, 一次派发一行, 进度事件照发)。
- */
-function withLoopConfig(
-  base: ExecutorDagConfig,
-  plan: ConductorPlan,
-  config: RunGoalConfig,
-  runnable: { command: string; expectExit?: number } | null,
-  task: string,
-  /** R-1 账本; 回灌第二跑传同一个对象 (两跑合并计数)。 */
-  ledger?: ConductorCardLedger,
-): ExecutorDagConfig {
-  const ctx = conductorCtxOf(config, runnable);
-  const { verifier: _v, maxEscalations: _m, leafFace: _f, freezeCriterion: _c, frozenNodes: _n, deterministicReplan: _d, ...childBase } = base;
-  void _v; void _m; void _f; void _c; void _n; void _d;
-  const runChild = (childPlan: ConductorPlan, seq: number): Promise<ExecutorDagResult> => {
-    const continuity = base.continuity
-      ? { ...base.continuity, runId: `${base.continuity.runId}:d${seq}`, resume: false }
-      : undefined;
-    const childCfg: ExecutorDagConfig = { ...childBase, ...(continuity ? { continuity } : {}) };
-    return (config._runDag ?? runExecutorDagWithPlan)(childPlan, childCfg);
-  };
-  const budgetMs = base.loopBudget?.ms;
-  // 1-A (2026-09-03): 判据引用、此刻不存在的文件 → conductor 第一个派发只准写它们, 之后冻结 (闸在 orchestrating-loop)。
-  // 回灌第二跑时文件已存在 → 这里算出 [], 但 ledger.criterionFreeze 里已有 hashes → 工具面从那里恢复保护 (initFreezeState)。
-  const criterionFiles = runnable ? missingPathArgs(runnable.command, config.cwd) : [];
-  const freezeFiles = criterionFiles.length ? criterionFiles : ledger?.criterionFreeze?.files ?? [];
-  const face = buildConductorFace(
-    {
-      goal: plan.nodes[CONDUCTOR_NODE_ID]?.goal ?? task,
-      writeRoot: config.cwd,
-      protectedPaths: extractProtectedPaths(task),
-      ...(ctx.acceptance ? { acceptance: ctx.acceptance } : {}),
-      ...(criterionFiles.length ? { criterionFiles } : {}),
-      minutesLeft: budgetMs !== undefined ? Math.max(0, Math.floor(budgetMs / 60_000)) : null,
-      tokensLeft: base.loopBudget?.tokens ?? null,
-      maxFanout: ctx.maxFanout,
-      researchAvailable: ctx.researchAvailable,
-    },
-    { ctx, runChild, ...(ledger ? { ledger } : {}), ...(freezeFiles.length ? { criterionFreeze: { files: freezeFiles, root: config.cwd } } : {}) },
-  );
-  return {
-    ...base,
-    maxEscalations: 0,
-    leafFace: (node) => (node.id === CONDUCTOR_NODE_ID ? face : undefined),
-  };
-}
-
-
 /** INV-1 棘轮的四个动作 —— 「不必动」「动不了」「真动了」不许压平。 */
 export type BestGreenAction = 'none' | 'already-green' | 'restore' | 'unrestorable';
 
@@ -1583,6 +1484,8 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   let loopPlan: ConductorPlan | undefined;
   /** R-1 账本 (循环路径才用; 两跑合并)。 */
   const loopLedger: ConductorCardLedger = createConductorCardLedger();
+  /** 循环装配的宿主面 (loop-run.ts 与 `run` 入口共用同一份装配, D-5)。 */
+  const loopHost: LoopHost = { cwd: config.cwd, dag: config.dag, ...(config._runDag ? { runDag: config._runDag } : {}) };
   if (sdd && runnable) {
     // INV-D3-1: 同一份判定 —— fatal / fallback 与 goal.ts `sddIgnitionDryRunGate` 共用。
     const ignition = dryRunSddIgnition(sdd.text);
@@ -1736,7 +1639,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
       ...(runnable
         ? { acceptance: { command: runnable.command, expect_exit: runnable.expectExit ?? 0 } }
         : {}),
-      ctx: conductorCtxOf(config, runnable),
+      ctx: conductorCtxOf(loopHost, runnable),
       // 编排节点坐 conductor 座 (owner 2026-09-03): 它就是 conductor, 不是 worker。
       ...(config.dag.conductorModel ? { conductorModel: config.dag.conductorModel } : {}),
     });
@@ -1847,7 +1750,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
     //   · 卡的 `runChild` = 同一个 `_runDag` 注入口跑派发出的子图 (D-5 唯一执行入口), 子 run 剥掉
     //     verifier / maxEscalations / leafFace / freezeCriterion (子图节点各自带 self_check), 派生 runId。
     //   平铺图那几颗钉子 (frozenNodes / deterministicReplan) 不挂: 循环没有重规划轮。
-    const loopCfg = loopPlan !== undefined ? withLoopConfig(tappedCfg, loopPlan, config, runnable, task, loopLedger) : tappedCfg;
+    const loopCfg = loopPlan !== undefined ? withLoopConfig(tappedCfg, loopPlan, loopHost, runnable, task, loopLedger) : tappedCfg;
     exec = await (config._runDag ?? runExecutorDagWithPlan)(execPlan, loopCfg);
   } catch (err) {
     return bail(`execute 抛错: ${String(err).slice(0, 200)}`, 'infra-error');
@@ -1894,7 +1797,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
     const replanted = withReinjectedFinding(loopPlan, finding);
     try {
       // 基座 = 第一跑的 execCfg (同一份 freezeCriterion / waiveRed / 预算), 只是 verifier 不在 (INV-7 机械保证)。
-      const { verifier: _noVerifier, ...noVerifierCfg } = withLoopConfig(loopBase, replanted, config, runnable, task, loopLedger);
+      const { verifier: _noVerifier, ...noVerifierCfg } = withLoopConfig(loopBase, replanted, loopHost, runnable, task, loopLedger);
       void _noVerifier;
       dispatchesBeforeReinject = loopLedger.dispatches.length;
       exec = await (config._runDag ?? runExecutorDagWithPlan)(replanted, noVerifierCfg);
