@@ -73,18 +73,21 @@ export async function runLeafWorkerPayload(
   // (不是 stub): 调用回调父进程, 由父进程原有实例真执行 (ext host 仍按 cwd 共享, 本进程不 loadExtension)。
   // 有保留工具而桥不在 = 父侧装配坏了 → 当场响亮失败, 不留裸 `execute is not a function`, 更不冒充可执行。
   const decls = Array.isArray(payload.opts.customTools) ? (payload.opts.customTools as AnyOmdTool[]) : [];
+  // P3 S6b × D-9 (2026-09-04): 按调用的 face.customTools (conductor 七张卡) 同样是 decl 过线、execute 在父进程 ——
+  // 与 opts 那份走同一座桥、同一条「有工具无桥 → 响亮拒」的闸。此前这里不重水化 face → jail 里的 conductor 派不出任何卡。
+  const faceDecls = Array.isArray(payload.input.face?.customTools) ? (payload.input.face!.customTools as AnyOmdTool[]) : [];
   const bridgePrefix = payload.toolBridge?.prefix;
-  if (decls.length > 0 && typeof bridgePrefix !== 'string') {
-    throw new Error('[leaf-worker] 有 sandboxSafe 扩展工具但 payload 无 toolBridge —— 拒绝以不可执行的假工具起叶');
+  if ((decls.length > 0 || faceDecls.length > 0) && typeof bridgePrefix !== 'string') {
+    throw new Error('[leaf-worker] 有 sandboxSafe 扩展工具或 face 卡但 payload 无 toolBridge —— 拒绝以不可执行的假工具起叶');
   }
   let callSeq = 0;
-  const customTools =
-    decls.length > 0
-      ? decls.map((t) => ({
-          ...t,
-          execute: (id: string, params: unknown) => callParentTool(bridgePrefix!, ++callSeq, t.name, id, params),
-        }))
-      : undefined;
+  const rehydrate = (t: AnyOmdTool): AnyOmdTool => ({
+    ...t,
+    execute: (id: string, params: unknown) => callParentTool(bridgePrefix!, ++callSeq, t.name, id, params),
+  });
+  const customTools = decls.length > 0 ? decls.map(rehydrate) : undefined;
+  const input: AgentLeafInput =
+    faceDecls.length > 0 ? { ...payload.input, face: { ...payload.input.face!, customTools: faceDecls.map(rehydrate) } } : payload.input;
   const runner = (deps.createRunner ?? createAgentLeafRunner)({
     ...payload.opts,
     cwd: process.cwd(),
@@ -92,7 +95,7 @@ export async function runLeafWorkerPayload(
     ...(payload.input.touchSession ? { touch: { session: payload.input.touchSession } } : {}),
     ...(customTools ? { customTools } : {}),
   } as AgentLeafRunnerOpts);
-  return runner(payload.input);
+  return runner(input);
 }
 
 async function main(): Promise<number> {

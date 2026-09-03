@@ -95,6 +95,17 @@ export function serializableOpts(opts: AgentLeafRunnerOpts): Record<string, unkn
   return { ...rest, ...dd, ...(kept.length > 0 ? { customTools: kept } : {}) };
 }
 
+/**
+ * 本次调用父侧要伺候的桥工具 = 构造期 sandboxSafe 扩展工具 ∪ 本次 `input.face.customTools`。
+ * face 那份按调用变 (卡闭包捕获当次 run 的 config), 所以不能在造 runner 时算死; 同名时 face 胜 (它是这一发显式给的面)。
+ * 证伪方式 (sandboxed-leaf-face-bridge.test.ts): 删掉 face 那一半 → 「face 卡进桥」那条红。
+ */
+export function bridgeToolsForCall(bridgeTools: ReadonlyMap<string, AnyOmdTool>, input: AgentLeafInput): Map<string, AnyOmdTool> {
+  const out = new Map(bridgeTools);
+  for (const t of input.face?.customTools ?? []) out.set(t.name, t);
+  return out;
+}
+
 /** 单次调用的 JSON 边界形状。input 原样保留, profile 等调用期字段不得迁入构造期 opts。 */
 export function leafWorkerPayload(
   opts: Record<string, unknown>,
@@ -211,7 +222,12 @@ export function createSandboxedLeafRunner(opts: AgentLeafRunnerOpts): AgentLeafR
     const resultRel = `.omd-leaf-result-${id}.json`;
     const payloadAbs = join(root, payloadRel);
     const resultAbs = join(root, resultRel);
-    const bridgePrefix = bridgeTools.size > 0 ? `.omd-leaf-tool-${id}` : null;
+    // P3 S6b × D-9 (2026-09-04): 按调用的 `input.face.customTools` (conductor 的七张派工卡) 与 opts 的 sandboxSafe
+    // 工具走**同一座桥**。卡的 execute 是父进程引擎 config 上的闭包 (派子图), 过不了 JSON 边界; 此前不桥接 →
+    // worker 里只剩 decl, pi 按名找到工具却 `prepared.tool.execute is not a function` —— run 4795bed7 实账:
+    // 隔离档 conductor 71 次工具调用, work/spawn/explore/best_of 四张卡全拒, 派发 0 次, 而 head 档 (不进 jail) 同图正常。
+    const callTools = bridgeToolsForCall(bridgeTools, input);
+    const bridgePrefix = callTools.size > 0 ? `.omd-leaf-tool-${id}` : null;
     writeFileSync(payloadAbs, JSON.stringify(leafWorkerPayload(optsJson, input, bridgePrefix ?? undefined)));
 
     // pi agent dir 即弃 rw 副本 (每 leaf 一份, 防并发写共享态; 见 makePiAgentCopy ⚠ OAuth 注)。
@@ -228,7 +244,7 @@ export function createSandboxedLeafRunner(opts: AgentLeafRunnerOpts): AgentLeafR
     ];
     const proc = Bun.spawn(argv, { stdout: 'pipe', stderr: 'pipe', stdin: 'ignore' });
     // 桥与进程同寿: spawn 之后才开表 (早开空转), finally 里停 (worker 死了不再喂响应)。
-    const stopBridge = bridgePrefix ? serveToolBridge(root, bridgePrefix, bridgeTools) : null;
+    const stopBridge = bridgePrefix ? serveToolBridge(root, bridgePrefix, callTools) : null;
     // 超时 = leaf 硬上界 + 30s buffer (worker 内部还有自己的 leafTimeoutMs / 进展看门狗兜底)。
     // ⚠ 判据必须是**我们自己那把刀砍没砍**, 不是 `proc.killed` (2026-07-31 live 抓出来的):
     // worker 因 `Module not found` 秒级自己死掉时, 那条错误消息照样播报「子进程超时被杀 (3600s)」——
