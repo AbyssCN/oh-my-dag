@@ -3077,6 +3077,8 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     const denials = touchSessionStore.getStore()?.writeDenials;
     return {
       text, usage, promptVersion, filesTouched: [...touched], filesRead: [...readPaths], cwd, toolCalls, llmCalls, stalled, writeEffects,
+      // R-1 第 3 步: 回报实际用的档与通道 (两个通道的缺省不同, 引擎下发值 ≠ 实际值时读侧能看见)。
+      thinking: isSdkChannel ? { level: sdkThinkingLevel, channel: 'sdk' as const } : { level: thinkingLevel, channel: 'pi' as const },
       ...(denials && denials.size > 0 ? { writeDenials: Object.fromEntries(denials) } : {}),
       // #178 produce-by: 仅触发时出现 (同 spin 惯例); 恒 ≤1 (谓词 firedAt 非空短路)。
       ...(produceByFiredAt !== null ? { produceByNudges: 1 } : {}),

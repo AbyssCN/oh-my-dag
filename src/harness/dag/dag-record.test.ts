@@ -194,6 +194,26 @@ describe('留痕的派生面 — 命令原文 + 效果指标计数', () => {
     rec.close();
   });
 
+  test('R-1 第 3 步: agent 叶 thinking 原样进节点 JSON; agent 叶没报 → null; 非 agent 叶 → 缺席 (两态不互换)', () => {
+    const rec = createDagRecorder({ path: ':memory:' });
+    const id = rec.record(
+      withNodes(
+        { a: { goal: 'x' }, b: { goal: 'y' }, o: { goal: 'z' } },
+        {
+          a: { id: 'a', kind: 'agent', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 }, thinking: { level: 'medium', channel: 'sdk' } },
+          b: { id: 'b', kind: 'agent', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 } },
+          o: { id: 'o', kind: 'inproc', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 } },
+        },
+      ),
+      { runId: 'run-thinking' },
+    );
+    const nodes = rec.get(id)!.nodes;
+    expect(nodes.find((n) => n.id === 'a')!.thinking).toEqual({ level: 'medium', channel: 'sdk' });
+    expect(nodes.find((n) => n.id === 'b')!.thinking).toBeNull(); // 派了 agent 叶但没报
+    expect('thinking' in nodes.find((n) => n.id === 'o')!).toBe(false); // 非 agent 叶: 不适用, 不是 null
+    rec.close();
+  });
+
   /**
    * 闸在场态进留痕 (2026-09-02) —— 端到端一条链: **注入的 agentRunner 报 gates → 引擎 →
    * ExecutorDagResult → 留痕库 → 读回来能数出"多少节点根本没配写闸"**。

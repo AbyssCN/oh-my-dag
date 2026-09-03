@@ -700,6 +700,8 @@ export interface ReadoutResult {
     inconclusive: { bare: number; nonBare: number };
     residentPromptChars: { max: number | null; over8000: number; unrecorded: number };
     preActionLlmCalls: { sum: number; over1: number; unrecorded: number };
+    /** leaf thinking 档分布 (R-1 第 3 步): agent 节点按通道分两列, 各列按档计数; null (派了没报) 单列。 */
+    thinking: { pi: Record<string, number>; sdk: Record<string, number>; unreported: number };
   };
 }
 
@@ -1393,6 +1395,7 @@ function emptyLoopReadout(): ReadoutResult['loop_readout'] {
     inconclusive: { bare: 0, nonBare: 0 },
     residentPromptChars: { max: null, over8000: 0, unrecorded: 0 },
     preActionLlmCalls: { sum: 0, over1: 0, unrecorded: 0 },
+    thinking: { pi: {}, sdk: {}, unreported: 0 },
   };
 }
 
@@ -1412,6 +1415,11 @@ function computeLoopReadout(parsed: ParsedRow[]): ReadoutResult['loop_readout'] 
   const nodeAcc = (n: DagRunNode): void => {
     // 尾块 / 验收对账 / inconclusive: 节点级三态原样数, 父行 lead 节点也算 (它也是 agent 叶)。
     if (n.kind === 'agent') {
+      // thinking 档 (R-1 第 3 步): 缺席 (老行) 与 null (派了没报) 都进 unreported —— 都是"这一格没值", 读侧不猜档。
+      if (n.thinking && (n.thinking.channel === 'pi' || n.thinking.channel === 'sdk')) {
+        const col = out.thinking[n.thinking.channel];
+        col[n.thinking.level] = (col[n.thinking.level] ?? 0) + 1;
+      } else out.thinking.unreported++;
       if (n.selfReport === undefined) out.trailer.unrecorded++;
       else {
         out.trailer.agentNodes++;
@@ -2596,6 +2604,8 @@ function printNewSegments(r: ReadoutResult, dbPath: string): void {
     console.log(`   brief 含复现输出 (启发式): ${lp.dispatches.briefTrue}/${lp.dispatches.briefTrue + lp.dispatches.briefFalse} = ${pct(lp.dispatches.briefReproRate)} · 无 brief 槽 ${lp.dispatches.briefNull}`);
     console.log(`   尾块缺席率: ${lp.trailer.missing}/${lp.trailer.agentNodes} = ${pct(lp.trailer.missingRate)} (agent 节点; 没记 selfReport ${lp.trailer.unrecorded}) · acceptance_ran 不一致 ${lp.acceptanceRanMismatch} · inconclusive bare ${lp.inconclusive.bare} / 非 bare ${lp.inconclusive.nonBare}`);
     console.log(`   lead 常驻 prompt: max ${lp.residentPromptChars.max ?? '没记'} 字符 · >8000 ${lp.residentPromptChars.over8000} · 没记 ${lp.residentPromptChars.unrecorded} · 动手前 LLM 调用 Σ${lp.preActionLlmCalls.sum} (>1 的 run ${lp.preActionLlmCalls.over1}, 没记 ${lp.preActionLlmCalls.unrecorded})`);
+    const dist = (m: Record<string, number>): string => Object.entries(m).map(([k, v]) => `${k}×${v}`).join(' ') || '—';
+    console.log(`   leaf thinking (实际用的档, 按通道): pi ${dist(lp.thinking.pi)} · sdk ${dist(lp.thinking.sdk)} · 没报 ${lp.thinking.unreported} (agent 节点)`);
   }
 }
 

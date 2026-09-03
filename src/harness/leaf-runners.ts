@@ -303,6 +303,11 @@ export interface AgentLeafResult {
    * 它是「M3 调用/题」按 lead / worker 分解的引擎侧唯一来源 —— 桥日志一文件一请求只能按批算, 分不到题。
    */
   llmCalls?: number;
+  /**
+   * R-1 第 3 步 (2026-09-03, D-18 读数面): 本次 leaf **实际用的** thinking 档 (resolveLeafThinking 之后的值) 与通道。
+   * 引擎下发的档与 runner 用的档可以不同 (OMD_AGENT_EFFORT 钉档 / 通道缺省不同), 读侧靠这一格看见。省略 = 老 runner / 替身没报。
+   */
+  thinking?: { level: 'off' | 'low' | 'medium' | 'high' | 'xhigh'; channel: 'pi' | 'sdk' };
   /** 早期心跳闸判定的停摆(issue #5): provider 挂起/排队, 未等满硬超时即中止。executor 据此标 failed +
    *  留 stall 败因(而非把近零输出当 done)。省略/false = 正常完成或硬超时。 */
   stalled?: boolean;

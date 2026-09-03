@@ -171,6 +171,11 @@ export interface DagRunNode {
   toolCalls?: number | null;
   llmCalls?: number | null;
   /**
+   * R-1 第 3 步 (2026-09-03, D-18): agent 叶实际用的 thinking 档与通道 (runner 回报)。
+   * `null` = 派了 agent 叶但 runner 没报 (旧 runner / 替身); **缺席** = 非 agent 叶。两态不许互换 (§静默坑 1)。
+   */
+  thinking?: { level: 'off' | 'low' | 'medium' | 'high' | 'xhigh'; channel: 'pi' | 'sdk' } | null;
+  /**
    * ⑥(c) injectedTokens (2026-08-19): 语义 ⊆ tokensIn, 标记**注入**部分 token
    * (来自预置上下文 / prompt cache / 模板 / 工具结果) 与自然生成的比例。Per-node。
    *
@@ -954,6 +959,8 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
           // R-1: 两个计数只搬运 (LeafResult 上缺席 → null, 不是 0)。
           toolCalls: typeof r.toolCalls === 'number' ? r.toolCalls : null,
           llmCalls: typeof r.llmCalls === 'number' ? r.llmCalls : null,
+          // R-1 第 3 步: 只对 agent 叶落这一格 (没报 = null); 非 agent 叶缺席 —— 「不适用」与「没记」分开。
+          ...(r.kind === 'agent' ? { thinking: r.thinking ?? null } : {}),
           // ⑥(c) 同上接住形状: 当前来源链未通 → 一律 null; 采集片接上后本行无需再动。
           injectedTokens: typeof r.injectedTokens === 'number' ? r.injectedTokens : null,
           // C-0 (2026-08-21): 跨轮身份 (引擎在 settle 时写 currentEngineRound)。读侧允许 `null` (= 没记 / 链未接),

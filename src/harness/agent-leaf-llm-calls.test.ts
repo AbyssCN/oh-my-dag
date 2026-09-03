@@ -36,9 +36,11 @@ describe('R-1 llmCalls', () => {
       emit({ type: 'turn_end', message: b, toolResults: [] });
       return [...prompts, a, b];
     }) as never;
-    const run = createAgentLeafRunner({ cwd, loopFn: fakeLoop });
+    const run = createAgentLeafRunner({ cwd, loopFn: fakeLoop, thinkingLevel: 'low' });
     const r = await run({ prompt: 'x', model: PI_MODEL });
     expect(r.llmCalls).toBe(2);
+    // R-1 第 3 步: 回报**实际用的**档 (显式 opts 钉档 → low) 与通道。
+    expect(r.thinking).toEqual({ level: 'low', channel: 'pi' });
   });
 
   test('★ SDK 腿: 同一次 API 调用拆成两条 assistant (同 id) + 另一次调用 → llmCalls 2, 不是 3', async () => {
@@ -54,8 +56,9 @@ describe('R-1 llmCalls', () => {
         yield { type: 'result', subtype: 'success', result: 'done', session_id: 's', usage: {}, modelUsage: { 'claude-sonnet-5': { inputTokens: 40, outputTokens: 18 } } } as unknown as SDKMessage;
       })();
     };
-    const run = createAgentLeafRunner({ cwd, sdkQueryFn: fakeQuery });
+    const run = createAgentLeafRunner({ cwd, sdkQueryFn: fakeQuery, thinkingLevel: 'high' });
     const r = await run({ prompt: 'x', model: SDK_MODEL });
     expect(r.llmCalls).toBe(2);
+    expect(r.thinking).toEqual({ level: 'high', channel: 'sdk' });
   });
 });

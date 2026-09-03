@@ -957,6 +957,8 @@ export interface LeafResult {
   toolCalls?: number;
   /** agent leaf 的 LLM 调用次数 (来自 AgentLeafResult.llmCalls, R-1 2026-09-03)。缺席 = runner 没报, 不编 0。 */
   llmCalls?: number;
+  /** agent leaf 实际用的 thinking 档与通道 (来自 AgentLeafResult.thinking, R-1 第 3 步)。缺席 = runner 没报。 */
+  thinking?: { level: 'off' | 'low' | 'medium' | 'high' | 'xhigh'; channel: 'pi' | 'sdk' };
   /**
    * agent leaf 经 **bash 工具**跑过的命令 + 退出码 (2026-08-05, 来自 AgentLeafResult.shellRuns)。
    *

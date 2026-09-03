@@ -1870,7 +1870,7 @@ describe('omd-readout · ⑲ 编排循环 (R-1 第 4 步, 2026-09-03)', () => {
     createDagRecorder({ db });
     // P1: 终审红 → 回灌 → 绿, 回灌后零新派发 (= 蒸发); 两次派发 (brief 有/无复现); lead 20 次 LLM 调用, 墙钟 1000ms。
     ins(db, 'p1', 100, 'goal-orchestrating-loop', 'P1', [['lead'], ['accept']], [
-      { id: 'lead', kind: 'agent', status: 'done', deps: [], durationMs: 1000, llmCalls: 20, selfReport: { self_report: 'leaf', acceptance_ran: true }, acceptance: { ran: false, rounds: 0, last: null } },
+      { id: 'lead', kind: 'agent', status: 'done', deps: [], durationMs: 1000, llmCalls: 20, selfReport: { self_report: 'leaf', acceptance_ran: true }, acceptance: { ran: false, rounds: 0, last: null }, thinking: { level: 'high', channel: 'pi' } },
       { id: 'accept', kind: 'command', status: 'done', deps: ['lead'] },
     ], loopOf({
       verifier: { calls: 1, firstVerdict: 'fail', target: 'criterion', reinjected: true, afterReinject: 'green' },
@@ -1878,7 +1878,7 @@ describe('omd-readout · ⑲ 编排循环 (R-1 第 4 步, 2026-09-03)', () => {
       dispatches: [{ seq: 1, card: 'work', nodes: 1, briefHasRepro: true, failed: 0 }, { seq: 2, card: 'spawn', nodes: 2, briefHasRepro: false, failed: 0 }],
       dispatchesBeforeReinject: 2,
     }));
-    ins(db, 'c1', 101, 'lead-work-a', 'P1', [['d1.a']], [{ id: 'd1.a', kind: 'agent', status: 'done', deps: [], durationMs: 400, llmCalls: 10, selfReport: { self_report: 'missing' } }], null);
+    ins(db, 'c1', 101, 'lead-work-a', 'P1', [['d1.a']], [{ id: 'd1.a', kind: 'agent', status: 'done', deps: [], durationMs: 400, llmCalls: 10, selfReport: { self_report: 'missing' }, thinking: { level: 'medium', channel: 'sdk' } }], null);
     ins(db, 'c2', 102, 'lead-spawn', 'P1', [['d2.x', 'd2.y']], [
       { id: 'd2.x', kind: 'agent', status: 'done', deps: [], durationMs: 300, llmCalls: 5, acceptance: { ran: true, rounds: 1, last: { kind: 'exited', verdict: 'inconclusive' } } },
       { id: 'd2.y', kind: 'agent', status: 'done', deps: [], durationMs: 300, llmCalls: null },
@@ -1916,6 +1916,8 @@ describe('omd-readout · ⑲ 编排循环 (R-1 第 4 步, 2026-09-03)', () => {
     expect(lp.inconclusive).toEqual({ bare: 1, nonBare: 0 });
     expect(lp.residentPromptChars).toEqual({ max: 6400, over8000: 0, unrecorded: 0 });
     expect(lp.preActionLlmCalls).toEqual({ sum: 2, over1: 0, unrecorded: 0 });
+    // thinking: lead@P1 pi/high · d1.a sdk/medium; 其余 4 个 agent 节点没报 (缺席或 null 都算没报)。
+    expect(lp.thinking).toEqual({ pi: { high: 1 }, sdk: { medium: 1 }, unreported: 4 });
   });
 
   test('回灌了但老记录没 dispatchesBeforeReinject → unknown 单列, 分子分母都不动', () => {
