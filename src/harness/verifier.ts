@@ -272,6 +272,8 @@ export interface JudgingTruths {
   trustToken?: string;
   /** 1-A (2026-09-03): 判据文件冻结的引擎记录 (orchestrating-loop renderCriterionFreezeTruth 的原文), 判卷时刻按调用注入 (req.truths)。 */
   criterionFreeze?: string;
+  /** D-2 (2026-09-04): 派发子图机械记录 — filesTouched 并集 · done 数 · 写集对账 (declared/orphan/missing) · 判卷时刻 git 状态。loop-ledger 的 renderDispatchEvidenceTruth 渲染。 */
+  dispatchEvidence?: string;
 }
 
 /**
@@ -289,6 +291,8 @@ const TRUTH_LINES: { [K in keyof Required<JudgingTruths>]: (v: string) => string
     `之后的派发走路径禁令 (工具写当场拒); 括号里的「判卷时未变/已变」是判卷时刻重算 hash 对照冻结值的结论。` +
     `**「判据指向实施前不存在的测试文件」不再构成 target=criterion 的理由**: 文件先于实装存在且实装没碰过它。` +
     `「已变」/「派发后仍不存在」才是问题 —— 前者是实装篡改了判据 (判 implementation), 后者判据恒红。`,
+  dispatchEvidence: (v) =>
+    `- **派发子图引擎记录**: 这些是引擎记录的事实, 不是执行体自述; 判 target=implementation 前先对照它 —— ${v}`,
 };
 
 /** 把判卷真值渲染成卷面一段。一份都没有 → 返回空串 (卷面逐字节同旧, 老调用方零回归)。 */

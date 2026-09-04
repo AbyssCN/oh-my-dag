@@ -222,12 +222,25 @@ export function summarizeGoal(r: RunGoalResult): string {
     const v = r.loop.verifier;
     const after =
       r.loop.dispatchesBeforeReinject !== undefined ? ` · 回灌后新派发 ${r.loop.dispatches.length - r.loop.dispatchesBeforeReinject}` : '';
+    let writeAgg = '';
+    if (r.loop.dispatches.length > 0) {
+      let nFiles = 0;
+      let nOrphan = 0;
+      let nMissing = 0;
+      for (const d of r.loop.dispatches) {
+        nFiles += d.filesTouched?.length ?? 0;
+        nOrphan += d.writeSet?.orphan.length ?? 0;
+        nMissing += d.writeSet?.missing.length ?? 0;
+      }
+      writeAgg = ` · 触碰 ${nFiles} 文件 / orphan ${nOrphan} / missing ${nMissing}`;
+    }
     lines.push(
       `循环: 终审 ${v.calls} 次${v.firstVerdict ? ` (首判 ${v.firstVerdict}${v.target ? ` · 对象 ${v.target}` : ''})` : ' (未调)'}` +
         ` · 回灌 ${v.reinjected ? `是 → ${v.afterReinject}${after}` : '否'}` +
         ` · 派发 ${r.loop.dispatches.length} 次 (卡 ok ${r.loop.cards.ok}/${r.loop.cards.calls})` +
         ` · conductor 常驻 prompt ${r.loop.residentPromptChars ?? '未记'} 字符` +
-        `${r.loop.conductorInfraFailure ? ` · ${r.loop.conductorInfraFailure.slice(0, 80)}` : ''}`,
+        `${r.loop.conductorInfraFailure ? ` · ${r.loop.conductorInfraFailure.slice(0, 80)}` : ''}` +
+        writeAgg,
     );
   }
   return lines.join('\n');

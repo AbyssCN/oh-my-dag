@@ -44,7 +44,7 @@ import { buildConductorSystemPrompt, CONDUCTOR_PROMPT_RESIDENT_MAX, type Conduct
 import { createConductorTools, formatRejection, invokeConductorTool } from '../conductor/tools/index';
 import type { ConductorCtx, ConductorTool } from '../conductor/types';
 import { logger } from '../logger';
-import { briefHasRepro, type CriterionFreeze, type ConductorCardLedger, type ConductorCardName } from './loop-ledger';
+import { briefHasRepro, computeLoopDispatchFacts, type CriterionFreeze, type ConductorCardLedger, type ConductorCardName } from './loop-ledger';
 
 /** plan 名 —— run-goal 的 `_runDag` 注入口与测试靠它认路径 (与 `goal-execute` / `goal-execute-flat` 同一约定)。 */
 // plan 形状真源挪到 conductor/loop-plan.ts (2026-09-04: decompose 卡也要编它, 留在这里是循环 import); 这里原名再导出。
@@ -325,6 +325,7 @@ function adaptCard(card: ConductorTool, deps: ConductorRuntimeDeps, nextSeq: () 
         logger.warn({ card: card.name, seq: n, err: msg }, '[orchestrating-loop] 嵌套 run 抛错 (原文回给 conductor)');
         if (ledger) {
           ledger.childRunError++;
+          // 硬约束 1 (D-2): 子 run 抛错 → 只记 error, 事实字段缺席 (没结果就没事实, 不编空数组 / 0)。
           ledger.dispatches.push({ ...dispatch, error: msg.slice(0, 200) });
         }
         return { content: [{ type: 'text', text: `[${label} · 引擎抛错, 未产出]\n${msg}` }], details: { ok: false, card: card.name, seq: n, error: msg } };
@@ -346,7 +347,8 @@ function adaptCard(card: ConductorTool, deps: ConductorRuntimeDeps, nextSeq: () 
       if (ledger) {
         ledger.ok++;
         ledger.byCard[card.name as ConductorCardName] = (ledger.byCard[card.name as ConductorCardName] ?? 0) + 1;
-        ledger.dispatches.push({ ...dispatch, failed: Object.values(exec.results).filter((r) => r.status !== 'done').length });
+        const facts = computeLoopDispatchFacts(plan, exec);
+        ledger.dispatches.push({ ...dispatch, failed: Object.values(exec.results).filter((r) => r.status !== 'done').length, ...facts });
       }
       const summary = summarizeChildRun(exec, label);
       const failed = Object.values(exec.results).filter((r) => r.status !== 'done').map((r) => r.id);

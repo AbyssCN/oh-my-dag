@@ -23,7 +23,7 @@ import { AGENT_DEFAULT_FANOUT } from '../fleet';
 import { logger } from '../logger';
 import { missingPathArgs } from './acceptance-gate';
 import { extractProtectedPaths } from './goal-protections';
-import { createConductorCardLedger, type ConductorCardLedger } from './loop-ledger';
+import { createConductorCardLedger, withDispatchEvidence, type ConductorCardLedger } from './loop-ledger';
 import {
   CONDUCTOR_INFRA_FAILURE_KINDS,
   CONDUCTOR_NODE_ID,
@@ -179,7 +179,8 @@ export async function runLoopTask(
     ? {
         ...config,
         verifier: async (req) => {
-          const v = await config.verifier!(req);
+          // D-2: 派发子图机械记录随卷 (与 run-goal 的 tapVerifier 同一跳 withDispatchEvidence)。dispatches 空 → 同一个 req, 卷面同旧。
+          const v = await config.verifier!(withDispatchEvidence(req, ledger.dispatches, { cwd: host.cwd }));
           verdict = { pass: v.pass, reason: v.reason };
           return v;
         },

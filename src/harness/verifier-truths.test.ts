@@ -136,3 +136,48 @@ describe('1-A (2026-09-03): 按调用真值 (req.truths) 随卷', () => {
     expect(seen()).not.toContain('判据文件冻结');
   });
 });
+
+describe('D-2 (2026-09-04): dispatchEvidence 真值随卷', () => {
+  test('★ 含字面「这些是引擎记录的事实」 — 这是本节点的契约锚, 漏掉 verifier Prompt 判不出派发层事实', async () => {
+    const [verifier, seen] = capturing();
+    await verifier({ task: 't', plan, results, truths: { dispatchEvidence: '派发 #1 (work) — done 2/2 · filesTouched: A, B' } });
+    expect(seen()).toContain('这些是引擎记录的事实');
+    expect(seen()).toContain('派发 #1 (work)');
+  });
+
+  test('TRUTH_LINES 装配期闸: dispatchEvidence 没出现在 paper 上 → 抛, 点名 dispatchEvidence', () => {
+    // 证伪: 把 TRUTH_LINES 里 dispatchEvidence 那行删掉 → 这条当场红 (闸的真值是「值必须上卷面」)。
+    //       用一个**不会**出现在 paper 上的 sentinel 字符串喂进去 (paper 里只有判据冻结 + 老 trustToken)。
+    expect(() => assertJudgingTruthsCarried({ dispatchEvidence: 'X-Y-Z-NEVER-IN-PAPER' }, '卷面无 X-Y-Z')).toThrow(/dispatchEvidence/);
+  });
+
+  test('阴性对照: 不传 dispatchEvidence → 卷面没有「派发子图引擎记录」段', async () => {
+    const [verifier, seen] = capturing();
+    await verifier({ task: 't', plan, results });
+    expect(seen()).not.toContain('派发子图引擎记录');
+    expect(seen()).not.toContain('这些是引擎记录的事实');
+  });
+
+  test('★ dispatchEvidence 与 criterionFreeze 共存 — 两份真值都进卷面, 互不吞', async () => {
+    const [verifier, seen] = capturing();
+    await verifier({
+      task: 't',
+      plan,
+      results,
+      truths: {
+        criterionFreeze: '派发 #1 单独产出并冻结: tests/test_a.py (deadbeefdeadbeef, 判卷时未变)',
+        dispatchEvidence: '派发 #1 (work) — done 2/2 · filesTouched: A, B',
+      },
+    });
+    expect(seen()).toContain('deadbeefdeadbeef');
+    expect(seen()).toContain('派发 #1 (work)');
+    expect(seen()).toContain('这些是引擎记录的事实');
+  });
+
+  test('空串 dispatchEvidence 当作缺席 — renderJudgingTruths 不渲染, assertJudgingTruthsCarried 不判红', () => {
+    // 锁住现状: renderJudgingTruths 用 `if (truths[k])` 短路 (空串 falsy), assertJudgingTruthsCarried
+    // 过滤 `typeof v === "string" && v.length > 0`, 所以空串 = 没传 (老行为零回归)。
+    expect(renderJudgingTruths({ dispatchEvidence: '' })).toBe('');
+    expect(() => assertJudgingTruthsCarried({ dispatchEvidence: '' }, '')).not.toThrow();
+  });
+});

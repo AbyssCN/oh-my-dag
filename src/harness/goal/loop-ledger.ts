@@ -9,6 +9,11 @@
  * 三态纪律 (仓规静默坑 1): 整列 NULL = 没走循环 / 老记录; `verifier.firstVerdict: null` = 没调 (≠ fail);
  * `cards.byCard` 缺键 = 那张卡一次没派成 (调用数在 `calls`); `dispatches[].briefHasRepro: null` = 该卡没有 brief 槽。
  */
+import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import type { RunGit } from '../dag/writeset-evidence';
+import type { JudgingTruths } from '../verifier';
 
 export type ConductorCardName = 'work' | 'spawn' | 'map' | 'explore' | 'best_of' | 'research' | 'decompose';
 
@@ -23,6 +28,78 @@ export interface LoopDispatch {
   failed?: number;
   /** 子 run 抛错 (引擎侧事故), 原文头 200 字。 */
   error?: string;
+  /** 派发产物上 ledger 自己看 (与判卷官无关)。子图每个 leaf.filesTouched 的并集、按出现顺序去重。空 = 子 run 没产出任何文件 (跑挂 / 抛错 / 没人写过)。 */
+  filesTouched?: string[];
+  /** 子 run 里 status === 'done' 的节点数。空 = 子 run 没产出 (跑挂 / 抛错)。 */
+  done?: number;
+  /** 写集对账: declared = 该派发 plan 里所有节点的 `write_set` 并集 (按出现顺序去重); orphan = 实际写了但没人声明; missing = 声明了但没人写。null = 该派发 plan 没有任何节点声明写集 (没合同 = 不判)。 */
+  writeSet?: { declared: string[]; orphan: string[]; missing: string[] } | null;
+}
+
+/**
+ * 写集对账: declared = 合同写的; orphan = 实际动了合同没说; missing = 合同说了没动。
+ * 纯函数: 入参按出现顺序决定输出顺序; 重复路径以首次出现为准 (去重)。空 declared 与空 touched
+ * 都合法 (空 declared → 全空; 空 touched → orphan 空, missing = declared)。
+ *
+ * falsify (本函数必须能真红): 把 `seen.has(p)` 改成不维护 → first dispatch 的 filesTouched 顺序里 A 出现两次。
+ */
+export function reconcileWriteSets(declared: string[], touched: string[]): { declared: string[]; orphan: string[]; missing: string[] } {
+  const declaredOut: string[] = [];
+  const seenDeclared = new Set<string>();
+  for (const p of declared) {
+    if (seenDeclared.has(p)) continue;
+    seenDeclared.add(p);
+    declaredOut.push(p);
+  }
+  const touchedOut: string[] = [];
+  const seenTouched = new Set<string>();
+  for (const p of touched) {
+    if (seenTouched.has(p)) continue;
+    seenTouched.add(p);
+    touchedOut.push(p);
+  }
+  const touchedSet = seenTouched;
+  const declaredSet = seenDeclared;
+  const orphan = touchedOut.filter((p) => !declaredSet.has(p));
+  const missing = declaredOut.filter((p) => !touchedSet.has(p));
+  return { declared: declaredOut, orphan, missing };
+}
+
+/**
+ * 给一个派发 (plan + 子 run exec) 算三层事实: filesTouched 并集 (按出现顺序去重) ·
+ * done 数 (status === 'done') · 写集对账。
+ *
+ * falsify (本函数必须能真红): 把 `if (!node.write_set) continue;` 去掉 → declared 里出现空数组也参与拼接, 测试 (a) 第二组 `{[A] declared [A,B]} → declared = [A,B]` 仍过但 union dedup 那条会因 `seen.has` 在错误层失败而爆。注释把这条不变量写在调用处。
+ */
+export function computeLoopDispatchFacts(
+  plan: { nodes: Record<string, { write_set?: string[] }> },
+  exec: { results: Record<string, { filesTouched?: string[]; status: 'done' | 'failed' | 'skipped' }> },
+): { filesTouched: string[]; done: number; writeSet: { declared: string[]; orphan: string[]; missing: string[] } | null } {
+  const filesTouched: string[] = [];
+  const seenTouched = new Set<string>();
+  let done = 0;
+  for (const leaf of Object.values(exec.results)) {
+    if (leaf.status === 'done') done++;
+    for (const f of leaf.filesTouched ?? []) {
+      if (seenTouched.has(f)) continue;
+      seenTouched.add(f);
+      filesTouched.push(f);
+    }
+  }
+  const declared: string[] = [];
+  const seenDeclared = new Set<string>();
+  let anyDeclared = false;
+  for (const node of Object.values(plan.nodes)) {
+    if (!node.write_set) continue;
+    anyDeclared = true;
+    for (const f of node.write_set) {
+      if (seenDeclared.has(f)) continue;
+      seenDeclared.add(f);
+      declared.push(f);
+    }
+  }
+  const writeSet = anyDeclared ? reconcileWriteSets(declared, filesTouched) : null;
+  return { filesTouched, done, writeSet };
 }
 
 /**
@@ -107,4 +184,115 @@ export function briefHasRepro(brief: string): boolean {
     /(^|\n)\s*\$ \S/.test(b) ||
     /\d+\s+pass(?:ed)?\b/.test(b)
   );
+}
+
+/**
+ * 派发层引擎记录的判卷真值 (D-2): 把 ledger.dispatches 渲染成 verifier 看的一段。
+ * 没有 dispatches → null (不编, 老调用方零回归)。
+ *
+ * 每一行: `派发 #<seq> (<card>) — done <n>/<total> · filesTouched: A, B, +<m>`。
+ * `writeSet` 缺席 (没合同) → 不写对账段; 不为 null (有合同但空) → 写 `declared 0 / orphan 0 / missing 0`。
+ * `writeSet` 有孤儿 / 缺失 → 单写一行告警, 提示判卷官对照。
+ *
+ * 「判卷时刻机械事实」段: 当一个派发的 filesTouched 非空时, 调 `runGit` 拿
+ * `git status --porcelain -- <paths>` 输出, 每条 `<path> <porcelain>` 进卷面; git 退出非 0
+ * → 写一行 `git-failed: <stderr 原文>` (仓规: 起不来时写错误原文而不是省略)。
+ * 测试可注入 `runGit`; 生产默认 inline 调 `spawnSync('git', …)` (避免反向 import writeset-evidence 走它内部的 defaultRunGit)。
+ *
+ * falsify (本函数必须能真红):
+ *  · 把 `git-failed:` 那一行整段改成省略 (只写 on-disk 段) → 含 `git-failed: fatal: not a git repo` 的断言红。
+ *  · 把 `done <done>/<total>` 改成 `done <total>/<done>` → 测试 (a) 第二条「done count = number of 'done' leaves」红。
+ */
+const defaultRunGit: RunGit = ({ root, paths }) => {
+  const r = spawnSync('git', ['status', '--porcelain', '--', ...paths], {
+    cwd: root,
+    encoding: 'utf-8',
+  });
+  return {
+    exitCode: r.status ?? -1,
+    stdout: typeof r.stdout === 'string' ? r.stdout : '',
+    stderr: typeof r.stderr === 'string' ? r.stderr : '',
+  };
+};
+
+export interface RenderDispatchEvidenceOpts {
+  cwd: string;
+  runGit?: RunGit;
+  /** filesTouched 列表最多印几条 (超出写 +N); 默认 20 (硬约束 2)。 */
+  touchedPrintLimit?: number;
+  /** 判卷时刻「盘上是否存在」的探针, 测试可注入; 默认 existsSync(join(cwd, path))。 */
+  exists?: (abs: string) => boolean;
+}
+
+export function renderDispatchEvidenceTruth(
+  dispatches: LoopDispatch[],
+  opts: RenderDispatchEvidenceOpts,
+): string | null {
+  if (!dispatches || dispatches.length === 0) return null;
+  const runGit = opts.runGit ?? defaultRunGit;
+  const limit = opts.touchedPrintLimit ?? 20;
+  const exists = opts.exists ?? existsSync;
+  const lines: string[] = [];
+  for (const d of dispatches) {
+    const touched = d.filesTouched ?? [];
+    const total = d.nodes ?? 0;
+    const done = d.done ?? 0;
+    const head = `派发 #${d.seq} (${d.card}) — done ${done}/${total} · filesTouched: ${summarizeTouched(touched, limit)}`;
+    lines.push(head);
+    if (d.writeSet !== undefined && d.writeSet !== null) {
+      const ws = d.writeSet;
+      lines.push(`  写集对账: declared ${ws.declared.length} / orphan ${ws.orphan.length} / missing ${ws.missing.length}${ws.orphan.length || ws.missing.length ? ` — ${formatWriteSetFlags(ws)}` : ''}`);
+    }
+    if (touched.length > 0) {
+      // 硬约束 2: 每个 filesTouched 文件**现在**盘上在不在 —— 引擎事实, 与执行体自述无关。
+      const missingOnDisk = touched.filter((f) => !exists(join(opts.cwd, f)));
+      lines.push(`  判卷时刻盘上: 存在 ${touched.length - missingOnDisk.length}/${touched.length}${missingOnDisk.length ? ` · 缺失 [${missingOnDisk.join(', ')}]` : ''}`);
+      const r = runGit({ root: opts.cwd, paths: touched });
+      if (r.exitCode === 0) {
+        const porcelain = r.stdout.trim();
+        if (porcelain.length > 0) lines.push(`  判卷时刻机械事实: ${oneLine(porcelain)}`);
+        else lines.push(`  判卷时刻机械事实: (无变更)`);
+      } else {
+        const errMsg = (r.stderr || r.stdout || `exit ${r.exitCode}`).trim() || `exit ${r.exitCode}`;
+        lines.push(`  判卷时刻机械事实: git-failed: ${errMsg}`);
+      }
+    }
+  }
+  return lines.join('\n');
+}
+
+function summarizeTouched(touched: string[], limit: number): string {
+  if (touched.length === 0) return '(无)';
+  if (touched.length <= limit) return touched.join(', ');
+  const head = touched.slice(0, limit).join(', ');
+  return `${head}, +${touched.length - limit}`;
+}
+
+function formatWriteSetFlags(ws: { declared: string[]; orphan: string[]; missing: string[] }): string {
+  const parts: string[] = [];
+  if (ws.orphan.length > 0) parts.push(`orphan [${ws.orphan.join(', ')}]`);
+  if (ws.missing.length > 0) parts.push(`missing [${ws.missing.join(', ')}]`);
+  return parts.join(' · ');
+}
+
+function oneLine(s: string): string {
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * 两个注入点 (run-goal `tapVerifier` · loop-run 的 run 路) 共用的一跳: dispatches 非空 → 把渲染好的
+ * `dispatchEvidence` 合进 `req.truths` (与 criterionFreeze 等既有真值共存, 同键以这里为准);
+ * 为空 → **返回同一个 req 对象** (卷面逐字节同旧, 老调用方零回归)。
+ * 证伪方式 (loop-ledger.test.ts): 把空分支改成 `{ ...req }` → 「为空返回同一引用」那条红;
+ * 把合并改成 `truths: { dispatchEvidence }` → 「与 criterionFreeze 共存」那条红。
+ */
+export function withDispatchEvidence<T extends { truths?: JudgingTruths }>(
+  req: T,
+  dispatches: LoopDispatch[],
+  opts: RenderDispatchEvidenceOpts,
+): T {
+  if (dispatches.length === 0) return req;
+  const dispatchEvidence = renderDispatchEvidenceTruth(dispatches, opts);
+  if (!dispatchEvidence) return req;
+  return { ...req, truths: { ...(req.truths ?? {}), dispatchEvidence } };
 }

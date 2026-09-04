@@ -70,7 +70,7 @@ describe('R-1 第 4 步: resultOut 头部 ledger 行', () => {
       stages: [], sources: [], repoContext: '', converged: true, rounds: 1, reusedNodes: [], outcome: 'success',
     };
     const line = summarizeGoal({ ...base, loop }).split('\n').find((l) => l.startsWith('循环:'));
-    expect(line).toBe('循环: 终审 1 次 (首判 fail · 对象 criterion) · 回灌 是 → green · 回灌后新派发 0 · 派发 2 次 (卡 ok 2/3) · conductor 常驻 prompt 6400 字符');
+    expect(line).toBe('循环: 终审 1 次 (首判 fail · 对象 criterion) · 回灌 是 → green · 回灌后新派发 0 · 派发 2 次 (卡 ok 2/3) · conductor 常驻 prompt 6400 字符 · 触碰 0 文件 / orphan 0 / missing 0');
     expect(summarizeGoal(base)).not.toContain('循环:');
   });
 });

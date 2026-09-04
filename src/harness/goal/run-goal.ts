@@ -94,7 +94,7 @@ import {
   checkCriterionFreeze,
   renderCriterionFreezeTruth,
 } from './orchestrating-loop';
-import { createConductorCardLedger, type ConductorCardLedger, type LoopLedger } from './loop-ledger';
+import { createConductorCardLedger, withDispatchEvidence, type ConductorCardLedger, type LoopLedger } from './loop-ledger';
 import { conductorCtxOf, withLoopConfig, type LoopHost } from './loop-run';
 
 // D-I: 两条轴的类型与分类器都归 ./acceptance (那里是判据轴的单一真源); 此处 re-export 保旧调用面。
@@ -1694,7 +1694,9 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
     // 1-A: 判据文件冻结的引擎记录随卷 (D-5 按调用真值): 判卷时刻重算 hash 对照冻结值, 判卷官据此不再把
     // 「测试文件是本 run 写的」读成 target=criterion。没冻过 → 不注入, 卷面同旧。
     const freezeTruth = loopLedger.criterionFreeze ? renderCriterionFreezeTruth(loopLedger.criterionFreeze, config.cwd) : null;
-    const verdict = await inner(freezeTruth ? { ...req, truths: { ...(req.truths ?? {}), criterionFreeze: freezeTruth } } : req);
+    const withFreeze = freezeTruth ? { ...req, truths: { ...(req.truths ?? {}), criterionFreeze: freezeTruth } } : req;
+    // D-2 (2026-09-04): 派发子图机械记录 (filesTouched / done / 写集对账 / 盘上存在 / git 状态) 随卷, 与 loop-run 同一跳。dispatches 空 → 同一个 req, 卷面同旧。
+    const verdict = await inner(withDispatchEvidence(withFreeze, loopLedger.dispatches, { cwd: config.cwd }));
     try {
       const acc = req.results.accept;
       const green = acc?.status === 'done';
