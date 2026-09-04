@@ -1,32 +1,23 @@
 /**
- * src/harness/playbook/compile —— `compilePlaybook`: Playbook → ConductorPlan。
+ * src/harness/playbook/compile —— `compilePlaybook`: Playbook → ConductorPlan (零 LLM 平铺图)。
  *
- * ## 与 tests 文件的关系
+ * 节点形状:
+ *   - step-N (executor='agent') = 该步 doc 文件全文, 串行依赖 (第 i+1 步 deps 第 i 步)。
+ *     `reset:true` 的步**仍在链上** (顺序是 playbook 的语义), 只是 goal 前加一行「不读取上游产物」——
+ *     引擎没有节点级「不注入上游输出」的开关, 这一行是散文不是闸 (2026-09-04 记于此, 加了开关再换)。
+ *   - accept (executor='command') = pb.acceptance.command, expect_exit 0, deps 最后一步。
+ *   step 节点不声明 output_type: 声明 'file' 会进产物闸 (engine.ts declaredArtifact), 步骤没有固定产物, 会被冤判。
  *
- * `src/harness/playbook/compile.test.ts` 在本文件之前落; 当时 writeset 只许写测试, 故测试用
- * 一份**内联 impl** 自包含地跑。**两份实现必须逐字同构** —— 本文件是生产侧, 测试内联是占位,
- * 后续一旦把 `compile.test.ts` 的内联 impl 换成 `import('./compile')` 立刻切到真模块, 不许漂。
+ * ## loop.maxRounds 的取舍
  *
- * ## loop.maxRounds 的处理 (本文件头注释唯一要说的工程决策)
+ * playbook 原义 = 「整套步骤最多重跑 N 轮」。引擎今天对平铺图只有一种重跑: 终审判红后「原图 + finding 重跑」
+ * (升级轮, `maxEscalations`)。所以映射为 maxEscalations = min(N, 4) - 1 (N 轮 = 首跑 + N-1 次重跑; 4 = solve
+ * maxRounds 上限), 接线在 run-goal.ts 的 execCfg 处。本文件不读 loop。
  *
- * Playbook 的 `loop.maxRounds` 字面义 = 「整套 steps 链最多重跑 N 轮」。engine today 只有一个
- * 修复轮机制 (execute 阶段的内环, 钳到 4 = schema maxRounds 上限), 没有"步骤链整链重跑"的原生概念。
- * 故这里把 `loop.maxRounds` 当成 *execute 段* 的内环上界使用, 而非另铺一层"重跑 steps 链"的环。
+ * 三道闸固定顺序: steps 非空 → 命令可跑 (acceptanceCommandBlockReason) → 判据有判别力 (probeDiscrimination 跑在
+ * acceptance.command + negativeSample 上, 与 classify 的判据自证同一条探针, 不另写)。任一闸拒即抛错, 不返部分 plan。
  *
- * 钳法 = `min(pb.loop?.maxRounds ?? 2, 4)`:
- *   - 上限 4 = solve 的 maxRounds schema 上限 (见 `src/mcp/tools/goal.ts` inputSchema 的 maxRounds).
- *     让 playbook 的 maxRounds 比 solve 大是无效配置 —— 即便用户写 10, engine 那边照样钳 4, 形同静默吞。
- *   - 缺省 2 = engine today 默认 (1 修复轮 = 2).
- *
- * ⚠ **loop.maxRounds 的实现分两步**: 本函数只读 `pb.loop` 决定 **平铺 plan 的 shape** (steps 数 +
- * reset 段), 执行期内环上限由 `run-goal.ts` 把 `pb.loop?.maxRounds ?? 2` 透传给 conductor
- * maxRounds 入参。本文件**不**直接造 conductor 节点 —— 平铺图的步骤节点照 `pb.steps` 一对一铺,
- * 与 reset 段一起决定 depends_on 链。
- *
- * ## 反向自检
- *
- * 改 compilePlaybook 体 (让 PlanSchema.parse 抛 / 漏 reset 处理 / 漏 negativeSample 探针) →
- * `src/harness/playbook/compile.test.ts` 的 (a)/(d-up)/(d-down) 全红。
+ * 证伪 (compile.test.ts): 让 PlanSchema.parse 抛 / 把 reset 步从链上摘掉 / 删 negativeSample 探针 → (a)/(d-up)/(d-down) 红。
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -55,19 +46,6 @@ function readStepDoc(root: string, doc: string, playbookName: string): string {
   }
 }
 
-/**
- * 把一份 Playbook 编译成可执行的 ConductorPlan。
- *
- * 三道闸固定顺序: steps 非空 → 命令可跑 (acceptanceCommandBlockReason) → 判据有判别力 (probeDiscrimination
- * 跑在 acceptance.command + negativeSample 上, status !== 'ok' → 拒)。任一闸拒即抛错, 不返部分 plan。
- *
- * 节点形状:
- *   - step-N (executor='agent') = 一段 playbook doc 全文 + 可选 [reset] 前缀; depends_on 串行链,
- *     reset:true 的步骤断链 (depends_on: []).
- *   - accept (executor='command') = pb.acceptance.command + expect_exit: 0, 挂在最后一步之后。
- *
- * plan.name 缺省 'playbook-flat' (保持与 v1 同源, tests 的 (e) 用 `^playbook-` 正则匹配, 不挑名字)。
- */
 export async function compilePlaybook(pb: Playbook, opts: CompilePlaybookOptions): Promise<ConductorPlan> {
   if (!pb.steps.length) throw new Error(`[playbook:${pb.name}] steps 不能为空`);
   const blocked = acceptanceCommandBlockReason(pb.acceptance.command, { root: opts.cwd });
@@ -97,9 +75,8 @@ export async function compilePlaybook(pb: Playbook, opts: CompilePlaybookOptions
     nodes[id] = {
       executor: 'agent',
       goal: `${resetPreamble}${docText}`,
-      // reset:true → 不依赖上游 (step-5 的 depends_on = []); 否则串行链
-      ...(step.reset ? { depends_on: [] } : { depends_on: prevId ? [prevId] : [] }),
-      output_type: 'file',
+      // 串行链; reset 只改 goal 前言, 不摘链 (顺序是 playbook 的语义)。
+      depends_on: prevId ? [prevId] : [],
     };
     prevId = id;
   }

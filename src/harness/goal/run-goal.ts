@@ -1198,6 +1198,8 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
 
   // 直通装载放在**一切之前** (G-2): 坏契约要在烧任何 token 之前被拒。
   const sdd = config.sddPath ? loadSddContract(config.sddPath) : undefined;
+  // playbook-direct (2026-09-04): 与 sddPath 同处装载 (fail-loud: 未知名抛错列已知名); 互斥闸在 runGoal 入口。
+  const playbookLoaded = config.playbook ? loadPlaybookForGoal(config.cwd, config.playbook) : undefined;
   let specPath: string | undefined = sdd?.path;
   let evidence = sdd?.text ?? '';
   let repoContext = '';
@@ -1351,7 +1353,11 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   // 于是整个判据轴挂在一个 SDD 里根本不存在的路径上。SDD 已经写明这个 run 要跑哪些测试,
   // 判据就该从那儿来。显式 config.acceptance 仍压过一切 (调用方比 SDD 更知道自己在干嘛)。
   const sddAcceptance = sdd ? sddDerivedAcceptance(sdd) : undefined;
-  const acceptance = config.acceptance ?? sddAcceptance ?? classified.acceptance;
+  // playbook 自带 acceptance.command (装载时已过 A-3 判别力闸): 判据从它来, 分类器看不见 playbook 文档, 让它编只会编出幻觉路径。
+  const playbookAcceptance: AcceptanceSpec | undefined = playbookLoaded
+    ? { kind: 'executable', command: playbookLoaded.pb.acceptance.command, expectExit: 0 }
+    : undefined;
+  const acceptance = config.acceptance ?? sddAcceptance ?? playbookAcceptance ?? classified.acceptance;
   // T-2 (F2 收尾): 「有没有一条别人来跑的命令」在下面被问 10 次。此前每处各写一遍
   // `acceptance.kind === 'executable'` —— 那是**守卫式 `if` 没有 else**, `assertNever`
   // 那道闸够不着 (诚实边界写在 harness/exhaustive.ts 文件头), 于是加第四格时这 10 处
@@ -1493,8 +1499,8 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   // **不**走 O-6 探针 / 不写回路复用 —— compilePlaybook 自带 acceptance.command 的判别力探针,
   // 与 sdd-direct 的 sddIgnitionDryRunGate 不是同一道闸, 但目的一致 (判据不虚)。
   let playbookSource: 'builtin' | 'project' | undefined;
-  if (config.playbook) {
-    const { pb, root, source } = loadPlaybookForGoal(config.cwd, config.playbook);
+  if (playbookLoaded) {
+    const { pb, root, source } = playbookLoaded;
     playbookSource = source;
     const planName = `playbook-${pb.name}`;
     flatPlan = await compilePlaybook(pb, { cwd: config.cwd, playbookRoot: root, name: planName });
@@ -1659,7 +1665,9 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
       );
       return bail(`sddPath worker 触发回落条件 (O-6 vacuous-verify 等): ${msg}`, 'not-converged');
     }
-  } else {
+  } else if (flatPlan === undefined) {
+    // playbook-direct 已编出平铺图时不进这里 (否则下面 `loopPlan ?? flatPlan` 让循环压过平铺图, 编译产物永远不跑)。
+    // 证伪 (playbook/compile.test.ts e2e): 把这个守卫改回 `else` → 假引擎收到的是 goal-orchestrating-loop 而不是 playbook-* 图, 那条红。
     // ── P3 S6b 编排循环 (契约 D-1 / D-14 / D-17 / D-20; 2026-09-02) ─────────────────────
     //
     // 默认路径。图 = `conductor` (agent, 七张派工卡 + ≤8k 常驻 prompt, 只读手) → `accept` (冻结判据原文;
@@ -1773,6 +1781,9 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
             // — 不传这条, 走今天逐字节相同的升级路径 (INV-4 零回归那一半)。
             // 传的是同一份编译产物 (`compileBreakdown` 是纯函数, 重算与复用等价; INV-7)。
             ...(flatPlan !== undefined ? { deterministicReplan: () => flatPlan } : {}),
+            // playbook 的 loop.maxRounds (整套步骤最多跑 N 轮) 映射成升级轮数: 引擎今天对平铺图只有「原图 + finding 重跑」
+            // 这一种重跑, N 轮 = 首跑 + N-1 次重跑, 上限 4 (solve maxRounds 上限)。缺席 = 沿用 config.dag 的缺省。
+            ...(playbookLoaded?.pb.loop ? { maxEscalations: Math.max(0, Math.min(playbookLoaded.pb.loop.maxRounds, 4) - 1) } : {}),
           }
         : config.dag;
     loopBase = execCfg;

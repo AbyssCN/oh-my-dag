@@ -47,8 +47,7 @@ function slugId(text: string): string {
 
 const SHORT =
   'Start ONE worker for one bounded change. Default for any task with a single owner of the code. ' +
-  'Params: goal (one sentence), brief (min 40 chars: reproduction output, scope, what not to touch).' +
-  ' +p/t/m.';
+  'Params: goal (one sentence), brief (min 40 chars: reproduction output, scope, what not to touch). ';
 
 /** compile 顶层的 name 校验:profile/template 名称未知,或 mcp 元素未知/未注册 → ok:false + manual。schema 过 ≠ 名对(C-1). */
 function checkRegistries(p: WorkParams, ctx: ConductorCtx): string | null {

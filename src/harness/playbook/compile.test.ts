@@ -11,15 +11,17 @@
  *   (e) End-to-end fake engine — 6 节点, plan.name 形如 playbook-, r.path = 'playbook-direct'
  *
  * 接真模块:compilePlaybook ← ./compile (真);loadPlaybookForGoal ← ../goal/playbook-direct (真);
- * `_runGoalWithPlaybook` 是 run-goal.ts playbook-direct 分支的**最小本地复刻**(互斥闸 + 真编译 + _runDag 注入),
- * 因为真 run-goal.ts 的外壳接 _runDag 要构造完整 ExecutorDagConfig / 分类器 / 判据链, 与本测试要证的
- * 「playbook-direct 路径形状」无关 —— 仅复刻该分支, 错误文案与判定顺序与 run-goal.ts 同源。
+ * (c)/(e) 走**真 runGoal** + 假引擎 (`_runDag`), 照 sdd-direct.test.ts 的夹具 —— 验收修 2026-09-04: 原版复刻分支的测试
+ * 没抓到「循环压过平铺图」的接线错。
  */
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type ConductorPlan } from '../conductor-plan';
+import { runGoal, type RunGoalConfig } from '../goal/run-goal';
+import type { AcceptanceSpec, GoalClassification } from '../goal/classify-acceptance';
+import type { ExecutorDagConfig, ExecutorDagResult } from '../dag/types';
 import { loadPlaybookForGoal } from '../goal/playbook-direct';
 import { compilePlaybook } from './compile';
 import { BUILTIN_PLAYBOOK_DIR, loadPlaybooks } from './load';
@@ -36,42 +38,33 @@ afterEach(() => {
   tmpDirs = [];
 });
 
-// ── runGoal playbook-direct 分支最小本地复刻 ────────────────────────────────
-//
-// 复刻的判定顺序 (与 src/harness/goal/run-goal.ts 同源):
-//   1) 互斥闸 (line 1113):sddPath 与 playbook 同给 → 抛错, 错误文案必须同时提 sddPath 与 playbook
-//   2) 真 loadPlaybookForGoal (playbook-direct.ts:35) → 真 compilePlaybook (compile.ts:71)
-//   3) _runDag 注入口 (run-goal.ts:1786 的同名面) —— 测试传 fake 引擎, 捕获 plan
-//   4) path = 'playbook-direct' (run-goal.ts:2523 路径身份)
-//
-// 错误文案与真 run-goal.ts **逐字段一致** (编译错误在 compilePlaybook 内部抛, 文案真源就在那里)。
-// 这是过渡:run-goal.ts 的 playwright 分支若变, 这里要随之同步。
-
-interface RunGoalPlaybookConfig {
-  cwd: string;
-  sddPath?: string;
-  playbook?: string;
-  _runDag?: (plan: ConductorPlan) => Promise<unknown>;
-}
-
-interface RunGoalPlaybookResult {
-  path: 'playbook-direct';
-  outcome: string;
-  goal: string;
-}
-
-async function _runGoalWithPlaybook(goal: string, config: RunGoalPlaybookConfig): Promise<RunGoalPlaybookResult> {
-  if (config.sddPath && config.playbook) {
-    throw new Error(`sddPath 与 playbook 互斥 (sddPath=${config.sddPath}, playbook=${config.playbook}) — 一次只能走一条`);
-  }
-  if (!config.playbook) {
-    // 非 playbook 路径不在本测试范围 —— 测试只验 playbook 分支。
-    throw new Error(`_runGoalWithPlaybook: 缺 playbook (非 playbook-direct 路径不在本测试范围)`);
-  }
-  const { pb, root } = loadPlaybookForGoal(config.cwd, config.playbook);
-  const plan = await compilePlaybook(pb, { cwd: config.cwd, playbookRoot: root });
-  await config._runDag?.(plan);
-  return { path: 'playbook-direct', outcome: 'success', goal };
+// ── 真 runGoal + 假引擎 (照 sdd-direct.test.ts 的 run 夹具; 不复刻分支) ────────────────
+const ACC: AcceptanceSpec = { kind: 'executable', command: 'bun test', expectExit: 0 };
+const classify = async (): Promise<GoalClassification> => ({ tier: 'complex', acceptance: ACC });
+const execOk = (): ExecutorDagResult =>
+  ({
+    plan: { name: 'x', nodes: {} },
+    results: {
+      accept: { id: 'accept', status: 'done', kind: 'command', output: '', deps: [], usage: { in: 0, out: 0 } },
+    },
+    reusedNodes: [],
+  }) as unknown as ExecutorDagResult;
+async function runWithPlaybook(over: Partial<RunGoalConfig>) {
+  const seenPlans: ConductorPlan[] = [];
+  const seenCfg: ExecutorDagConfig[] = [];
+  const config: RunGoalConfig = {
+    cwd: makeTempCwd(),
+    dag: { conductorModel: 'c:m', leafModel: 'l:m' } as ExecutorDagConfig,
+    _classify: classify,
+    _runDag: (async (plan: ConductorPlan, cfg: ExecutorDagConfig) => {
+      seenPlans.push(plan);
+      seenCfg.push(cfg);
+      return execOk();
+    }) as never,
+    ...over,
+  };
+  const r = await runGoal('按 playbook 跑', config);
+  return { r, seenPlans, seenCfg };
 }
 
 // ── 5 个 frozen test cases ──────────────────────────────────────────────────
@@ -94,8 +87,11 @@ describe('compilePlaybook', () => {
     expect(plan.nodes['step-2']!.depends_on).toEqual(['step-1']);
     expect(plan.nodes['step-3']!.depends_on).toEqual(['step-2']);
     expect(plan.nodes['step-4']!.depends_on).toEqual(['step-3']);
-    // step-5 has reset:true → empty depends_on (per goal: reset:true → 不依赖上游)
-    expect(plan.nodes['step-5']!.depends_on).toEqual([]);
+    // step-5 reset:true → 仍在链上 (顺序是 playbook 语义), goal 前加「不读取上游」前言。证伪: 摘链 → 这两条红。
+    expect(plan.nodes['step-5']!.depends_on).toEqual(['step-4']);
+    expect(plan.nodes['step-5']!.goal).toContain('[reset]');
+    expect(plan.nodes['step-1']!.goal).not.toContain('[reset]');
+    expect('output_type' in plan.nodes['step-1']!).toBe(false);
     expect(plan.nodes['accept']!.depends_on).toEqual(['step-5']);
     expect(plan.nodes['accept']!.executor).toBe('command');
     expect(plan.nodes['accept']!.expect_exit).toBe(0);
@@ -166,48 +162,47 @@ describe('loadPlaybookForGoal', () => {
 });
 
 // 反向自检 (c): 拿掉 mutual-exclusion 闸 → _runDag 被调到 → expect(callCount).toBe(0) 红。
-describe('runGoal with playbook', () => {
-  test('(c) mutual exclusion: sddPath + playbook both given → rejects, _runDag never called', async () => {
-    const cwd = makeTempCwd();
-    let callCount = 0;
-    let threw = false;
-    try {
-      await _runGoalWithPlaybook('ignored', {
-        cwd,
+describe('runGoal with playbook (真接线)', () => {
+  test('(c) mutual exclusion: sddPath + playbook 同给 → runGoal 抛, 错误同时提两名, 引擎零调用', async () => {
+    const seen: ConductorPlan[] = [];
+    await expect(
+      runGoal('x', {
+        cwd: makeTempCwd(),
+        dag: { conductorModel: 'c:m', leafModel: 'l:m' } as ExecutorDagConfig,
+        _classify: classify,
+        _runDag: (async (plan: ConductorPlan) => { seen.push(plan); return execOk(); }) as never,
         sddPath: '/tmp/fake-sdd.md',
         playbook: 'documentation-coverage',
-        _runDag: async () => {
-          callCount += 1;
-          return {};
-        },
-      });
-    } catch (err) {
-      threw = true;
-      const msg = String((err as Error).message ?? err);
-      // 错误必须同时提到 sddPath 与 playbook
-      expect(msg).toMatch(/sddPath/i);
-      expect(msg).toMatch(/playbook/i);
-    }
-    expect(threw).toBe(true);
-    expect(callCount).toBe(0);
+      }),
+    ).rejects.toThrow(/sddPath.*playbook|playbook.*sddPath/);
+    expect(seen).toHaveLength(0);
   });
 
-  // 反向自检 (e): 拿掉 playbook 分支 / 改 plan.name → expect(plan.name).toMatch(/^playbook-/) 红。
-  test('(e) end-to-end fake engine: builtin documentation-coverage compiles into 6-node plan, path=playbook-direct', async () => {
-    const cwd = makeTempCwd();
-    let captured: ConductorPlan | undefined;
-    const r = await _runGoalWithPlaybook('ignored', {
-      cwd,
-      playbook: 'documentation-coverage',
-      _runDag: async (plan) => {
-        captured = plan as ConductorPlan;
-        return {};
-      },
-    });
-    expect(captured).toBeDefined();
-    expect(captured!.name).toMatch(/^playbook-/);
-    expect(Object.keys(captured!.nodes).length).toBe(6);
+  test('(e) 假引擎端到端: 引擎收到的是 playbook-* 平铺图 (6 节点), 不是编排循环; path=playbook-direct; 判据 = playbook 的 acceptance', async () => {
+    const { r, seenPlans, seenCfg } = await runWithPlaybook({ playbook: 'documentation-coverage' });
+    expect(seenPlans.length).toBeGreaterThanOrEqual(1);
+    // 证伪: run-goal 的循环守卫改回 `else` → 这里收到 goal-orchestrating-loop → 红。
+    expect(seenPlans[0]!.name).toBe('playbook-documentation-coverage');
+    expect(Object.keys(seenPlans[0]!.nodes)).toHaveLength(6);
     expect(r.path).toBe('playbook-direct');
+    expect(r.stages.filter((s) => s.summary.includes('playbook-direct')).length).toBe(3);
+    // loop.maxRounds 5 → 升级轮 min(5,4)-1 = 3 (compile.ts 头注的映射)。证伪: 删 execCfg 那一行 → undefined → 红。
+    expect(seenCfg[0]!.maxEscalations).toBe(3);
+    expect(seenCfg[0]!.frozenNodes).toEqual(['accept']);
+  });
+
+  test('(b2) 未知 playbook 名 → runGoal 抛且列已知名, 引擎零调用', async () => {
+    const seen: ConductorPlan[] = [];
+    await expect(
+      runGoal('x', {
+        cwd: makeTempCwd(),
+        dag: { conductorModel: 'c:m', leafModel: 'l:m' } as ExecutorDagConfig,
+        _classify: classify,
+        _runDag: (async (plan: ConductorPlan) => { seen.push(plan); return execOk(); }) as never,
+        playbook: 'does-not-exist',
+      }),
+    ).rejects.toThrow(/documentation-coverage/);
+    expect(seen).toHaveLength(0);
   });
 });
 
@@ -220,4 +215,3 @@ describe('builtin playbook surface', () => {
   });
 });
 
-mkdirSync('.omd', { recursive: true });
