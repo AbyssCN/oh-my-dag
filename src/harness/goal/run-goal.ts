@@ -86,6 +86,8 @@ import { maybeRunDesignReview, type DesignReviewResult } from './design-review';
 import { escalationProviderReady, type VerdictTarget, type VerifierFn } from '../verifier';
 import { extractProtectedPaths } from './goal-protections';
 import { withProtectedPaths } from '../agent-tools';
+import { compilePlaybook } from '../playbook/compile';
+import { loadPlaybookForGoal } from './playbook-direct';
 import {
   CONDUCTOR_INFRA_FAILURE_KINDS,
   CONDUCTOR_NODE_ID,
@@ -192,6 +194,14 @@ export interface RunGoalConfig {
    * 文件读不到 / 缺契约·分解段 → 起跑即抛 (fail-loud, 不静默降级回全程 goal)。
    */
   sddPath?: string;
+  /**
+   * playbook 直通入口 (与 sddPath 同族的"零契约段"入口, 2026-09): playbook 名从内置层
+   * (templates/playbooks/<name>/) 或项目层 (<cwd>/.omd/playbooks/<name>/) 叠加查找, 找到后
+   * `compilePlaybook` 出平铺图, survey/research/spec 三段零展开零重画。
+   * 与 sddPath **互斥** —— 一次只能走一条, 闸在 run-goal 入口 (本文件 bail 同款 fail-fast);
+   * mcp/tools/goal.ts handler 那一层先返 MCP 错, 这一层是 defense in depth。
+   */
+  playbook?: string;
   /**
    * t-gate-inmigrate (2026-09-01) 三道机械前置闸的调用方声明 (全部可选; 缺席 = 闸段缺席,
    * 零行为变化 — C-4 增量纪律)。默认兜底从 `<cwd>/.omd/preflight.json` 读 (loadPreFlightConfig)。
@@ -336,7 +346,7 @@ export interface RunGoalConfig {
  }
 
 /** 这一趟 goal 走的执行路径 (D-1: 路径身份记在结果上, 不进 GRAPH_SHAPES 卡表)。 */
-export type RunGoalPath = 'sdd-direct' | 'orchestrating-loop';
+export type RunGoalPath = 'sdd-direct' | 'orchestrating-loop' | 'playbook-direct';
 
 export interface RunGoalResult {
   goal: string;
@@ -1097,6 +1107,12 @@ interface BoardSettleBox {
  * 要盖住它们得给 claim 行带 PID 或心跳,那是另一件事(跨容器时 PID 还没意义)。
  */
 export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunGoalResult> {
+  // 互斥闸 (defense in depth): sddPath 与 playbook 同给 → 一次只能走一条。goal.ts handler
+  // 那层先返 MCP 错; 这一层在 worker / CLI 直调路径上仍然兜底, 不让两个互斥入口同时过门。
+  // 错误文案必须同时提到 sddPath 与 playbook (compile.test.ts (c) 的反向自检点)。
+  if (config.sddPath && config.playbook) {
+    throw new Error(`sddPath 与 playbook 互斥 (sddPath=${config.sddPath}, playbook=${config.playbook}) — 一次只能走一条`);
+  }
   const box: BoardSettleBox = { settled: false };
   try {
     return await runGoalInner(goal, config, box);
@@ -1471,6 +1487,22 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   let flatPlan: ConductorPlan | undefined;
   let flatFallback: string | undefined;
   let flatParallelism: string | undefined;
+  // playbook-direct (2026-09): 与 sdd-direct 同族的"零契约段"入口。playbook 名 → 编译出
+  // 平铺图 (compilePlaybook), survey/research/spec 三段零展开零重画 —— 三段以 skipped 形态
+  // 入 stage 表, summary 写明原因 (与 sdd-direct 同形态)。execution 段照常跑这份 flatPlan。
+  // **不**走 O-6 探针 / 不写回路复用 —— compilePlaybook 自带 acceptance.command 的判别力探针,
+  // 与 sdd-direct 的 sddIgnitionDryRunGate 不是同一道闸, 但目的一致 (判据不虚)。
+  let playbookSource: 'builtin' | 'project' | undefined;
+  if (config.playbook) {
+    const { pb, root, source } = loadPlaybookForGoal(config.cwd, config.playbook);
+    playbookSource = source;
+    const planName = `playbook-${pb.name}`;
+    flatPlan = await compilePlaybook(pb, { cwd: config.cwd, playbookRoot: root, name: planName });
+    const skipSummary = 'playbook-direct 直通: 契约段零展开';
+    stages.push({ stage: 'survey', status: 'skipped', outcome: 'not-needed', summary: skipSummary });
+    stages.push({ stage: 'research', status: 'skipped', outcome: 'not-needed', summary: skipSummary });
+    stages.push({ stage: 'spec', status: 'skipped', outcome: 'not-needed', summary: skipSummary });
+  }
   /** S-46 缺片闸的判据面 —— 只在直通v2真编译成功时有值 (回落 conductor 铺图时切片不是执行单位)。 */
   let flatSlices: readonly SddSlice[] | undefined;
   /** #242 resume 复用的片号 (O-6 探针裁的「verify 当前已绿」那批) —— S-46 判缺片时豁免。 */
@@ -2486,8 +2518,9 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
     stages,
     outcome,
     ...(loop ? { loop } : {}),
-    // P3 S6b (D-1): 路径身份。判定顺序 = D-17 的优先级 (sdd-direct > loop > chain > flat-first > v1)。
-    path: sdd && runnable ? 'sdd-direct' : 'orchestrating-loop',
+    // P3 S6b (D-1): 路径身份。判定顺序 = D-17 的优先级 (sdd-direct > playbook-direct > loop)。
+    // 互斥闸已在 runGoal 入口 (config.sddPath && config.playbook) 拒, 此处不会同时为真。
+    path: sdd && runnable ? 'sdd-direct' : config.playbook ? 'playbook-direct' : 'orchestrating-loop',
     ...(specPath ? { specPath } : {}),
     sources,
     repoContext,
