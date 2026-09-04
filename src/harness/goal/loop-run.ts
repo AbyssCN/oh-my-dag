@@ -24,6 +24,11 @@ import { logger } from '../logger';
 import { missingPathArgs } from './acceptance-gate';
 import { extractProtectedPaths } from './goal-protections';
 import { createConductorCardLedger, withDispatchEvidence, type ConductorCardLedger } from './loop-ledger';
+// 2026-09-04 leaf plumbing:三份名册算一次,进 ctx.registries 给 compile 查,进 ConductorFacts 给
+// conductor 自己看("我可以引那个名?")。renderConductorFacts 渲染时不再扫盘。
+import { loadProfiles } from '../profiles/profile';
+import { loadAgentTemplates } from '../agent-templates';
+import { knownMcpServerNames } from '../../mcp/client/config';
 import {
   CONDUCTOR_INFRA_FAILURE_KINDS,
   CONDUCTOR_NODE_ID,
@@ -59,6 +64,14 @@ export function conductorCtxOf(host: LoopHost, runnable: LoopRunnable): Conducto
       return undefined;
     }
   };
+  // 2026-09-04 leaf plumbing:三份名册一次性算好,work + spawn compile 读这个面,而非自己再扫盘
+  // (D-25:compile 不读盘)。loadProfiles/loadAgentTemplates/knownMcpServerNames 内部都是 cwd 相对读,
+  // 读不到就返各自的内置子集 —— 不会抛, 安全。
+  const registries = {
+    profiles: [...loadProfiles(host.cwd).keys()],
+    templates: [...loadAgentTemplates({ root: host.cwd }).keys()],
+    servers: [...knownMcpServerNames(host.cwd)],
+  };
   return {
     cwd: host.cwd,
     writeRoot: host.cwd,
@@ -71,6 +84,7 @@ export function conductorCtxOf(host: LoopHost, runnable: LoopRunnable): Conducto
       verify: seat('verifier') ?? '',
     },
     researchAvailable: Boolean(host.dag.researchRunner),
+    registries,
     ...(host.depth ? { depth: host.depth } : {}),
   };
 }
@@ -113,6 +127,9 @@ export function withLoopConfig(
   const criterionFiles = runnable ? missingPathArgs(runnable.command, host.cwd) : [];
   const freezeFiles = criterionFiles.length ? criterionFiles : ledger?.criterionFreeze?.files ?? [];
   const conductorId = conductorNodeIdOf(plan);
+  // 2026-09-04:三份名册进 ConductorFacts(与 ctx.registries 同源,不重复扫盘)。空数组也传(undefined 时
+  // 渲染行不出现,但传过去 [] 不会让 conductor 误以为「没注册」)。
+  const reg = ctx.registries ?? { profiles: [], templates: [], servers: [] };
   const face = buildConductorFace(
     {
       goal: plan.nodes[conductorId]?.goal ?? task,
@@ -124,6 +141,9 @@ export function withLoopConfig(
       tokensLeft: base.loopBudget?.tokens ?? null,
       maxFanout: ctx.maxFanout,
       researchAvailable: ctx.researchAvailable,
+      profiles: reg.profiles,
+      templates: reg.templates,
+      mcpServers: reg.servers,
     },
     { ctx, runChild, ...(ledger ? { ledger } : {}), ...(freezeFiles.length ? { criterionFreeze: { files: freezeFiles, root: host.cwd } } : {}) },
   );

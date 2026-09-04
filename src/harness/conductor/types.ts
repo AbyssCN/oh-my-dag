@@ -36,6 +36,8 @@ export interface ConductorCtx {
   researchAvailable: boolean;
   /** 嵌套深度 (顶层缺席 = 0)。decompose 派出的嵌套循环是 1; 到上限 (loop-plan.ts LOOP_MAX_DEPTH) 后 decompose 拒。 */
   depth?: number;
+  /** work + spawn compile 读这个面 (D-25:compile 不读盘)。缺席 = compile 全放行, 与旧行为逐字节一致。 */
+  registries?: { profiles: readonly string[]; templates: readonly string[]; servers: readonly string[] };
 }
 
 /**
