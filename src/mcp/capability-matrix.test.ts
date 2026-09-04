@@ -83,14 +83,14 @@ describe('capability-matrix 对账闸', () => {
   // ───────────────────────────────────────────────────────────────────────
   // ④ 反闸二 — 假源: 伪造 TOOL_RENAMES + 伪造工具定义
   //
-  // 假源设计: 8 个 map_* 工具 (空 inputSchema, 不贡献 rows) + 1 个 dag_goal (9 独立键)
-  // + 1 个 dag_run (另 9 独立键) → union = 18 rows, 三层都齐, map = 8, 全 绊线 通过
+  // 假源设计: 8 个 map_* 工具 (空 inputSchema, 不贡献 rows) + 1 个 dag_goal (10 独立键)
+  // + 1 个 dag_run (另 9 独立键) → union = 19 rows, 三层都齐, map = 8, 全 绊线 通过
   // → extractMatrix + renderSegment 走全程, 真源盘上段与它必不一致。
   //  —— 一道闸同时证两件事: (a) 抽取 / 渲染真反映假源 (b) compareSegment 判红。 ─────
   test('反闸二: 假源 → 抽取反映假源 (promise / 工具名) + 渲染与真源盘上比对红', () => {
     // 抽出器只看 PropertyAssignment (ts.isPropertyAssignment), ShorthandPropertyAssignment
     // 不收 — 所以假源 inputSchema 必须用全写法 `k: v`, 不能用 `{ a0, a1 }`。
-    const dagGoalKeys = Array.from({ length: 9 }, (_, i) => `a${i}: z`).join(', ');
+    const dagGoalKeys = Array.from({ length: 10 }, (_, i) => `a${i}: z`).join(', ');
     const dagRunKeys = Array.from({ length: 9 }, (_, i) => `b${i}: z`).join(', ');
     const goalTpl = `const tools: any[] = [{ name: 'dag_goal', inputSchema: { ${dagGoalKeys} } }];`;
     const runTpl = `const tools: any[] = [{ name: 'dag_run', inputSchema: { ${dagRunKeys} } }];`;
@@ -144,8 +144,8 @@ const tools: any[] = [
     if (sourceNames.join(',') !== expectedSources.join(',')) {
       throw new Error(`抽出的 sourceName 不是来自假源: got [${sourceNames.join(',')}] expected [${expectedSources.join(',')}]`);
     }
-    if (m.rows.length !== 18) {
-      throw new Error(`union rows 不是 18: ${m.rows.length}`);
+    if (m.rows.length !== 19) {
+      throw new Error(`union rows 不是 19: ${m.rows.length}`);
     }
 
 
@@ -164,11 +164,11 @@ const tools: any[] = [
   });
 
   // ───────────────────────────────────────────────────────────────────────
-  // ⑤ 结构绊线 — 硬编码字面量 3 层 / 8 工具 / 18 行
+  // ⑤ 结构绊线 — 硬编码字面量 3 层 / 8 工具 / 19 行
   //   派生就成恒真式, 绊线消失。冲突请停下报「勘察计数与代码冲突」, 不许就地改数。
   //   抬数 = 回 owner 重定冻结接口规格 (capability-matrix 冻结接口规格 §5)。
   // ───────────────────────────────────────────────────────────────────────
-  test('结构绊线: 3 层 / map_*=8 / 矩阵 18 行 (硬编码字面量)', () => {
+  test('结构绊线: 3 层 / map_*=8 / 矩阵 19 行 (硬编码字面量)', () => {
     const seg = readSegment(onDisk);
     if (!seg.ok) throw new Error(`readSegment: ${seg.error}`);
 
@@ -185,10 +185,10 @@ const tools: any[] = [
     if (!m) throw new Error(`map_* 层头未含 (N 工具: ${mapLine}`);
     expect(m[1]).toBe('8');
 
-    // 矩阵数据行: 行 18..35 = 18 行 "| `param` | ✓ | — |" 形态; 不派生 — 直接期待 18
+    // 矩阵数据行: 行 18..36 = 19 行 "| `param` | ✓ | — |" 形态; 不派生 — 直接期待 19
     const dataRows = seg.segment
       .split('\n')
       .filter((l) => /^\| `\w+` \| ✓ \| — \|$|^\| `\w+` \| — \| ✓ \|$|^\| `\w+` \| ✓ \| ✓ \|$/.test(l));
-    expect(dataRows).toHaveLength(18);
+    expect(dataRows).toHaveLength(19);
   });
 });

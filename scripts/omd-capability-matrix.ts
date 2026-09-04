@@ -267,8 +267,8 @@ export function extractMatrix(sources: SourceFiles): Matrix {
   if (mapCount !== 8) {
     throw new Error(`勘察计数与代码冲突: 期望 map_* 层工具数=8, 实际 ${mapCount}`);
   }
-  if (rows.length !== 18) {
-    throw new Error(`勘察计数与代码冲突: 期望 矩阵行数=18, 实际 ${rows.length}`);
+  if (rows.length !== 19) {
+    throw new Error(`勘察计数与代码冲突: 期望 矩阵行数=19, 实际 ${rows.length}`);
   }
 
   return { promise, tools, rows };

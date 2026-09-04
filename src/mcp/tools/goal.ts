@@ -747,6 +747,10 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         .string()
         .optional()
         .describe('Direct entry: path to a crystallized SDD (docs/plan/*.md). Skips research + contract transcription — the file IS the contract. Rejects files missing 契约/Contracts or 分解/Breakdown sections.'),
+      playbook: z
+        .string()
+        .optional()
+        .describe('Direct entry: playbook name from .omd/playbooks/<name>/ or templates/playbooks/<name>/. Mutually exclusive with sddPath.'),
       force: z
         .boolean()
         .optional()
@@ -797,6 +801,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         budgetMinutes?: number;
         branchStrategy?: BranchStrategy;
         sddPath?: string;
+        playbook?: string;
         force?: boolean;
         slug?: string;
         cwd?: string;
@@ -825,8 +830,14 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           '[omd/goal] 续跑没找到点火档案且本次也没给这几位 → 按缺省跑 (本模块之前的老 run 会这样)',
         );
       }
-      const { goal, tier, maxRounds, researchRounds, resume, detached, budgetTokens, budgetMinutes, branchStrategy, resultOut, sddPath, force, slug, cwd } =
+      const { goal, tier, maxRounds, researchRounds, resume, detached, budgetTokens, budgetMinutes, branchStrategy, resultOut, sddPath, playbook, force, slug, cwd } =
         resolvedArgs as typeof raw;
+
+      // 互斥闸 (handler 层): sddPath 与 playbook 同给 → MCP 错误直接返, 不烧 token。
+      // run-goal 入口 (defense in depth) 也有一道相同的闸, 这里先挡掉常规调用路径。
+      if (sddPath && playbook) {
+        return { content: [{ type: 'text' as const, text: 'dag_goal: sddPath 与 playbook 互斥 — 一次只能走一条' }], isError: true };
+      }
 
       if (!goal?.trim()) {
         return { content: [{ type: 'text' as const, text: 'dag_goal: goal 必填' }], isError: true };
@@ -1276,6 +1287,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           ...(researchRounds ? { researchRounds } : {}),
           ...(tier ? { tier } : {}),
           ...(sddPath ? { sddPath } : {}),
+          ...(playbook ? { playbook } : {}),
           // ── 盘点表 #3: D-2 写集对账的生产注入面 ─────────────────────────────────
           // 判据全在 `sddWriteSetFace` 的注里 (为什么只在有 SDD 时注、为什么必须显式给 declared)。
           // 注入这一个字段同时点亮三个读数: 归属阶梯 (谁写的) · writeScope (该不该写) ·
