@@ -90,7 +90,7 @@ import {
 } from '../conductor-plan';
 // SDD 2026-08-11-leaf-profile库 D-3: 节点 profile 字段经此解析成 LeafProfile, 复用既有注入口
 // (agent-leaf.ts AgentLeafRunnerOpts.profile 同型), 不建平行管道。loadProfiles 只投影有界 conductor 名册。
-import { loadProfiles, resolveProfile, type LeafProfile } from '../profiles/profile';
+import { resolveProfile, type LeafProfile } from '../profiles/profile';
 // D-3 注册 server 集真源 (parsePlan knownServers 必传): 该 run 的 cwd 经 loadMcpClientConfig。
 import { knownMcpServerNames } from '../../mcp/client/config';
 // S3.6 escalation patch 模式: 补丁解析 + 程序化 merge (未补丁节点字节不动 → D-21 复用按构造成立)。

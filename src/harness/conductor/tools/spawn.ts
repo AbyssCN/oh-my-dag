@@ -8,6 +8,10 @@
  * (如整仓 `bun test`)给自己判分,这时其它 task 可能还在半改状态,判到的红不是它的错,
  * 反而会把它拖进对着别人半成品做的自修环。run 级判据只该在「一个节点的产物就是整条 run
  * 的判据对象」时接(work / best_of),N-way 扇出的每个 task 不是。
+ *
+ * 2026-09-04 leaf profile / agent card / MCP plumbing:TaskSchema 加 profile / template /
+ * mcp 三个可选字段,与 work 同形 —— 未知名 → compile 拒(拒绝语义同 work)。透传到每个
+ * task 节点同名字段。
  */
 import { z } from 'zod';
 import type { ConductorPlan } from '../../conductor-plan';
@@ -19,6 +23,9 @@ const TaskSchema = z
     goal: z.string().min(1),
     brief: z.string().min(1),
     write_set: z.array(z.string()).optional(),
+    profile: z.string().min(1).optional(),
+    template: z.string().min(1).optional(),
+    mcp: z.array(z.string().min(1)).optional(),
   })
   .strict();
 
@@ -32,10 +39,12 @@ const SpawnSchema = z
   .strict();
 
 type SpawnParams = z.infer<typeof SpawnSchema>;
+type TaskParams = z.infer<typeof TaskSchema>;
 
 const SHORT =
   'Start N independent workers in parallel. Each task: {goal, brief, write_set?}. Add `decision` when the ' +
-  'tasks must agree on an interface, schema, or naming: one node outputs it first, all tasks depend on it. ';
+  'tasks must agree on an interface, schema, or naming: one node outputs it first, all tasks depend on it.' +
+  ' +p/t/m.';
 
 /** 两个及以上 task 声明的 write_set 相交 → 返回撞上的第一个文件;否则 null。声明了才查(缺省=未知,不当场拒)。 */
 function firstOverlap(writeSets: readonly (readonly string[])[]): string | null {
@@ -44,6 +53,29 @@ function firstOverlap(writeSets: readonly (readonly string[])[]): string | null 
     for (const f of files) {
       if (seen.has(f)) return f;
       seen.add(f);
+    }
+  }
+  return null;
+}
+
+/** compile 顶层:对每个 task 查 profile / template / mcp 名,未知名 → 拒因(单点 + 已知名单)。 */
+function checkTaskRegistries(task: TaskParams, ctx: ConductorCtx): string | null {
+  const reg = ctx.registries;
+  if (!reg) return null;
+  if (task.profile && !reg.profiles.includes(task.profile)) {
+    return `task 带未注册的 profile 名: '${task.profile}'。已知名册: ${reg.profiles.slice(0, 12).join(', ')}${reg.profiles.length > 12 ? ', …' : ''}.`;
+  }
+  if (task.template && !reg.templates.includes(task.template)) {
+    return `task 带未注册的 agent template 名: '${task.template}'。已知名册: ${reg.templates.slice(0, 12).join(', ')}${reg.templates.length > 12 ? ', …' : ''}.`;
+  }
+  if (task.mcp) {
+    const servers = new Set(reg.servers);
+    const bad = task.mcp.filter((m) => {
+      const head = m.split(':')[0]!;
+      return !servers.has(head);
+    });
+    if (bad.length) {
+      return `task 带未注册的 MCP server: ${bad.join(', ')}。已知: ${reg.servers.slice(0, 12).join(', ')}${reg.servers.length > 12 ? ', …' : ''}.`;
     }
   }
   return null;
@@ -63,6 +95,10 @@ export const spawnTool: ConductorTool<SpawnParams> = {
         manual: renderManual('spawn'),
       };
     }
+    for (let i = 0; i < params.tasks.length; i++) {
+      const bad = checkTaskRegistries(params.tasks[i]!, ctx);
+      if (bad) return { ok: false, error: bad, manual: renderManual('spawn') };
+    }
     const nodes: ConductorPlan['nodes'] = {};
     let decisionId: string | undefined;
     if (params.decision) {
@@ -75,6 +111,9 @@ export const spawnTool: ConductorTool<SpawnParams> = {
         executor: 'agent' as const,
         goal: `${task.goal}\n\n${task.brief}`,
         ...(task.write_set ? { write_set: task.write_set } : {}),
+        ...(task.profile ? { profile: task.profile } : {}),
+        ...(task.template ? { template: task.template } : {}),
+        ...(task.mcp ? { mcp: task.mcp } : {}),
         ...(decisionId ? { depends_on: [decisionId] } : {}),
       };
     });
