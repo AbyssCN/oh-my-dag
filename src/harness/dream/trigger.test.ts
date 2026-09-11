@@ -16,6 +16,7 @@ import {
   STALE_LOCK_MS,
   acquireDreamLock,
   decideDreamTrigger,
+  dreamLockHeld,
   readDreamAttempt,
   releaseDreamLock,
   writeDreamAttempt,
@@ -181,5 +182,17 @@ describe('互斥锁', () => {
 
   test('目录不存在时自己建(hook 在空仓里第一次点火就是这个场景)', () => {
     expect(acquireDreamLock(join(root, 'deep', 'nested', 'dream.lock'), NOW)).toBe(true);
+  });
+
+  // 2026-09-11 那个洞的反向自检: hook 若用 acquire 探锁, 子进程 withDreamLock 必被挡。
+  // 判据 = 「点火方探过之后, 真跑的进程仍拿得到锁」。把 dreamLockHeld 改回 acquire 这条立刻红。
+  test('★ 点火方只探不拿 —— 探过之后子进程仍拿得到锁(hook 拿锁挡死子进程的根因)', () => {
+    const p = join(root, 'dream.lock');
+    expect(dreamLockHeld(p, NOW)).toBe(false); // 探不建文件
+    expect(acquireDreamLock(p, NOW)).toBe(true); // 子进程拿到
+    expect(dreamLockHeld(p, NOW + 1000)).toBe(true); // 活锁可见
+    expect(dreamLockHeld(p, NOW + STALE_LOCK_MS)).toBe(false); // 陈锁按不在算
+    releaseDreamLock(p);
+    expect(dreamLockHeld(p, NOW)).toBe(false);
   });
 });
