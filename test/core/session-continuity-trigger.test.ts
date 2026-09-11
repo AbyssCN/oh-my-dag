@@ -23,7 +23,7 @@
  *   - A4 把 `sessionDirOf` 的 `dataPath` 换成裸 `.omd` → 与 ledgerPath 不等。
  */
 import { describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import {
@@ -37,12 +37,8 @@ import {
   writerArgv,
   type ContinuityHookInput,
 } from '../../src/harness/session/continuity-hook';
-import { createDefaultMemory } from '../../src/mcp/assemble';
 import { appendLedger } from '../../src/harness/session/ledger';
-import { createOmdMemory } from '../../src/harness/memory';
-import { UNIVERSAL_SAFEGUARD } from '../../src/memory/safeguards/namespaces';
 import { slugifyProject } from '../../src/harness/project-scope';
-import { listCheckpoints, type CheckpointRow } from '../../src/harness/session/sink';
 import type { StopLedger, StopLedgerEntry } from '../../src/harness/session/stop-ledger';
 
 // ─── fixture ────────────────────────────────────────────────────────────────
@@ -88,7 +84,7 @@ interface World {
   dataHome: string;
   transcript: string;
   memoryDb: string;
-  /** 交接镜像的**专**库(2026-08-28 分库)—— detached writer 落的是这个,不是 memoryDb。 */
+  /** 2026-08-28 分库时的交接镜像库;2026-09-11 已删 —— 这里只用来断言它**不再**出现。 */
   handoffDb: string;
 }
 
@@ -146,28 +142,12 @@ function runHook(world: World, input: unknown, envOver: Record<string, string> =
   return { exitCode: p.exitCode, stdout: p.stdout.toString(), stderr: p.stderr.toString() };
 }
 
-/** detached writer 是异步的 —— 轮询到出行或超时(超时即判失败,不"再等等")。 */
-async function waitForCheckpoint(
-  dbPath: string,
-  sessionId: string,
-  timeoutMs = 60_000,
-): Promise<CheckpointRow[]> {
+/** detached writer 是异步的 —— 轮询到 checkpoint.md 出现或超时(超时即判失败,不"再等等")。 */
+async function waitForCheckpoint(checkpointPath: string, timeoutMs = 60_000): Promise<string | null> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    if (existsSync(dbPath)) {
-      // 读面用 HOST_SAFEGUARD(createDefaultMemory 那一份), 不是测试自捏的 schema ——
-      // 捏一份就又变成"假如注册了会怎样"(#206 的病灶)。
-      // ⚠ 分库之后这里传的 dbPath 是 **handoff.db**;`OMD_MEMORY_PATH` 在这只当"开哪个文件"用,
-      //   不代表生产的 MCP 读面会去读它 —— 今天没有任何生产调用点读 handoff 库(L3 才接)。
-      const memory = createDefaultMemory({ OMD_MEMORY_PATH: dbPath } as NodeJS.ProcessEnv);
-      try {
-        const rows = await listCheckpoints({ sessionId }, { memory });
-        if (rows.length > 0) return rows;
-      } finally {
-        memory.close();
-      }
-    }
-    if (Date.now() >= deadline) return [];
+    if (existsSync(checkpointPath)) return readFileSync(checkpointPath, 'utf-8');
+    if (Date.now() >= deadline) return null;
     await Bun.sleep(250);
   }
 }
@@ -397,45 +377,6 @@ describe('A5 fail-open — 坏输入永不阻断 session', () => {
   });
 });
 
-// ─── A2 读面装配(实装缺陷的现场,不需要子进程)────────────────────────────
-
-describe('A2 读面装配 — 读一个库的 safeguard 必须覆盖库里出现过的 namespace', () => {
-  test('universal 装配读 continuity 行 → 恒空(#206 第三处静默断点);host 装配读得回', async () => {
-    const world = mkWorld('omd-hook-readface-');
-    mkdirSync(join(world.repo, '.omd'), { recursive: true });
-
-    // 写入侧照生产:窄 safeguard 只开 continuity 一格
-    const { CONTINUITY_SAFEGUARD } = await import('../../src/memory/safeguards/continuity-namespace');
-    const writer = createOmdMemory({ path: world.memoryDb, safeguard: CONTINUITY_SAFEGUARD });
-    const { sinkCheckpoint } = await import('../../src/harness/session/sink');
-    const sunk = await sinkCheckpoint(
-      {
-        sessionId: 'readface-1',
-        mode: 'final',
-        md: '# checkpoint',
-        intent: '读面装配自证',
-        checkpointPath: join(world.repo, 'checkpoint.md'),
-      },
-      { memory: writer },
-    );
-    writer.close();
-    expect(sunk.ok).toBe(true); // 写入侧成功 —— 缺陷不在这边
-
-    // ① universal 装配(#206 之前 createDefaultMemory 用的就是它)→ parse 抛 → catch 吞成 []
-    const universal = createOmdMemory({ path: world.memoryDb, safeguard: UNIVERSAL_SAFEGUARD });
-    const blind = await listCheckpoints({ sessionId: 'readface-1' }, { memory: universal });
-    universal.close();
-    expect(blind).toEqual([]); // ← 这就是"写入成功、读面恒空"的现场
-
-    // ② 生产读面(HOST_SAFEGUARD)→ 读得回
-    const host = createDefaultMemory({ OMD_MEMORY_PATH: world.memoryDb } as NodeJS.ProcessEnv);
-    const rows = await listCheckpoints({ sessionId: 'readface-1' }, { memory: host });
-    host.close();
-    expect(rows.length).toBe(1);
-    expect(rows[0]!.sessionId).toBe('readface-1');
-  });
-});
-
 // ─── A1 端到端 ──────────────────────────────────────────────────────────────
 
 describe('A1 端到端 — 喂一次 hook, 库里真出 continuity 行', () => {
@@ -466,18 +407,13 @@ describe('A1 端到端 — 喂一次 hook, 库里真出 continuity 行', () => {
       expect(existsSync(join(contDir, 'writer.log'))).toBe(true);
       expect(existsSync(join(contDir, 'ledger.jsonl'))).toBe(true);
 
-      // 分库后 detached writer 落 handoff.db。**同时**钉住共享库没被写脏 —— 反向自检:
-      // 把 `scripts/session-writer.ts` 的 `resolveHandoffDbPath` 改回 `resolveMemoryDbPath`
-      // → 上一行超时、下一行同时红。
-      const rows = await waitForCheckpoint(world.handoffDb, sessionId);
-      expect(rows.length).toBeGreaterThan(0);
+      // 2026-09-11 起交接**只**落 checkpoint.md(handoff.db 镜像已删)。钉住两个库都没被写:
+      // 反向自检:任何一处把 createOmdMemory 接回 writer → 下面两行之一红。
+      const md = await waitForCheckpoint(join(contDir, 'checkpoint.md'));
+      expect(md).not.toBeNull();
+      expect(md!.startsWith('<!-- DEGRADED')).toBe(true); // OMD_CONTINUITY_MECHANICAL=1 → 机械降级版
       expect(existsSync(world.memoryDb)).toBe(false);
-
-      const row = rows[0]!;
-      expect(row.sessionId).toBe(sessionId);
-      expect(row.checkpointPath).toBeTruthy();
-      expect(existsSync(row.checkpointPath!)).toBe(true); // 指针指向真存在的 markdown
-      expect(row.degraded).toBe(true); // OMD_CONTINUITY_MECHANICAL=1 → 机械降级版
+      expect(existsSync(world.handoffDb)).toBe(false);
     },
     90_000,
   );

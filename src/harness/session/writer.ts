@@ -7,7 +7,7 @@
  *   → continuity 角色便宜模型蒸馏 9 段 checkpoint.md(段预算,总 ≤6k tok)
  *   → 零-LLM 验真闸(结构 + 文件路径存在 + commit hash ∈ git + noun-gate 容差 3)fail→回喂重写 1 次→机械降级
  *   → 写入磁盘 contDir/checkpoint.md + latest.json 指针;--final 时 splice _NEXT.md 的 AUTO 标记区
- *   → sinkCheckpoint 镜像进 omd SQLite(fail-open,markdown 是真理源)。
+ *   (2026-09-11 起不再镜像进 SQLite:handoff.db 写无读,owner 裁删;markdown 是唯一真源。)
  * fail-open:模型/验真全挂也产出机械降级版,永不让调用方(hook 链)报错。
  *
  * 存储位置 = resolveProject(cwd).dataPath('session')(OMD_DATA_HOME 感知,per-repo);
@@ -24,10 +24,8 @@ import { bootstrapModelRuntime } from '../../model/bootstrap';
 import { resolveRoleModel } from '../../model/role-models';
 import { roleModelWithFallback } from '../../model/role-fallback';
 import { resolveProject } from '../project-scope';
-import type { OmdMemory } from '../memory';
 import { logger } from '../logger';
 import { checkNouns } from './noun-gate';
-import { sinkCheckpoint, type CheckpointSinkResult } from './sink';
 import { extractRepoPaths, writeCheckpointAnchors } from './checkpoint-anchors';
 import { ccTranscriptSource, excerpt, type SessionSource } from './source';
 
@@ -74,8 +72,6 @@ export interface WriterOptions {
   mode?: WriterMode;
   /** 项目根解析用的 cwd;默认 process.cwd()。 */
   cwd?: string;
-  /** 镜像层目标(装配好则双写 SQLite;缺省 = 仅 markdown)。 */
-  memory?: OmdMemory;
   /** 注入 callModel(测试);缺省 = 真实 callModel + 首次 bootstrap provider。 */
   callModel?: CallModelFn;
   /** 强制机械降级(测试 / 显式跳过模型调用)。 */
@@ -94,8 +90,6 @@ export interface WriterResult {
   chars: number;
   /** 无新增内容 → 跳过重蒸馏(保留旧 checkpoint)。 */
   skipped: boolean;
-  /** SQLite 镜像结果(fail-open)。 */
-  sink?: CheckpointSinkResult;
   /**
    * **本次返回时 `checkpoint.md` 盘上内容**的 sha256 前 12 位(owner 2026-08-22)。
    *
@@ -438,27 +432,5 @@ export async function runWriter(opts: WriterOptions): Promise<WriterResult> {
   writeFileSync(latestPath, JSON.stringify({ sessionId, path: checkpointPath, updatedAt: now() }));
   if (mode === 'final') spliceNext(md, projectRoot, sessionId, checkpointPath, now());
 
-  // SQLite 镜像(fail-open,markdown 已落=真理源)。
-  let sink: CheckpointSinkResult | undefined;
-  try {
-    sink = await sinkCheckpoint(
-      {
-        sessionId,
-        mode,
-        md,
-        intent: section(md, '§1'),
-        next: section(md, '§2'),
-        // source 报得出真值就用它(omd 侧引擎自己握着数); 报不出(CC 侧恒 null)才回落 ledger 尾。
-        // ⚠ 用 `??` 不用 `||`: ctx 真的是 0 与"没量到"是两回事(仓规坑①)。
-        ctxTokens: srcCtxTokens ?? latestCtxTokens(ledgerTail),
-        degraded,
-        checkpointPath,
-      },
-      { memory: opts.memory },
-    );
-  } catch (e) {
-    sink = { ok: false, error: `sink threw (fail-open): ${e instanceof Error ? e.message : e}` };
-  }
-
-  return { ok: true, checkpointPath, degraded, chars: md.length, skipped: false, sink, sha: sha12(md) };
+  return { ok: true, checkpointPath, degraded, chars: md.length, skipped: false, sha: sha12(md) };
 }
