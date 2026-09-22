@@ -27,8 +27,6 @@ import {
   maybeCheckpointOmdSession,
   resetOmdCheckpointStateForTest,
 } from '../../src/harness/session/omd-checkpoint';
-import { createDefaultMemory } from '../../src/mcp/assemble';
-import { listCheckpoints } from '../../src/harness/session/sink';
 
 // ─── fixture:omd 会话条目 ───────────────────────────────────────────────────
 
@@ -151,16 +149,13 @@ describe('触发口径 — decideOmdCheckpoint', () => {
 // ─── A1 写入 ────────────────────────────────────────────────────────────────
 
 describe('A1 写入 — omd 会话真产 checkpoint 与 facts 行', () => {
-  test('runWriter 走 omd source → checkpoint.md 存盘, facts 出行且 id = omd session id', async () => {
+  test('runWriter 走 omd source → checkpoint.md 存盘, id = omd session id', async () => {
     const root = mkRoot('omd-211-write-');
-    const db = join(root, '.omd', 'memory.db');
-    const memory = createDefaultMemory({ OMD_MEMORY_PATH: db } as NodeJS.ProcessEnv);
-    try {
+    {
       const res = await runWriter({
         sessionId: 'omd-sess-1',
         cwd: root,
         mechanical: true, // 零模型调用
-        memory,
         source: omdSessionSource({
           entries: () => Promise.resolve([userMsg('做 #211'), assistantMsg('缝切好了')]),
           ctxTokens: () => 4242,
@@ -170,15 +165,7 @@ describe('A1 写入 — omd 会话真产 checkpoint 与 facts 行', () => {
       expect(res.ok).toBe(true);
       expect(existsSync(res.checkpointPath)).toBe(true);
       expect(readFileSync(res.checkpointPath, 'utf-8')).toContain('## §1 Active intent');
-      expect(res.sink?.ok).toBe(true);
-
-      const rows = await listCheckpoints({ sessionId: 'omd-sess-1' }, { memory });
-      expect(rows.length).toBe(1);
-      expect(rows[0]!.sessionId).toBe('omd-sess-1');
-      // ctx 真值走的是 source 报的那个数, 不是 ledger(omd 侧没有 ledger)
-      expect(rows[0]!.ctxTokens).toBe(4242);
-    } finally {
-      memory.close();
+      // 2026-09-11 起交接不再镜像进 SQLite(handoff.db 删),checkpoint.md 是唯一产物。
     }
   });
 

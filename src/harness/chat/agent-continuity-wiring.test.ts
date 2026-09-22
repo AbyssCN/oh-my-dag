@@ -25,9 +25,6 @@ import { runWriter } from '../session/writer';
 import { omdSessionSource } from '../session/source';
 import { resetOmdCheckpointStateForTest } from '../session/omd-checkpoint';
 import { createDefaultMemory } from '../../mcp/assemble';
-import { createOmdMemory } from '../memory';
-import { CONTINUITY_SAFEGUARD } from '../../memory/safeguards/continuity-namespace';
-import { listCheckpoints } from '../session/sink';
 
 const MODEL = 'deepseek:deepseek-v4-flash'; // pi-ai 内置目录离线可解(本件不发网络请求)
 let root: string;
@@ -156,26 +153,7 @@ describe('★ #211 接线 — 轮尾真的派存档', () => {
     const cp = join(root, '.omd', 'session', 'fire-1', 'checkpoint.md');
     expect(await waitForFile(cp)).toBe(true);
 
-    // 镜像层也要真写上 —— 生产装配的 chat 工具**不传** memory,所以这一格靠
-    // `maybeCheckpointOmdSession` 自己开(反向:把 openContinuityMemory 那支去掉 → 这条红)。
-    //
-    // 2026-08-28 分库后镜像落 **handoff.db**, 不是 memory.db。两条断言缺一不可:
-    //   ① 交接进了 handoff.db —— 证明分库没把写入面写丢;
-    //   ② memory.db 里 continuity 恒零 —— 证明它**不再**回流共享库。
-    //     反向自检:把 `openContinuityMemory` 的 `resolveHandoffDbPath` 改回
-    //     `resolveMemoryDbPath` → ① 绿不了、② 当场红。
-    const handoff = createOmdMemory({
-      path: join(root, '.omd', 'handoff.db'),
-      safeguard: CONTINUITY_SAFEGUARD,
-    });
-    try {
-      const rows = await listCheckpoints({ sessionId: 'fire-1' }, { memory: handoff });
-      expect(rows.length).toBe(1);
-      expect(rows[0]!.checkpointPath).toBe(cp);
-    } finally {
-      handoff.close();
-    }
-
+    // 2026-09-11 起交接不再镜像进 SQLite(handoff.db 删);仍要证明它**没有**回流共享库。
     const shared = createDefaultMemory({ OMD_MEMORY_PATH: join(root, '.omd', 'memory.db') } as NodeJS.ProcessEnv);
     try {
       expect(shared.liveFactsByNamespace('continuity').length).toBe(0);

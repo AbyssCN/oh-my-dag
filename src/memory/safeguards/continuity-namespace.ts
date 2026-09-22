@@ -82,12 +82,3 @@ export const CONTINUITY_NAMESPACE_PACK: NamespacePack = {
   identityFields: CONTINUITY_NAMESPACE_IDENTITY_FIELDS,
   banGlobs: [],
 };
-
-/**
- * session 交接写入侧专用装配(**只有** continuity)。
- *
- * 刻意不并 user / omd 两族:这个 memory 实例只服务 `sinkCheckpoint` 一个写手,多给一格
- * allowedNamespaces 就是多一格没人要的写入面。读回侧(`listCheckpoints` / recall)走的是
- * 库,不走这个闸。
- */
-export const CONTINUITY_SAFEGUARD: AssembledSafeguard = assembleSafeguard([CONTINUITY_NAMESPACE_PACK]);

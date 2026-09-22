@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { checkAuth, handleChatCompletions, parseBridgeMap, toSingleChunkSse } from './bench-bridge';
+import { checkAuth, handleChatCompletions, parseBridgeMap, toSingleChunkSse, jevPassthroughTarget } from './bench-bridge';
 import { isSubscriptionCoord, normalizeForDeepseek } from './bench-bridge';
 import type { ModelRequest, ModelResponse } from '../src/model/types';
 
@@ -186,5 +186,17 @@ describe('订阅座工具转发路由', () => {
     expect(isSubscriptionCoord('minimax-cn:MiniMax-M3')).toBe(false);
     expect(isSubscriptionCoord('deepseek:deepseek-v4-flash')).toBe(false);
     expect(isSubscriptionCoord(undefined)).toBe(false);
+  });
+});
+
+describe('Jev 透传目标 (2026-09-22): 真 key 留宿主', () => {
+  // 证伪: 把 `if (!apiKey) return null` 删掉 ⇒ 第一例红; 把默认 base 改错 ⇒ 第二例红。
+  test('无 TYPESAFE_API_KEY ⇒ null (桥回 503, 容器侧无信号)', () => {
+    expect(jevPassthroughTarget({})).toBeNull();
+    expect(jevPassthroughTarget({ TYPESAFE_API_KEY: '  ' })).toBeNull();
+  });
+  test('有 key ⇒ 默认上游 api.typesafe.ai/v1/systemone; TYPESAFE_BASE_URL 覆盖且去尾斜杠', () => {
+    expect(jevPassthroughTarget({ TYPESAFE_API_KEY: 'k' })).toEqual({ url: 'https://api.typesafe.ai/v1/systemone', apiKey: 'k' });
+    expect(jevPassthroughTarget({ TYPESAFE_API_KEY: 'k', TYPESAFE_BASE_URL: 'http://x/' })?.url).toBe('http://x/v1/systemone');
   });
 });

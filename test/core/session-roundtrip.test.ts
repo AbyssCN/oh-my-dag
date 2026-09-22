@@ -202,7 +202,6 @@ describe('session writer — round-trip (写→读→验)', () => {
       sessionId: 'fo-001',
       cwd: root,
       mechanical: true,
-      // memory: undefined (显式不传)
     });
 
     // writer 主调用永不抛 — fail-open 契约
@@ -210,13 +209,7 @@ describe('session writer — round-trip (写→读→验)', () => {
     expect(r.degraded).toBe(true); // mechanical
     expect(r.checkpointPath).toBeTruthy();
 
-    // sink 形状: { ok:false, error: ... }
-    expect(r.sink).toBeDefined();
-    expect(r.sink!.ok).toBe(false);
-    expect(typeof r.sink!.error).toBe('string');
-    expect(r.sink!.error!.length).toBeGreaterThan(0);
-
-    // 写入磁盘仍成功 (markdown 是真理源, sink 失败不阻断)
+    // 写入磁盘成功 (markdown 是唯一真源; 2026-09-11 起无 SQLite 镜像)
     const brief = readResumeBrief(r.checkpointPath);
     expect(brief.hasAllHeaders).toBe(true);
   });

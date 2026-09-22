@@ -141,6 +141,25 @@ export function acquireDreamLock(lockPath: string, nowMs: number = Date.now()): 
   }
 }
 
+/**
+ * 只看不拿:有一把**活**锁在 = `true`。
+ *
+ * 给点火方(continuity hook)用。hook 自己**不能拿锁** —— 2026-08-28 起 hook 拿了锁再 spawn
+ * `omd-dream.ts all`,子进程 `withDreamLock` 又去拿同一把锁,看见一把刚写的活锁就退出:
+ * 20 次点火 20 次「已有一个 dream 在跑」,dream 一次没跑成,锁靠 30 分钟陈锁过期(2026-09-11 实测)。
+ * 锁只归**真跑 dream 的那个进程**拿和放;点火方只探。
+ */
+export function dreamLockHeld(lockPath: string, nowMs: number = Date.now()): boolean {
+  try {
+    if (!existsSync(lockPath)) return false;
+    const raw = JSON.parse(readFileSync(lockPath, 'utf-8')) as { at?: unknown };
+    const at = typeof raw.at === 'number' ? raw.at : 0;
+    return nowMs - at < STALE_LOCK_MS;
+  } catch {
+    return false; // 读不动的锁按陈锁算, 交给 acquire 那边的 O_EXCL 判
+  }
+}
+
 /** 放锁(幂等;删不掉只留给 `STALE_LOCK_MS` 兜底)。 */
 export function releaseDreamLock(lockPath: string): void {
   try {

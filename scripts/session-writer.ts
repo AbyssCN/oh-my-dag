@@ -27,9 +27,6 @@ import { dirname, resolve as resolvePath } from 'node:path';
 import { runWriter, type WriterMode } from '../src/harness/session/writer';
 import { omdSessionSource } from '../src/harness/session/source';
 import { createOmdSessionStore } from '../src/harness/chat/session-store';
-import { createOmdMemory } from '../src/harness/memory';
-import { resolveHandoffDbPath } from '../src/harness/memory/db-path';
-import { CONTINUITY_SAFEGUARD } from '../src/memory/safeguards/continuity-namespace';
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -54,19 +51,6 @@ if (!sessionId || (!transcriptOk && !omdSessionId)) {
   process.exit(0); // fail-open:派遣方不感知失败
 }
 
-// 镜像层的库位置 = `resolveHandoffDbPath` (`OMD_HANDOFF_DB_PATH ?? '.omd/handoff.db'`)。
-// ⚠ 2026-08-28 由 memory.db 换成交接专库:continuity 的 identity 是 sessionId 单键 ⇒ 跨 session
-//   永不 supersede ⇒ 只增不减,实测把共享库堆到 73k 行 / 368MB, 把 omd.pattern 挤出召回。
-//   理由全文在 `src/harness/memory/db-path.ts` 的 `resolveHandoffDbPath` 注释。
-// ⚠ 它**不认 OMD_DATA_HOME**(与上面 checkpoint.md 那条路不同)⇒ 落的是 `<cwd>/.omd/handoff.db`,
-//   即**本进程 cwd 那个 repo** 的库;`.omd/` 已在 .gitignore,不脏 git status。
-//   派发方(scripts/session-continuity-hook.ts)因此必须带 `cwd = input.cwd` spawn 本脚本。
-//   (2026-08-19 #206 修:此处原注写「⇒ 落 ~/.omd/memory.db」—— 推的,不是看的,而且是反的。)
-// 对 `--cwd` 取绝对:相对路径按 process.cwd() 解, 而 detached 派出去的那一进程 cwd 未必是仓根。
-const memoryPath = resolvePath(cwd, resolveHandoffDbPath(process.env));
-mkdirSync(dirname(memoryPath), { recursive: true });
-const memory = createOmdMemory({ path: memoryPath, safeguard: CONTINUITY_SAFEGUARD });
-
 // omd 会话:从 ChatStore 读条目当来源。会话不存在 → 不产空 checkpoint, 响亮说一句就走。
 let source;
 if (omdSessionId !== undefined && !transcriptOk) {
@@ -84,14 +68,12 @@ const res = await runWriter({
   cwd,
   mode,
   mechanical: process.argv.includes('--mechanical'),
-  memory,
 });
 
 console.error(
   // sha = 返回时**盘上**那份 checkpoint.md 的 sha256 前 12 位。事后判漂:
   //   sha256sum <checkpoint> | cut -c1-12   不等 = 写入磁盘之后有人改过它 (现场见 writer.ts 的 `sha` 字段注)。
   `[session-writer] ok=${res.ok} mode=${mode} chars=${res.chars} sha=${res.sha} degraded=${res.degraded} ` +
-    `skipped=${res.skipped} checkpoint=${res.checkpointPath}` +
-    (res.sink ? ` sink.ok=${res.sink.ok}${res.sink.error ? ` (${res.sink.error})` : ''}` : ''),
+    `skipped=${res.skipped} checkpoint=${res.checkpointPath}`,
 );
 process.exit(0);

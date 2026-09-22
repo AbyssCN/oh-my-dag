@@ -18,13 +18,9 @@
 import { resolve } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { logger } from '../logger';
-import { createOmdMemory } from '../memory';
-import { resolveHandoffDbPath } from '../memory/db-path';
-import { CONTINUITY_SAFEGUARD } from '../../memory/safeguards/continuity-namespace';
 import { bucketIndex, bucketThreshold } from './bucket';
 import { omdSessionSource, type OmdEntryLike } from './source';
 import { runWriter, type WriterMode, type WriterResult } from './writer';
-import type { OmdMemory } from '../memory';
 
 export interface OmdCheckpointDecision {
   readonly fire: boolean;
@@ -64,26 +60,6 @@ export function decideOmdCheckpoint(opts: {
   return { fire: true, mode: 'rolling', bucket: idx, why: `跨到 ${idx} 档` };
 }
 
-/**
- * 交接镜像层实例。**窄闸**(只 continuity 一格)与 `scripts/session-writer.ts` 同款 ——
- * 写入面不该因为要写一条交接就放宽。开不出来返 `null`:markdown 仍会写入磁盘,少的只是镜像。
- *
- * 库是 `resolveHandoffDbPath` 那个**独立**文件, 不是 memory.db(2026-08-28, 理由见 db-path.ts)。
- */
-function openContinuityMemory(cwd: string, env: NodeJS.ProcessEnv): OmdMemory | null {
-  try {
-    const path = resolve(cwd, resolveHandoffDbPath(env));
-    mkdirSync(resolve(path, '..'), { recursive: true });
-    return createOmdMemory({ path, safeguard: CONTINUITY_SAFEGUARD });
-  } catch (err) {
-    logger.warn(
-      { cwd, err: err instanceof Error ? err.message : String(err) },
-      '[session-continuity] 镜像层开不出 → 只落 markdown (不阻断)',
-    );
-    return null;
-  }
-}
-
 /** per-session 已触发档位。进程级,重启即忘(见模块头注:方向安全)。 */
 const firedBuckets = new Map<string, number>();
 
@@ -101,14 +77,6 @@ export interface OmdCheckpointDeps {
   ctxTokens: number | null;
   /** 本轮是否压缩过。 */
   compacted?: boolean;
-  /**
-   * 镜像层**注入口(测试用)**。省略 = 自己开一个(见 `openContinuityMemory`)。
-   *
-   * ⚠ 刻意**不复用** `ChatTurnOpts.memory` —— 那一个是「每轮请求前自动召回」用的
-   * (S16/A8),而 owner 2026-08-18 把自动注入关了(`MEMORY_REQUERY=0`,观察窗到 09-01)。
-   * 借它来写交接会把两件事绑死:哪天谁为了关召回把它摘掉,交接的 facts 就跟着静默消失。
-   */
-  memory?: OmdMemory;
   env?: NodeJS.ProcessEnv;
   /** 测试接缝:替换真 writer(真 writer 要真模型)。生产不传。 */
   runWriterFn?: typeof runWriter;
@@ -135,19 +103,11 @@ export async function maybeCheckpointOmdSession(deps: OmdCheckpointDeps): Promis
     // 先更新基准再跑:蒸馏是秒级的,同一 session 的下一轮不该因为"上一次还没写完"再触发一次。
     firedBuckets.set(deps.sessionId, Math.max(lastFiredBucket, decision.bucket));
 
-    // 镜像层:调用方没给就自己开一个窄闸实例(只 continuity 一格),用完就关。
-    // 库位置走 `resolveHandoffDbPath`(交接专库,不是 memory.db),对 `deps.cwd` 取绝对 ——
-    // 相对路径按 `process.cwd()` 解会在长驻进程里指到别处去。
-    const owned = deps.memory ? null : openContinuityMemory(deps.cwd, deps.env ?? process.env);
-    const memory = deps.memory ?? owned;
-
     const run = deps.runWriterFn ?? runWriter;
     // `OMD_CONTINUITY_MECHANICAL=1` → 跳过模型调用(与 CC hook 同一个旋钮)。
     // 有了它,「轮尾真的会派存档」这条接线闸才跑得成确定性 —— 否则它要打一次真模型。
     const mechanical = (deps.env ?? process.env).OMD_CONTINUITY_MECHANICAL === '1';
-    let res: WriterResult;
-    try {
-      res = await run({
+    const res: WriterResult = await run({
         sessionId: deps.sessionId,
         cwd: deps.cwd,
         mode: decision.mode,
@@ -156,12 +116,7 @@ export async function maybeCheckpointOmdSession(deps: OmdCheckpointDeps): Promis
           entries: deps.entries,
           ctxTokens: () => deps.ctxTokens,
         }),
-        ...(memory ? { memory } : {}),
-      });
-    } finally {
-      // 自己开的自己关 —— 抛出去也要关(长驻进程里漏一个 sqlite 句柄就是漏一路)。
-      owned?.close();
-    }
+    });
     logger.info(
       { sessionId: deps.sessionId, mode: decision.mode, why: decision.why, chars: res.chars, degraded: res.degraded },
       '[session-continuity] omd 会话已存档',

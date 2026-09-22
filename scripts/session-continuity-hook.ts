@@ -40,7 +40,7 @@ import { engineRoot, isSdkChildSession } from '../src/harness/session/continuity
 import { gather } from '../src/harness/dream/gather';
 import {
   AUTO_BATCH,
-  acquireDreamLock,
+  dreamLockHeld,
   decideDreamTrigger,
   readDreamAttempt,
   writeDreamAttempt,
@@ -108,9 +108,10 @@ async function maybeFireDream(cwd: string): Promise<string> {
   }
 
   // 互斥:已经有一个 dream 在跑就不点(2026-08-28 实测撞过 —— hook 派的批与手起的 drain
-  // 同时跑,同一批语料被抽两遍、水位互相覆盖)。锁由**被派出去的那个进程**负责放,
-  // 所以这里只拿不放;它崩了由 STALE_LOCK_MS 兜底。
-  if (!acquireDreamLock(dreamLockPath(cwd))) {
+  // 同时跑,同一批语料被抽两遍、水位互相覆盖)。这里**只探不拿**:锁归被派出去的
+  // `omd-dream.ts` 自己拿和放(withDreamLock)。hook 先拿会把子进程挡在门外
+  // (2026-09-11 实测: 20 次点火 20 次「锁被占」, dream 从未跑成)。
+  if (dreamLockHeld(dreamLockPath(cwd))) {
     console.error('[dream-trigger] 不点火: 已有一个 dream 在跑(锁被占)');
     return '';
   }
