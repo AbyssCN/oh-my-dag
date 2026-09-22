@@ -76,7 +76,7 @@ export function leafMcpPolicy(mcpAllow?: string[]): { sideEffects: { allow: stri
 import { SHARED_ENGINEERING_CORE, LEAF_EXECUTION_CORE, LEAF_TOOL_ROUTING } from './harness-prompts';
 import type { SelfCheckSpec } from './conductor-plan';
 import { createOmdAgentTools, type AnyOmdTool, type OmdAgentToolsOpts, sha256Hex } from './agent-tools';
-import type { ReadEvent } from './read-ledger';
+import { classifyShellReadonly, type ReadEvent } from './read-ledger';
 import type { FileObservation } from './writeset/write-version';
 import { createInspectTool } from './inspect-tool';
 import { createSkillTools, type SkillToolDeps } from './skills/skill-tool';
@@ -86,7 +86,21 @@ import { createMcpClientTools, type McpClientToolsOpts } from '../mcp/client/met
 import type { McpPoolDeps } from '../mcp/client/pool';
 import type { McpCallLedger } from '../mcp/client/call-ledger';
 import { createHashlineCustomTools, hashlinePatchPaths } from './hashline';
-import { createDriftTracker, type DriftDetectorConfig } from './hooks/drift-detector';
+import { computeSig, createDriftTracker, type DriftDetectorConfig } from './hooks/drift-detector';
+import { askJev } from '../model/jev-client';
+import {
+  SENSOR_QUESTIONS,
+  appendSensorReading,
+  buildSensorState,
+  createSensorTape,
+  sensorFireHit,
+  sensorNudgeHit,
+  sensorsDir,
+  sensorsMode,
+  type SensorQuestionId,
+  type SensorTape,
+  type SensorsMode,
+} from './sensors/sensor-state';
 import {
   RUNG_1,
   SPIN_ROUTE_OBSERVATION_KIND,
@@ -679,6 +693,72 @@ export function surveyBudgetHit(
 ): boolean {
   if (!s.hasCards || s.fired) return false;
   return s.readonlySteps >= steps && s.dispatches === 0 && s.filesTouchedCount === 0;
+}
+
+// ── Jev 传感器接线面 (2026-09-22, 契约 `docs/plan/2026-09-22-jev-传感器-阶段0-E1-执行契约.md` 切片 3) ──
+//
+// 与 W4 同一根轴 (「读了这么久该派活了」), 换的是尺: W4 数**步**, 这条把引擎自己记的账送去问
+// 第二层 (`src/model/jev-client.ts` 一发五问, D-6)。两条尺共用同一条注入缓冲与同一段文案,
+// 且**互斥** —— 一个节点只注一次 (D-10)。`OMD_SENSORS` 缺席 = off ⇒ 谓词恒 false, 一发都不问 (INV-8)。
+
+/**
+ * 完成声称的判据。**与 `sensors/sensor-state.ts` 的 `CLAIM_MARKERS` 逐字同源** —— 那边没导出
+ * (它服务的是 tape 里挑 claims 行), 这边判的是「这一步该不该问」。⚠ 两份要一起改: 只改一边 ⇒
+ * 「问了完成声称、而 tape 里 claims 是空的」这种自相矛盾的读数, 且没有任何闸会红。
+ */
+const SENSOR_CLAIM_MARKERS = /完成|通过|done|pass|all tests/i;
+
+/**
+ * 送进传感器状态的 `goal` 封顶长度。**封顶必须在调用方这一侧做**: `buildSensorState` 的不变量是
+ * 「`goal` 逐字保留, 裁的是 ledger」, 而 conductor 的 prompt 是整份任务书 (常上万字) —— 原样传进去
+ * 会把 4000 上限一次吃光、ledger 被裁空, 那时传感器看得见问题、看不见证据。
+ */
+const SENSOR_GOAL_MAX_CHARS = 800;
+
+/**
+ * 这一步要不要发一发传感器 (纯谓词, 可测缝 —— 同 {@link surveyBudgetHit} / {@link shouldFireProduceBy} 纪律)。
+ * 组合三件只有调用方知道的事实: env 三态 · 持卡没有 · 这一步是只读勘察还是带着完成声称。
+ *
+ * env 走参数不读全局: 谓词要在测试里逐分支钉死, 读 `process.env` 的话两臂读数会被跑测试的那个
+ * shell 决定 (仓规 §读数 —— 一个在任何干预下都不动的数, 量的是尺子)。
+ *
+ * falsify: 把 `SURVEY_READONLY_TOOLS.has(...)` 换成恒 `true` ⇒ agent-leaf-sensors.test.ts 的
+ * 「写步不问」当场红; 把 `sensorsMode(s.env)` 换成 `sensorsMode(process.env)` ⇒ 「env 缺席即 off」红。
+ */
+export function planSensorStep(s: {
+  env: Record<string, string | undefined>;
+  hasCards: boolean;
+  toolName: string;
+  lastAssistant: string;
+}): { fire: boolean; mode: SensorsMode } {
+  const mode = sensorsMode(s.env);
+  return {
+    mode,
+    fire: sensorFireHit({
+      mode,
+      hasCards: s.hasCards,
+      readonlyStep: SURVEY_READONLY_TOOLS.has(s.toolName),
+      hasClaim: SENSOR_CLAIM_MARKERS.test(s.lastAssistant),
+    }),
+  };
+}
+
+/**
+ * 工具名 + 参数 → 读账事件的 `kind`; 不是只读勘察就返 `undefined` (那一步只进 tape 的 `recent`, 不进 ledger)。
+ *
+ * ⚠ `bash` 要看命令本身: W4 的 {@link SURVEY_READONLY_TOOLS} 把整个 `bash` 算作勘察步 (它数的是
+ * 「有没有在派活」), 而读账记的是「看见了什么」—— 把一条 `bun test` 标成 `bash-readonly` 是编事实
+ * (仓规 §静默坑 1: 不适用 ≠ 0)。判据复用 `read-ledger` 的 {@link classifyShellReadonly}, 不新造一把尺。
+ */
+function sensorReadKind(toolName: string, args: unknown): ReadEvent['kind'] | undefined {
+  if (toolName === 'read' || toolName === 'hashline_read') return 'read';
+  if (toolName === 'ls') return 'ls';
+  if (toolName === 'grep') return 'grep';
+  if (toolName === 'bash') {
+    const cmd = (args as { command?: unknown } | undefined)?.command;
+    return typeof cmd === 'string' && classifyShellReadonly(cmd) ? 'bash-readonly' : undefined;
+  }
+  return undefined;
 }
 
 /**
@@ -2283,6 +2363,15 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       noteProgress();
       advisorRecorder?.note(e);
       if (e.type === 'turn_end') llmCalls++; // SDK 腿不发 turn_end (只发 message_end), 不会双计。
+      // 传感器 tape 的 assistant 面 (切片 3 / D-5): claims 是**覆盖**不是累积 —— 问的是「它现在在
+      // 声称什么」。挂 message_end 而不是 turn_end: 两条腿都发前者 (见上一行那条注)。
+      if (sensorTape && e.type === 'message_end') {
+        const t = assistantText(e.message);
+        if (t.trim()) {
+          sensorLastAssistant = t;
+          sensorTape.observeAssistant(t);
+        }
+      }
       if (e.type === 'message_update' && e.assistantMessageEvent.type === 'text_delta') {
         streamedChars += e.assistantMessageEvent.delta.length;
       } else if (e.type === 'tool_execution_start') {
@@ -2349,7 +2438,8 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
               readonlySteps: readonlySurveySteps,
               dispatches: face?.progress ? face.progress() : 0,
               filesTouchedCount: touched.size,
-              fired: surveyNudgeFiredAtStep !== null,
+              // D-10 互斥: 传感器已经注过一次的节点, W4 这把尺不再注第二条 (反向判据在下面 end 分支)。
+              fired: surveyNudgeFiredAtStep !== null || sensorNudgeFiredAtStep !== null,
             },
             surveyStepBudget,
           )
@@ -2360,6 +2450,11 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
             { cwd, steps: readonlySurveySteps, budget: surveyStepBudget, toolCalls },
             '[agent-leaf] W4 勘察步预算命中 → 注入一次派活提醒 (不拒调用, 整个节点只注一次)',
           );
+        }
+        // 传感器 tape (切片 3): 签名与读账 kind 只有 start 这一侧拿得到 `args`, 先记下供 end 侧取。
+        if (sensorTape) {
+          const kind = sensorReadKind(e.toolName, e.args);
+          sensorStepByCall.set(e.toolCallId, { sig: computeSig(e.toolName, e.args), ...(kind ? { kind } : {}) });
         }
         shell.note(e);
       } else if (e.type === 'tool_execution_end') {
@@ -2402,6 +2497,104 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
           // 读失败 (文件不存在等) 不算读过 —— 同"失败的写不算产物"。
           const rp = readByCall.get(e.toolCallId);
           if (rp) readPaths.add(rp);
+        }
+        // ── Jev 传感器 (切片 3 / D-3·D-4·D-10): 喂 tape → 判点火 → **异步**发一发 ─────────────
+        // 全程 fail-open (仓规 §引擎理念 ④): 拿不到读数不许挡主流程, 但每条 catch 留一行证据 (§静默坑 2)。
+        if (sensorTape) {
+          const rec = sensorStepByCall.get(e.toolCallId);
+          sensorStepByCall.delete(e.toolCallId);
+          const sig = rec?.sig ?? e.toolName;
+          const resultHead = (typeof e.result === 'string' ? e.result : JSON.stringify(e.result ?? '')).slice(0, 400);
+          sensorTape.observeTool(sig, resultHead);
+          // 失败的读不算读过 (同上面 readPaths 那条): 一条报错的 grep 不是「看见了什么」。
+          if (!e.isError && rec?.kind) sensorTape.observeRead({ kind: rec.kind, key: sig, excerpt: resultHead });
+          const plan = planSensorStep({
+            env: process.env,
+            hasCards: (face?.customTools?.length ?? 0) > 0,
+            toolName: e.toolName,
+            lastAssistant: sensorLastAssistant,
+          });
+          if (plan.fire) {
+            const stepAt = toolCalls;
+            const state = buildSensorState({
+              goal: prompt.slice(0, SENSOR_GOAL_MAX_CHARS),
+              step: stepAt,
+              readonlySteps: readonlySurveySteps,
+              dispatches: face?.progress ? face.progress() : 0,
+              filesTouched: touched.size,
+              tape: sensorTape,
+            });
+            const stateChars = JSON.stringify(state).length;
+            // **刻意不 await** (D-3): 传感器与模型那一发并行跑, 迟到的读数由客户端 1500 ms 自己掐断。
+            // 这一发的结论落在**下一轮** transformContext 出口, 本轮一个字节都不等。
+            void askJev({ state, questions: SENSOR_QUESTIONS })
+              .then((res) => {
+                const p: Partial<Record<SensorQuestionId, number>> = {};
+                if (res.ok) {
+                  for (const id of Object.keys(SENSOR_QUESTIONS) as SensorQuestionId[]) {
+                    const n = res.answers[id]?.noul;
+                    // 缺席不补 0 —— 「没答这一问」与「答了 0」是两件事 (仓规 §静默坑 1)。
+                    if (typeof n === 'number') p[id] = n;
+                  }
+                }
+                // dispatches / 缓冲忙不忙都在**回调这一刻**重读: 中间那 ~200 ms 里它可能已经派活了,
+                // 拿点火瞬间的快照判会推一条过期的提醒。
+                const dispatchesNow = face?.progress ? face.progress() : 0;
+                let nudged = false;
+                if (
+                  sensorNudgeHit({
+                    mode: plan.mode,
+                    pDispatchNow: p.dispatch_now,
+                    hasCards: (face?.customTools?.length ?? 0) > 0,
+                    dispatches: dispatchesNow,
+                    // D-10 互斥: 任一把尺已注过, 另一把就不注 (反向判据在上面 start 分支的 W4 块)。
+                    fired: surveyNudgeFiredAtStep !== null || sensorNudgeFiredAtStep !== null,
+                    bufferBusy: pendingGrindAdvice !== undefined,
+                  })
+                ) {
+                  if (isSdkChannel) {
+                    // SDK 通道没有 transformContext (同 spin-route / parseFeedback 那条通道边界): 只记不注。
+                    // 每叶只说一次 —— 说 N 次是噪声, 一次都不说则「这条路没接」与「接了没触发」分不开。
+                    if (!sensorSdkSkipLogged) {
+                      logger.warn(
+                        { cwd, step: stepAt },
+                        '[agent-leaf] 传感器推送命中但本叶走 SDK 通道 → 只记读数不注入 (每叶只说一次)',
+                      );
+                      sensorSdkSkipLogged = true;
+                    }
+                  } else {
+                    pendingGrindAdvice = surveyBudgetInstruction(readonlySurveySteps);
+                    sensorNudgeFiredAtStep = stepAt;
+                    nudged = true;
+                    logger.warn(
+                      { cwd, step: stepAt, pDispatchNow: p.dispatch_now, steps: readonlySurveySteps },
+                      '[agent-leaf] 传感器推送命中 → 注入一次派活提醒 (复用 W4 文案, 与 W4 互斥, 不拒调用)',
+                    );
+                  }
+                }
+                appendSensorReading(sensorsDir(process.env, homedir()), {
+                  at: new Date().toISOString(),
+                  step: stepAt,
+                  mode: plan.mode,
+                  ok: res.ok,
+                  ...(res.ok ? {} : { why: res.why }),
+                  ms: res.ms,
+                  p,
+                  nudged,
+                  stateChars,
+                  dispatches: dispatchesNow,
+                  cwd,
+                });
+              })
+              .catch((err) => {
+                // 客户端契约是永不抛, 所以走到这里只可能是它违约或本回调自己抛了 —— 两种都不许
+                // 变成进程级 unhandled rejection 把主循环带塌。吞异常可以, 吞证据不行。
+                logger.warn(
+                  { cwd, err: err instanceof Error ? err.message : String(err) },
+                  '[agent-leaf] 传感器读数处理抛错 (已吞, 只丢这一条读数)',
+                );
+              });
+          }
         }
       }
       // debug 事件汇 (opt-in): 转发全部事件抓 transcript。回调抛错不许打断循环。
@@ -2477,6 +2670,18 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     let readonlySurveySteps = 0;
     let surveyNudgeFiredAtStep: number | null = null;
     const surveyStepBudget = surveyBudgetSteps();
+    // Jev 传感器状态 (2026-09-22, 切片 3): tape **每个叶调用一份** —— 跨叶复用会把上一个节点读过的
+    // 东西算进这一个的证据里 (同 drift / parseFeedback 那条纪律)。
+    // off 档 tape 直接是 null ⇒ 事件流里一个字节都不多走, 既有行为逐字节不变 (INV-8)。
+    const sensorTape: SensorTape | null = sensorsMode(process.env) === 'off' ? null : createSensorTape();
+    /** 传感器注过没有 (null = 量过且没发生, 恒写口径同 surveyNudgeFiredAtStep); 与 W4 互斥 (D-10)。 */
+    let sensorNudgeFiredAtStep: number | null = null;
+    /** SDK 通道每叶只打一次 skip log (同 spinRouteBypassLogged): 那条路没有 transformContext, 只记不注。 */
+    let sensorSdkSkipLogged = false;
+    /** 最后一条 assistant 文本 —— 点火谓词的 `hasClaim` 面。 */
+    let sensorLastAssistant = '';
+    /** toolCallId → 这一步的签名与读账 kind。`tool_execution_end` 事件不带 args, 只能在 start 那侧记。 */
+    const sensorStepByCall = new Map<string, { sig: string; kind?: ReadEvent['kind'] }>();
     // S1 spin-route 档 1 (2026-08-25, 片 2): 命中空转口径 → 注入一次证据包
     // (D-1: 每叶至多一次; D-2/3: 四件套叠加 + 具名判据; D-5: 入账 additive 数组)。
     //
