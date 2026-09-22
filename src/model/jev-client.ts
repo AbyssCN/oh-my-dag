@@ -56,8 +56,8 @@ export type JevAskResult =
 
 /** 2026-09-22 curl 实测 200 的 base;`TYPESAFE_BASE_URL` 覆盖。 */
 export const JEV_DEFAULT_BASE_URL = 'https://api.typesafe.ai';
-/** 800 ms:传感器藏在模型那一发(秒级)后面,迟到即作废。 */
-export const JEV_DEFAULT_TIMEOUT_MS = 800;
+/** 1500 ms:传感器藏在模型那一发(秒级)后面,迟到即作废。本机六次暖调用 552–599 ms(2026-09-22),800 只剩 200 ms 余量,放宽不花墙钟。 */
+export const JEV_DEFAULT_TIMEOUT_MS = 1500;
 export const JEV_DEFAULT_MODEL = 'jev-latest';
 
 /** 响应里 `answers.<id>` 的形;多余键忽略,缺席键不补。 */
