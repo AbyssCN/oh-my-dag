@@ -101,6 +101,15 @@ const MAX_CLAIM_CHARS = 200;
 /** 完成声称的判据(大小写不敏感):命中任一即算一条 claim。 */
 const CLAIM_MARKERS = /完成|通过|done|pass|all tests/i;
 
+/**
+ * 完成声称的**唯一**判据:`CLAIM_MARKERS` 的具名出口。tape 里挑 claims 行与「这一步该不该问」
+ * 共用同一个正则 —— 调用方不许自带副本,否则会出现「问了完成声称、而 tape 里 claims 是空的」这种
+ * 自相矛盾的读数,且没有任何闸会红。
+ */
+export function hasCompletionClaim(text: string): boolean {
+  return CLAIM_MARKERS.test(text);
+}
+
 /** 从一条 assistant 文本里挑出完成声称行;去重,最多 {@link MAX_CLAIMS} 条,每条截到 200 字符。 */
 function extractClaims(text: string): string[] {
   const out: string[] = [];

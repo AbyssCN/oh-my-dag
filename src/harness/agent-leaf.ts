@@ -93,6 +93,7 @@ import {
   appendSensorReading,
   buildSensorState,
   createSensorTape,
+  hasCompletionClaim,
   sensorFireHit,
   sensorNudgeHit,
   sensorsDir,
@@ -702,13 +703,6 @@ export function surveyBudgetHit(
 // 且**互斥** —— 一个节点只注一次 (D-10)。`OMD_SENSORS` 缺席 = off ⇒ 谓词恒 false, 一发都不问 (INV-8)。
 
 /**
- * 完成声称的判据。**与 `sensors/sensor-state.ts` 的 `CLAIM_MARKERS` 逐字同源** —— 那边没导出
- * (它服务的是 tape 里挑 claims 行), 这边判的是「这一步该不该问」。⚠ 两份要一起改: 只改一边 ⇒
- * 「问了完成声称、而 tape 里 claims 是空的」这种自相矛盾的读数, 且没有任何闸会红。
- */
-const SENSOR_CLAIM_MARKERS = /完成|通过|done|pass|all tests/i;
-
-/**
  * 送进传感器状态的 `goal` 封顶长度。**封顶必须在调用方这一侧做**: `buildSensorState` 的不变量是
  * 「`goal` 逐字保留, 裁的是 ledger」, 而 conductor 的 prompt 是整份任务书 (常上万字) —— 原样传进去
  * 会把 4000 上限一次吃光、ledger 被裁空, 那时传感器看得见问题、看不见证据。
@@ -738,7 +732,7 @@ export function planSensorStep(s: {
       mode,
       hasCards: s.hasCards,
       readonlyStep: SURVEY_READONLY_TOOLS.has(s.toolName),
-      hasClaim: SENSOR_CLAIM_MARKERS.test(s.lastAssistant),
+      hasClaim: hasCompletionClaim(s.lastAssistant),
     }),
   };
 }

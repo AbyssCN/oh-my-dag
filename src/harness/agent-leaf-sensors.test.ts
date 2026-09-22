@@ -22,12 +22,14 @@
  *  · 把 `s.hasCards` 删掉 ⇒ 「不持卡的节点恒不点火」红。
  *  · 把实装里的 `void askJev(...)` 改成 `await askJev(...)` ⇒ 「askJev 不带 await」红。
  *  · 把实装里的 `appendSensorReading(...)` 整段删掉 ⇒ 「读数真被写」红。
- *  · 改动 `SENSOR_CLAIM_MARKERS` 或 sensor-state 的 `CLAIM_MARKERS` 任一侧 ⇒ 「两份声称判据同源」红。
+ *  · 把 `hasCompletionClaim` 调用换回自带的副本(或让 `hasCompletionClaim` 在 sensor-state 里消失)
+ *    ⇒ 「完成声称判据单一来源」红。
  */
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { planSensorStep } from './agent-leaf';
+import { hasCompletionClaim } from './sensors/sensor-state';
 
 const SRC = readFileSync(join(import.meta.dir, 'agent-leaf.ts'), 'utf8');
 
@@ -101,9 +103,27 @@ describe('接线的静态判据 (GWT-9): agent-leaf.ts 源码里的形状', () =
     expect(count('surveyBudgetInstruction(')).toBeGreaterThanOrEqual(2); // W4 一处 + 传感器一处
   });
 
-  test('★ 两份完成声称判据逐字同源 (agent-leaf 的副本与 sensor-state 的原本, 只改一边不会有闸红)', () => {
-    const marker = '/完成|通过|done|pass|all tests/i';
-    expect(SRC).toContain(marker);
-    expect(readFileSync(join(import.meta.dir, 'sensors', 'sensor-state.ts'), 'utf8')).toContain(marker);
+  test('★ 完成声称判据单一来源 (agent-leaf 只调 sensor-state 的 hasCompletionClaim, 不自带副本)', () => {
+    expect(SRC).not.toContain('SENSOR_CLAIM_MARKERS');
+    expect(SRC).toContain('hasCompletionClaim(');
+  });
+});
+
+describe('hasCompletionClaim (单一来源的那把尺): 与点火闸同一条正则', () => {
+  test('★ 五个 marker 都算声称 (大小写不敏感), 普通文本不算', () => {
+    for (const t of ['完成', '通过', 'DONE', 'pass', 'All Tests green']) {
+      expect(hasCompletionClaim(t)).toBe(true);
+    }
+    expect(hasCompletionClaim('正在读文件')).toBe(false);
+    expect(hasCompletionClaim('')).toBe(false);
+  });
+
+  test('★ 同一份判据驱动点火闸: hasCompletionClaim 说「有声称」⇔ 写步也点火 (两条路不分叉)', () => {
+    for (const t of ['完成', '通过', 'done', 'pass', 'all tests']) {
+      expect(hasCompletionClaim(t)).toBe(true);
+      expect(planSensorStep({ ...base, toolName: 'write', lastAssistant: t }).fire).toBe(true);
+    }
+    expect(hasCompletionClaim('还没好')).toBe(false);
+    expect(planSensorStep({ ...base, toolName: 'write', lastAssistant: '还没好' }).fire).toBe(false);
   });
 });
