@@ -316,6 +316,18 @@ export function extractJsonText(text: string): string {
   return text;
 }
 
+/**
+ * Jev 透传目标 (2026-09-22): 容器里的传感器 (`src/model/jev-client.ts`) 打 `TYPESAFE_BASE_URL/v1/systemone`,
+ * 容器把 TYPESAFE_BASE_URL 指到本桥、TYPESAFE_API_KEY 用桥 token —— 真 key 留宿主 (同 deepseek/minimax 凭证不进容器的口径)。
+ * 缺宿主 key ⇒ null ⇒ 503, 容器侧 askJev 记 `why:'http'` 无信号 (fail-open)。
+ */
+export function jevPassthroughTarget(env: Record<string, string | undefined>): { url: string; apiKey: string } | null {
+  const apiKey = env.TYPESAFE_API_KEY?.trim();
+  if (!apiKey) return null;
+  const base = (env.TYPESAFE_BASE_URL?.trim() || 'https://api.typesafe.ai').replace(/\/$/, '');
+  return { url: `${base}/v1/systemone`, apiKey };
+}
+
 export function checkAuth(header: string | null, token: string): boolean {
   return header === `Bearer ${token}`;
 }
@@ -467,6 +479,23 @@ if (import.meta.main) {
           });
         }
         return Response.json(r.json as Record<string, unknown>, { status: r.status });
+      }
+      if (req.method === 'POST' && url.pathname === '/v1/systemone') {
+        // Jev 传感器透传 (2026-09-22): 字节级转发, 不看 body; 上游状态码原样回。
+        const target = jevPassthroughTarget(process.env);
+        if (!target) return Response.json({ error: { message: 'TYPESAFE_API_KEY 缺失 (宿主)' } }, { status: 503 });
+        try {
+          const up = await fetch(target.url, {
+            method: 'POST',
+            headers: { authorization: `Bearer ${target.apiKey}`, 'content-type': 'application/json' },
+            body: await req.text(),
+            signal: AbortSignal.timeout(10_000),
+          });
+          return new Response(await up.text(), { status: up.status, headers: { 'content-type': 'application/json' } });
+        } catch (e) {
+          process.stderr.write(`[bench-bridge] jev 透传失败: ${(e as Error).message}\n`);
+          return Response.json({ error: { message: `jev upstream: ${(e as Error).message}` } }, { status: 502 });
+        }
       }
       return Response.json({ error: { message: 'not found' } }, { status: 404 });
     },
