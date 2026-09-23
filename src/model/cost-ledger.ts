@@ -42,7 +42,12 @@ export const DEFAULT_PRICES: PriceTable = {
   //
   // ⚠ 别把这两行读成"涨价了": off-peak 0.22/0.66 相对今天的 0.14/0.28 **本身就是涨**(1.57×/2.36×)。
   // 峰谷不是打折, 是涨价 + 给了个错峰缓冲。
-  'deepseek:deepseek-v4-flash': { inputRate: 0.22, outputRate: 0.66, cacheHitRate: 0.007 },
+  //
+  // 2026-09-10 V4.1 Flash 上线 (api-docs.deepseek.com/news/news260910): 正名 `deepseek-flash`,
+  // 旧名 `deepseek-v4-flash` 仍收但由 V4.1 Flash 服务、按 Flash 价计 —— 两个名字同一单价。
+  // off-peak 0.003 / 0.15 / 0.6 · peak 0.006 / 0.3 / 1.2(同上取 off-peak)。
+  'deepseek:deepseek-flash': { inputRate: 0.15, outputRate: 0.6, cacheHitRate: 0.003 },
+  'deepseek:deepseek-v4-flash': { inputRate: 0.15, outputRate: 0.6, cacheHitRate: 0.003 },
   'deepseek:deepseek-v4-pro': { inputRate: 0.66, outputRate: 1.98, cacheHitRate: 0.022 },
 
   // ── MiMo (烧 token-plan 沉没额度) ──

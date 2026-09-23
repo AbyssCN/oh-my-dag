@@ -19,9 +19,9 @@ describe('记账与窗口', () => {
     const led = createTuiUsageLedger({ dir: tdir(), now: () => 1000 });
     const priced = led.record({ in: 1_000_000, out: 0 }, 'deepseek:deepseek-v4-flash', 'engine');
     // 跟着 DEFAULT_PRICES 走 (2026-08-14 核 deepseek 官网订正 0.27 → 0.14;
-    // 2026-08-15 owner 裁取 off-peak 档 0.14 → 0.22)。
+    // 2026-08-15 owner 裁取 off-peak 档 0.14 → 0.22; 2026-09-10 V4.1 Flash 降价 0.22 → 0.15)。
     // 本测钉的是"计价坐标出数字、非计价坐标标 unpriced", 不是这个具体价。
-    expect(priced.costUsd).toBeCloseTo(0.22, 5);
+    expect(priced.costUsd).toBeCloseTo(0.15, 5);
     expect(priced.unpriced).toBe(false);
     const un = led.record({ in: 100, out: 10 }, 'nobody:mystery', 'chat');
     expect(un.costUsd).toBe(0);
