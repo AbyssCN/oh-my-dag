@@ -1,6 +1,6 @@
 ---
 name: omd-research-deep
-description: 终极档深度调研:种子作者化多角度抓取 + council 分解 + 多轮缺口补挖,一条工具调用出整领域 grounded 报告。Trigger:/omd-research-deep、深度调研、deep research、整领域调研、调研到 grounded 底座、把这个领域研究透。Skip:轻量单点查证(tavily 直查)/ 单问题综合(dag_research 默认档)/ 代码理解(dag-map)。
+description: 终极档深度调研:种子作者化多角度抓取 + council 分解 + 多轮缺口补挖,一条工具调用出整领域 grounded 报告。Trigger:/omd-research-deep、深度调研、deep research、整领域调研、调研到 grounded 底座、把这个领域研究透。Skip:轻量单点查证(omd MCP `omd_web`)/ 单问题综合(dag_research 默认档)/ 代码理解(dag-map)。
 ---
 
 # /omd-research-deep — 终极档深度调研
@@ -30,7 +30,7 @@ dag_research(question: "<研究问题>", super: true, rounds: 3)
 
 ## 前置与降级
 
-- **必须有 search provider**:`TAVILY_API_KEY` / `ANYSEARCH_API_KEY` / `SEARXNG_URL` 任一。
+- **必须有 search provider**:`TAVILY_API_KEY` / `ANYSEARCH_API_KEY` / `SEARXNG_URL` 任一;`OMD_WEB_ORDER=searxng,anysearch,tavily` 覆盖默认 failover 序(默认 tavily→anysearch→searxng)。
   没有 → 工具**响亮拒绝**(不会静默降级成"看起来像调研的一段话")。这是有意的:
   没有 web 就没有调研。
 - **锚点文件 / 显式种子 query 不在 MCP 面上**:`--anchor`(把已有设计笔记原样送进

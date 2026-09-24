@@ -111,6 +111,13 @@ export function createWebStackFromEnv(
     ? new MediaCrawlerProvider({ baseUrl: env.MEDIACRAWLER_URL, cookies: env.MEDIACRAWLER_COOKIES })
     : undefined;
   if (social) entries.push({ name: social.name, provider: social, enabled: false });
+  // 覆盖默认序 (2026-09-25): 自托管 SearXNG 的 owner 要零成本的先上、付费 API 当降级位。
+  // `OMD_WEB_ORDER=searxng,anysearch,tavily` —— 列出的按列表序排前, 未列出的按原序垫后, 未配置的名字忽略。
+  if (env.OMD_WEB_ORDER) {
+    const want = env.OMD_WEB_ORDER.split(',').map((s) => s.trim());
+    const rank = (n: string) => (want.includes(n) ? want.indexOf(n) : want.length);
+    entries.sort((a, b) => rank(a.name) - rank(b.name)); // stable → 未列出的保原序
+  }
 
   const searchPool = createWebSearchPool({
     entries,
