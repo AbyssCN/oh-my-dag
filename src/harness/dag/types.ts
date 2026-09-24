@@ -584,6 +584,12 @@ export interface DagObservabilitySeam {
      */
     execRoot?: string;
     /**
+     * **配置锚** —— `.omd/profiles`、`.omd/mcp*` 这类项目配置从哪读。省略 = `repoRoot`。
+     * 隔离档要给主仓: `.omd/` 一般被 gitignore, worktree 是 HEAD 的干净 checkout, 里面没有它 ——
+     * 拿执行树当配置根, 项目档案全变「未知」(plana run 02e2a5f9 现场)。
+     */
+    registryRoot?: string;
+    /**
      * 毒集回滚时**跟踪文件还原到哪个 commit**。给了才动跟踪文件, 省略 = 老行为(一律不动)。
      *
      * 给它的人要能保证:**执行树自该 commit 以来的改动全是本次跑写的**。今天只有隔离档

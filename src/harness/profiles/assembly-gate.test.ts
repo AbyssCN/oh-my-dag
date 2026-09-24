@@ -182,3 +182,36 @@ describe('INV-2: profile 内容不进 promptVersion (引擎侧不插手)', () =>
     expect(withProfile.results.A!.usage).toEqual(without.results.A!.usage);
   });
 });
+
+describe('隔离档: 项目档案从 registryRoot (主仓) 读, 不从执行树读', () => {
+  test('repoRoot = 没有 .omd 的 worktree, registryRoot = 主仓 → 项目档案照样命中', async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { CheckpointManager } = await import('../continuity/checkpoint-manager');
+    // 现场 (plana run 02e2a5f9): .omd/ 被 gitignore, 隔离 worktree 里没有 .omd/profiles →
+    // 档案「未知」→ 退回精益工具面, read_skill 不在面上, 声明的 skill 全够不着。
+    const main = mkdtempSync(join(tmpdir(), 'omd-registry-main-'));
+    const worktree = mkdtempSync(join(tmpdir(), 'omd-registry-wt-'));
+    mkdirSync(join(main, '.omd', 'profiles'), { recursive: true });
+    writeFileSync(
+      join(main, '.omd', 'profiles', 'proj.json'),
+      JSON.stringify({ name: 'proj-only-profile', persona: 'P', skills: ['impeccable'] }),
+    );
+
+    let received: AgentLeafInput | undefined;
+    const fakeRunner = async (input: AgentLeafInput): Promise<AgentLeafResult> => {
+      received = input;
+      return { text: 'ok', usage: { in: 1, out: 1 } };
+    };
+    const r = await runExecutorDagWithPlan(
+      plan({ A: { goal: '设计', executor: 'agent', profile: 'proj-only-profile' } }),
+      makeConfig(fakeRunner, {
+        continuity: { manager: new CheckpointManager(main), runId: 'registry-root-test', repoRoot: worktree, registryRoot: main },
+      }),
+    );
+
+    expect(r.results.A!.status).toBe('done');
+    expect(received?.profile?.name).toBe('proj-only-profile');
+  });
+});

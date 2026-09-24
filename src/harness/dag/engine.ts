@@ -552,7 +552,7 @@ interface ExecOnce {
  * 省略 = process.cwd()) —— 必传, 不存在省略注册表即静默跳过 mcp 校验的路径 (惰性闸修复)。
  */
 function mcpRegistryRoot(config: ExecutorDagConfig): string {
-  return config.continuity?.repoRoot ?? process.cwd();
+  return config.continuity?.registryRoot ?? config.continuity?.repoRoot ?? process.cwd();
 }
 
 /** INV-7: conductor 只见 name + 一行能力摘要, 不让整份 ProfileSpec/persona 穿透。 */

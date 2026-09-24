@@ -459,6 +459,8 @@ function launchPlanRun(
             // 隔离档: 产物根钉到 worktree —— 不钉的话产物闸/artifactRoot 会拿主仓根去查
             // 隔离树里的文件 (goal.ts 同款注: 票会落进一棵随时会被删的树里)。
             repoRoot: worktree.strategy === 'branch' ? worktree.cwd : continuity.repoRoot,
+            // 配置锚留在主仓: worktree 里没有被 gitignore 的 .omd/profiles (types.ts registryRoot)。
+            registryRoot: continuity.repoRoot,
           },
         }
       : {}),
@@ -787,6 +789,8 @@ function executeDagRunInProc(
             // 隔离档: 产物根钉到 worktree —— 不钉的话产物闸/artifactRoot 会拿主仓根去查
             // 隔离树里的文件 (goal.ts 同款注: 票会落进一棵随时会被删的树里)。
             repoRoot: worktree.strategy === 'branch' ? worktree.cwd : continuity.repoRoot,
+            // 配置锚留在主仓: worktree 里没有被 gitignore 的 .omd/profiles (types.ts registryRoot)。
+            registryRoot: continuity.repoRoot,
           },
         }
       : {}),
