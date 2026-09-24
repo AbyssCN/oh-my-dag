@@ -96,6 +96,11 @@ describe('profile 调用期接缝', () => {
     // 当闸用。反向自检: 恢复 agent-leaf 的 `profileSkillsContent` 拼接 → 本断言立刻红。
     // ⚠ 工具面不受影响: createSkillTools 仍无条件挂, agent 照样能按需 read_skill (下面 allowedTools 已覆盖)。
     expect(prompts[1]).not.toContain('SKILL BODY SENTINEL');
+    // 撤正文后 profile.skills 曾经谁都不读: leaf 不知道自己该读哪些 skill, 而 tools 白名单
+    // (['read']) 又把 read_skill 滤掉 —— 声明的 skill 两头都够不着。现在: 名字进 persona, 工具必挂。
+    expect(prompts[0]).not.toContain('runtime-review-skill');
+    expect(prompts[1]).toContain('runtime-review-skill');
+    expect(options[1]?.allowedTools).toContain('mcp__omd__read_skill');
     expect(options[1]?.model).toBe('claude-sonnet-5');
     expect(options[0]?.allowedTools).toContain('mcp__omd__write');
     expect(options[1]?.allowedTools).toContain('mcp__omd__read');

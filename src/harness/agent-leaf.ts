@@ -2095,7 +2095,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
 
   // S3 read_skill umbrella (D-S3-5): 同一组装段挂 createSkillTools, roots 显式注入含 cwd 项目根, 与 mcpTools 并列进拼装点。
   // 零 skill 不挂 (skill-tool.ts:52 短路), 保证 I-1 零 skill 仓 tools 数组与 S2 基线字节相同。
-  // profile.skills: 已解析的岗位档案声明的 skill 名, 仍读取供 agent 按需 read_skill 定位, 不再预载正文进 prompt
+  // profile.skills: 只把名字进 persona、保证 read_skill 在工具面上 (见 toolsForProfile / skillPointer), 不再预载正文进 prompt
   // (O-1 2026-08-11: 撤 skill 正文预载, createSkillTools 不动, 不建并行渲染路径)。
   const skillRoots = opts.skillDeps?.roots ?? defaultSkillRoots(cwd);
   const skillTools = createSkillTools({ roots: skillRoots, ...(opts.skillDeps?.cwd ? { cwd: opts.skillDeps.cwd } : {}) });
@@ -2109,8 +2109,10 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
   // 非空 = 与 opts.tools 的并集再和真实可用工具取交集。
   const toolsForProfile = (profile: LeafProfile | undefined): AnyOmdTool[] => {
     const profileTools = profile?.tools;
+    // 档案声明了 skill 就必须够得着 read_skill —— 否则 tools 白名单 (如 design-review 的 read/grep/bash) 把它滤掉。
+    const skillTool = profile?.skills?.length ? ['read_skill'] : [];
     const allowlist = (opts.tools || profileTools)
-      ? new Set([...(opts.tools ?? []), ...(profileTools ?? [])])
+      ? new Set([...(opts.tools ?? []), ...(profileTools ?? []), ...skillTool])
       : null;
     return availableTools.filter((t) => !excluded.has(t.name) && (!allowlist || allowlist.has(t.name)));
   };
@@ -2249,7 +2251,11 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // 而不是"引擎这一版怎么包装" —— 混进来会让版本逐节点漂, 也就分不了组。
     // profile.persona 与 profile skills 同此边界: 不进 promptVersion, 不建并行 prompt 构建路径。
     const promptVersion = promptVersionOfText(scaffold);
-    const combinedPersona = [opts.persona, leafProfile?.persona].filter(Boolean).join('\n\n');
+    // 正文不预载 (O-1), 但名字要进 —— 不然 leaf 不知道自己的岗位声明了哪些 skill。
+    const skillPointer = leafProfile?.skills?.length
+      ? `本岗位声明的 skill: ${leafProfile.skills.join(', ')} —— 动手前用 read_skill 逐个读取并照做。`
+      : undefined;
+    const combinedPersona = [opts.persona, leafProfile?.persona, skillPointer].filter(Boolean).join('\n\n');
     const routedPrompt = combinedPersona ? `<persona>\n${combinedPersona}\n</persona>\n\n${withRung2Evidence}` : withRung2Evidence;
 
     // advisor(NOTES 2026-08-10):pi 座内部升档 —— 本次运行注入无参 advisor 工具,prompt 面按
