@@ -194,8 +194,14 @@ export async function retrieveWeb(
   const provs = clean
     ? stack.fetchProviders.map((fp) => new CleaningFetchProvider(fp, stack.cleaner))
     : stack.fetchProviders;
+  // 知乎命中直接取采集时的登录态全文, 不进竞速: race 档的 jina 会拿登录墙截断版 (>minChars) 抢赢。
   const fetched = await Promise.allSettled(
-    toCrawl.map((r) => fetchRacing(provs, r.url, { minChars, signal: opts.signal })),
+    toCrawl.map((r) => {
+      const memo = socialKeys.has(normalizeUrl(r.url)) ? stack.socialCorpus?.cached(r.url) : undefined;
+      return memo
+        ? Promise.resolve({ result: memo, provider: stack.socialCorpus!.name })
+        : fetchRacing(provs, r.url, { minChars, signal: opts.signal });
+    }),
   );
 
   const sources: RetrievedSource[] = ranked.map((r, i) => {

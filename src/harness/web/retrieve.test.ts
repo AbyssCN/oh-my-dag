@@ -365,6 +365,7 @@ describe('retrieveWeb 知乎 → MediaCrawler', () => {
           if (opts.fail) throw new Error('风控');
           return [hit('https://www.zhihu.com/question/1'), hit('https://zhuanlan.zhihu.com/p/2')];
         },
+        cached: (url: string) => ({ url, text: `登录态全文 ${url} `.repeat(20) }),
       },
     } as unknown as WebStack;
   }
@@ -400,4 +401,22 @@ describe('retrieveWeb 知乎 → MediaCrawler', () => {
     expect(r.sources.length).toBe(3);
     expect(warns.join()).toContain('风控');
   });
+});
+
+test('知乎命中的正文取 MediaCrawler 采集时的全文, 不进竞速 (jina 会拿登录墙截断版抢赢)', async () => {
+  const counter = { n: 0 };
+  const base = fakeStack({ '知乎 x': [hit('http://a.com/1')] }, counter);
+  const stack = {
+    ...base,
+    socialCorpus: {
+      name: 'mediacrawler',
+      search: async () => [hit('https://www.zhihu.com/question/1')],
+      cached: (url: string) => ({ url, text: '登录态全文'.repeat(50) }),
+    },
+  } as unknown as WebStack;
+  const r = await retrieveWeb(stack, '知乎 x', { crawl: 1, clean: false });
+  const z = r.sources.find((s) => s.url.includes('zhihu'))!;
+  expect(z.provider).toBe('mediacrawler');
+  expect(z.body).toContain('登录态全文');
+  expect(counter.n).toBe(1); // 只有常规那条走了 fetch
 });

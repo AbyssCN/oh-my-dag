@@ -234,3 +234,34 @@ describe('MediaCrawlerProvider — 非零退出不许吞', () => {
     expect((await p.search('LangGraph', 5)).length).toBe(1);
   });
 });
+
+test('cached(url): 采集过的给全文, 没采过给 undefined (绝不触发 detail 采集)', async () => {
+  const srv = fakeServer({ appendOnStart: [[rec('1')]] });
+  const p = new MediaCrawlerProvider({ baseUrl: 'http://nas:8090', cookies: 'z_c0=x', ...srv });
+  await p.search('LangGraph', 5);
+  const n = srv.calls.length;
+  expect(p.cached('https://www.zhihu.com/answer/1')?.text).toBe('正文1');
+  expect(p.cached('https://www.zhihu.com/answer/999')).toBeUndefined();
+  expect(srv.calls.length).toBe(n);
+});
+
+/**
+ * 同词重搜 (2026-09-25 实测: search_contents 38 条 = 同一 query 两次各追加 19 条)。
+ * 按 content_id 差集判「新增」会把第二次追加的同一批答案全当旧的 → 静默空数组。
+ * 怎么让它红: 把 recordsSince 改回 content_id 差集。
+ */
+describe('MediaCrawlerProvider — 同词重搜', () => {
+  test('★ 同一 query 搜两次 (上游追加同一批 content_id) → 第二次照样返回', async () => {
+    const srv = fakeServer({ appendOnStart: [[rec('1'), rec('2')], [rec('1'), rec('2')]] });
+    const p = new MediaCrawlerProvider({ baseUrl: 'http://nas:8090', cookies: 'z_c0=x', ...srv });
+    await p.search('LangGraph', 5);
+    const again = await p.search('LangGraph', 5);
+    expect(again.map((x) => x.url)).toEqual(['https://www.zhihu.com/answer/1', 'https://www.zhihu.com/answer/2']);
+  });
+
+  test('本轮追加里同 content_id 重复 → 只返回一次', async () => {
+    const srv = fakeServer({ appendOnStart: [[rec('1'), rec('1'), rec('2')]] });
+    const p = new MediaCrawlerProvider({ baseUrl: 'http://nas:8090', cookies: 'z_c0=x', ...srv });
+    expect((await p.search('LangGraph', 5)).length).toBe(2);
+  });
+});

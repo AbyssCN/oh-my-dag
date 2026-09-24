@@ -12,7 +12,7 @@
  *    `retrieveWeb` 是**并发**发多条改写 query 的 —— 所以本类内部排队(`chain`),
  *    并发调用变串行执行,不是"调用方注意别并发"。
  * 2. **产物文件累积**:同平台同日的结果**追加**进同一个 `search_contents_<date>.json`
- *    (实测 18 条→再跑一次变 36 条)。所以采集前后各扫一次 `content_id`,**只取新增**,
+ *    (实测 18 条→再跑一次变 36 条)。所以采集前记各文件长度, 采集后**只取其后追加的**(不按 `content_id` 差集 —— 同词重搜追加的是同一批 id),
  *    否则第二次检索会把上一次的语料当本次结果返回。
  * 3. **status 只是"进程还在不在"**:采集完成 ≠ 拿到东西(关键词无结果也会正常结束)。
  *    零新增返回空数组,不是错误。
@@ -74,6 +74,12 @@ export class MediaCrawlerProvider implements SearchProvider, FetchProvider {
   /** 已采语料的 URL 数 (读数/测试用)。 */
   get corpusSize(): number {
     return this.corpus.size;
+  }
+
+  /** 只读 memo: 采集过的给全文, 没采过给 undefined —— 绝不触发 detail 采集 (retrieveWeb 绕开竞速用)。 */
+  cached(url: string): FetchResult | undefined {
+    const hit = this.corpus.get(url);
+    return hit ? { url, text: hit.text, title: hit.title, contentType: 'text/plain' } : undefined;
   }
 
   async search(query: string, maxResults = 10, signal?: AbortSignal): Promise<SearchResult[]> {
@@ -154,7 +160,7 @@ export class MediaCrawlerProvider implements SearchProvider, FetchProvider {
 
   private async collectDetail(urls: readonly string[]): Promise<void> {
     const platform = this.opts.platform ?? 'zhihu';
-    const before = new Set((await this.readRecords(platform)).map((r) => r.content_id));
+    const before = await this.snapshot(platform);
     const res = await this.api('/api/crawler/start', undefined, {
       platform,
       login_type: this.opts.cookies ? 'cookie' : 'qrcode',
@@ -167,8 +173,8 @@ export class MediaCrawlerProvider implements SearchProvider, FetchProvider {
     });
     if (!res.ok) throw new ProviderError(this.name, res.status, `起 detail 采集失败: ${await res.text()}`);
     await this.waitIdle();
-    for (const r of await this.readRecords(platform)) {
-      if (!r.content_url || before.has(r.content_id)) continue;
+    for (const r of await this.recordsSince(before, platform)) {
+      if (!r.content_url) continue;
       const text = (r.content_text ?? '').trim();
       if (text) this.corpus.set(r.content_url, { text, title: r.title });
     }
@@ -176,7 +182,7 @@ export class MediaCrawlerProvider implements SearchProvider, FetchProvider {
 
   private async collect(query: string, maxResults: number, signal?: AbortSignal): Promise<SearchResult[]> {
     const platform = this.opts.platform ?? 'zhihu';
-    const before = new Set((await this.readRecords(platform, signal)).map((r) => r.content_id));
+    const before = await this.snapshot(platform, signal);
 
     const res = await this.api('/api/crawler/start', signal, {
       platform,
@@ -194,9 +200,7 @@ export class MediaCrawlerProvider implements SearchProvider, FetchProvider {
     await this.waitIdle(signal);
 
     // 只取新增 (见头注 ②)。
-    const fresh = (await this.readRecords(platform, signal)).filter(
-      (r) => r.content_id && !before.has(r.content_id) && r.content_url,
-    );
+    const fresh = (await this.recordsSince(before, platform, signal)).filter((r) => r.content_url);
     const out: SearchResult[] = [];
     for (const r of fresh.slice(0, maxResults)) {
       const url = r.content_url!;
@@ -250,16 +254,42 @@ export class MediaCrawlerProvider implements SearchProvider, FetchProvider {
     );
   }
 
-  private async readRecords(platform: string, signal?: AbortSignal): Promise<CrawlRecord[]> {
+  /** 按文件读全部记录 (path → 记录数组, 文件内保持上游追加序)。 */
+  private async readFiles(platform: string, signal?: AbortSignal): Promise<Map<string, CrawlRecord[]>> {
+    const out = new Map<string, CrawlRecord[]>();
     const listRes = await this.api(`/api/data/files?platform=${platform}`, signal);
-    if (!listRes.ok) return [];
+    if (!listRes.ok) return out;
     const { files = [] } = (await listRes.json()) as { files?: DataFile[] };
-    const out: CrawlRecord[] = [];
     for (const f of files.filter((x) => x.path?.endsWith('.json'))) {
       const r = await this.api(`/api/data/files/${f.path}?preview=false`, signal);
       if (!r.ok) continue;
       const body = (await r.json()) as CrawlRecord[] | { data?: CrawlRecord[] };
-      out.push(...(Array.isArray(body) ? body : (body.data ?? [])));
+      out.set(f.path, Array.isArray(body) ? body : (body.data ?? []));
+    }
+    return out;
+  }
+
+  /** 采集前快照: 每个文件已有几条。 */
+  private async snapshot(platform: string, signal?: AbortSignal): Promise<Map<string, number>> {
+    const m = new Map<string, number>();
+    for (const [path, recs] of await this.readFiles(platform, signal)) m.set(path, recs.length);
+    return m;
+  }
+
+  /**
+   * 本轮新增 = 各文件在快照长度之后追加的记录 (本轮内按 content_id 去重)。
+   * ⚠ 不能用 content_id 差集判新增: 同词重搜时上游追加的是**同一批** content_id,
+   * 差集会把它们全当旧的 → 静默空数组 (2026-09-25 实测 search_contents 38 = 19×2)。
+   */
+  private async recordsSince(before: Map<string, number>, platform: string, signal?: AbortSignal): Promise<CrawlRecord[]> {
+    const seen = new Set<string>();
+    const out: CrawlRecord[] = [];
+    for (const [path, recs] of await this.readFiles(platform, signal)) {
+      for (const r of recs.slice(before.get(path) ?? 0)) {
+        if (!r.content_id || seen.has(r.content_id)) continue;
+        seen.add(r.content_id);
+        out.push(r);
+      }
     }
     return out;
   }
