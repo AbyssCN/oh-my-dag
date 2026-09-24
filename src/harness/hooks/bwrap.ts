@@ -15,9 +15,9 @@
  * **不 --clearenv**: 继承父进程 env (provider API key 等要流进 worker); 只 --setenv HOME/PATH。
  */
 import type { Dirent } from 'node:fs';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, realpathSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 
 import { resolveRepoEnv } from './repo-env';
 import { findExecToolchain, resolveToolchainBinds, type ExecToolchain } from './toolchain';
@@ -193,6 +193,33 @@ export interface BwrapOpts {
    * 那是真实的外泄面, 不是洁癖。jail 内 `/tmp/.claude` 其余部分留 tmpfs 可写, 会话写入即弃。
    */
   claudeCredentials?: boolean;
+  /**
+   * 用户 skill 根所在的宿主 HOME。缺席 = 不挂 (与 claudeCredentials 同: 调用方显式选, 默认视图零变化)。jail 的 HOME=/tmp,
+   * read_skill 扫的是 `/tmp/.claude/skills` —— 不挂它, 档案声明的 skill 在 jail 里全「不存在」
+   * (plana run 08307db2)。只读, 只挂 skills 子树, 不挂 `~/.claude` 其余部分 (外泄面同上一条)。
+   */
+  skillHome?: string;
+}
+
+/**
+ * `~/.claude/skills` 挂进 jail HOME 的绑定表。多数条目是符号链接: 相对链接 (`../../.agents/skills/x`)
+ * 在 jail 里相对 `/tmp/.claude/skills` 解析, 绝对链接指原路径 —— 两种的**父目录**都要挂到解析后的位置,
+ * 链接才不悬空。按 dest 去重 (一条父目录一条绑定, 不是一条链接一条)。
+ */
+export function skillHomeBinds(home: string, jailHome: string): Array<{ src: string; dest: string }> {
+  const hostSkills = join(home, '.claude', 'skills');
+  if (!existsSync(hostSkills)) return [];
+  const jailSkills = join(jailHome, '.claude', 'skills');
+  const out = new Map<string, string>([[jailSkills, hostSkills]]);
+  for (const e of readdirSync(hostSkills, { withFileTypes: true })) {
+    if (!e.isSymbolicLink()) continue;
+    const link = readlinkSync(join(hostSkills, e.name));
+    const hostTarget = resolve(hostSkills, link);
+    if (!existsSync(hostTarget)) continue;
+    const dest = dirname(isAbsolute(link) ? link : resolve(jailSkills, link));
+    if (!out.has(dest)) out.set(dest, realpathSync(dirname(hostTarget)));
+  }
+  return [...out].map(([dest, src]) => ({ src, dest }));
 }
 
 /** worktree 的 git 元数据位置: 本树自己的 gitdir (rw) + 共享的 common dir (ro)。 */
@@ -300,6 +327,8 @@ export function bwrapArgs(root: string, roBinds: string[], opts: BwrapOpts = {})
     const cred = join(homedir(), '.claude', '.credentials.json');
     if (existsSync(cred)) args.push('--ro-bind', cred, '/tmp/.claude/.credentials.json');
   }
+  // 用户 skill 根 (见 BwrapOpts.skillHome): 同样排在 --tmpfs /tmp 之后, 只读。
+  if (opts.skillHome) for (const h of skillHomeBinds(opts.skillHome, '/tmp')) args.push('--ro-bind', h.src, h.dest);
   args.push('--chdir', root);
   // pi agent dir 分层挂载 (2026-07-25 三轮实证): HOME=/tmp 后 worker 缺 /tmp/.pi/agent →
   // 注册制 provider (mimo-platform/opencode-go/…) 全消失, leaf 全军覆没 leafTokens=0。

@@ -6,6 +6,7 @@
  * 文件回传。这样 pi 的**所有**命令通道 (bash / 模型幻觉的 shell / 未来工具) + `git show` oracle 泄漏被一次性
  * 封死 —— 不逐工具打地鼠 (记忆 dag-engine-write-reliability: 模型用 `shell` 绕过单工具沙箱)。
  */
+import { homedir } from 'node:os';
 import { existsSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { logger } from '../../logger';
@@ -242,6 +243,8 @@ export function createSandboxedLeafRunner(opts: AgentLeafRunnerOpts): AgentLeafR
         // 订阅座位进 jail 要带凭据 —— 隔离档下 jailRoot 不看座位, conductor 也是沙箱叶
         // (实账 run 8976c8be: `Not logged in · Please run /login` 直接把节点打成 failed)。
         ...(input.model.startsWith(`${CLAUDE_SDK_PROVIDER}:`) ? { claudeCredentials: true } : {}),
+        // 档案声明了 skill 才挂用户 skill 根 (只读, 只 skills 子树) —— 不声明的叶子视图零变化。
+        ...(input.profile?.skills?.length ? { skillHome: homedir() } : {}),
       }),
       'bun',
       'run',
