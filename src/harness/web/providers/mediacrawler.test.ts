@@ -18,6 +18,8 @@ function fakeServer(opts: {
   appendOnStart?: Record<string, unknown>[][];
   statusSeq?: string[];
   startStatus?: number;
+  /** /api/crawler/logs 的 message 序列; 省略 = 404 (老上游无此端点 → 不判)。 */
+  logs?: string[];
 }) {
   const records = [...(opts.initial ?? [])];
   const calls: Call[] = [];
@@ -39,6 +41,9 @@ function fakeServer(opts: {
       return new Response(JSON.stringify({ status: s, error_message: s === 'error' ? '登录态失效' : null }), {
         status: 200,
       });
+    }
+    if (url.includes('/api/crawler/logs') && opts.logs) {
+      return new Response(JSON.stringify({ logs: opts.logs.map((message) => ({ message })) }), { status: 200 });
     }
     if (url.includes('/api/data/files?')) {
       return new Response(JSON.stringify({ files: [{ path: 'zhihu/json/search_contents.json' }] }), { status: 200 });
@@ -206,5 +211,26 @@ describe('MediaCrawlerProvider — fetch (只从 memo 供)', () => {
     const { fetchImpl, sleepImpl } = fakeServer({ appendOnStart: [[]] }); // 采了, 但没新增
     const p = new MediaCrawlerProvider({ baseUrl: 'http://n', fetchImpl, sleepImpl });
     expect(p.fetch('https://www.zhihu.com/answer/999')).rejects.toThrow(ProviderError);
+  });
+});
+
+/**
+ * 上游缺陷 (2026-09-25 实测): 进程 exit 1 后 status 仍报 idle + error_message null ——
+ * 不看日志的话「cookie 过期」和「关键词确实没结果」长得一模一样, 都是静默空数组。
+ * 怎么让它红: 删掉 waitIdle 里读 /api/crawler/logs 那段。
+ */
+describe('MediaCrawlerProvider — 非零退出不许吞', () => {
+  test('idle 但日志 exited with code 1 → 抛, 登录失效给出换 cookie 提示', async () => {
+    const srv = fakeServer({
+      logs: ['Request error: {"error":{"code":100,"name":"AuthenticationInvalidRequest"}}', 'Crawler exited with code: 1'],
+    });
+    const p = new MediaCrawlerProvider({ baseUrl: 'http://nas:8090', cookies: 'z_c0=x', ...srv });
+    await expect(p.search('LangGraph', 5)).rejects.toThrow(/exit 1.*MEDIACRAWLER_COOKIES/);
+  });
+
+  test('exited with code 0 → 正常返回', async () => {
+    const srv = fakeServer({ appendOnStart: [[rec('1')]], logs: ['Crawler exited with code: 0'] });
+    const p = new MediaCrawlerProvider({ baseUrl: 'http://nas:8090', cookies: 'z_c0=x', ...srv });
+    expect((await p.search('LangGraph', 5)).length).toBe(1);
   });
 });

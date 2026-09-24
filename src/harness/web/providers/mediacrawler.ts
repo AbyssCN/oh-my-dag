@@ -223,10 +223,31 @@ export class MediaCrawlerProvider implements SearchProvider, FetchProvider {
       if (st.status === 'error') {
         throw new ProviderError(this.name, undefined, `采集报错: ${st.error_message ?? '(无详情)'}`);
       }
-      if (st.status === 'idle') return;
+      if (st.status === 'idle') return this.assertCleanExit(signal);
       await sleep(interval);
     }
     throw new ProviderError(this.name, undefined, `采集超时 (>${deadline}ms), 未回到 idle`);
+  }
+
+  /**
+   * 上游缺陷 (2026-09-25 实测): 进程 exit 1 后 status 仍报 idle、error_message 为 null。
+   * 不看日志, 「cookie 过期」与「关键词没结果」都是静默空数组 —— 所以读日志里的退出码。
+   * 日志端点不在 / 读不到退出行 → 不判 (不猜)。
+   */
+  private async assertCleanExit(signal?: AbortSignal): Promise<void> {
+    const res = await this.api('/api/crawler/logs?limit=200', signal);
+    if (!res.ok) return;
+    const { logs = [] } = (await res.json()) as { logs?: { message?: string }[] };
+    const msgs = logs.map((l) => l.message ?? '');
+    const exit = msgs.map((m) => /Crawler exited with code: (-?\d+)/.exec(m)).filter(Boolean).pop();
+    if (!exit || exit[1] === '0') return;
+    const authDead = msgs.some((m) => /"code":\s*100\b|Authentication/.test(m));
+    throw new ProviderError(
+      this.name,
+      undefined,
+      `采集进程 exit ${exit[1]}` +
+        (authDead ? ' —— 知乎登录态失效, 需重新导出 cookie 更新 MEDIACRAWLER_COOKIES' : ' (详见 /api/crawler/logs)'),
+    );
   }
 
   private async readRecords(platform: string, signal?: AbortSignal): Promise<CrawlRecord[]> {
