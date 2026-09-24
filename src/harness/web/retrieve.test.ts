@@ -345,3 +345,59 @@ describe('retrieveWeb per-source 蒸馏 (零丢失不变量重中之重)', () =>
     expect(r.markdown).toContain(HUGE);
   });
 });
+
+/**
+ * 知乎自动开社媒语料 (2026-09-25): query 带「知乎/zhihu」→ 额外经 socialCorpus 在站内搜一次。
+ * 怎么让它红: 删掉 retrieve.ts 里 ZHIHU_RE 那段 → ①② 红; 把 +social 爬取加额改回原预算 → ③ 红。
+ */
+describe('retrieveWeb 知乎 → MediaCrawler', () => {
+  function socialStack(calls: string[], opts: { fail?: boolean } = {}): WebStack {
+    const base = fakeStack({
+      '知乎 大模型': [hit('http://a.com/1'), hit('http://b.com/2'), hit('http://c.com/3')],
+      'kimi 评测': [hit('http://a.com/1')],
+    });
+    return {
+      ...base,
+      socialCorpus: {
+        name: 'mediacrawler',
+        async search(q: string) {
+          calls.push(q);
+          if (opts.fail) throw new Error('风控');
+          return [hit('https://www.zhihu.com/question/1'), hit('https://zhuanlan.zhihu.com/p/2')];
+        },
+      },
+    } as unknown as WebStack;
+  }
+
+  test('① query 带「知乎」→ 去掉平台词后站内搜一次, 结果并入且排在爬取最前', async () => {
+    const calls: string[] = [];
+    const r = await retrieveWeb(socialStack(calls), '知乎 大模型', { crawl: 1 });
+    expect(calls).toEqual(['大模型']);
+    expect(r.searchProviders).toContain('mediacrawler');
+    expect(r.sources.slice(0, 2).map((s) => s.url)).toEqual([
+      'https://www.zhihu.com/question/1',
+      'https://zhuanlan.zhihu.com/p/2',
+    ]);
+  });
+
+  test('② 不带知乎 → 不调 (分钟级, 绝不进普通检索)', async () => {
+    const calls: string[] = [];
+    await retrieveWeb(socialStack(calls), 'kimi 评测', { crawl: 0 });
+    expect(calls).toEqual([]);
+  });
+
+  test('③ 知乎命中不占常规爬取预算 (memo 已有正文, 零成本)', async () => {
+    const r = await retrieveWeb(socialStack([]), '知乎 大模型', { crawl: 1 });
+    expect(r.sources.filter((s) => s.body).length).toBe(3); // 2 知乎 + 1 常规
+  });
+
+  test('采集挂了 → warn 不断链, 常规结果照返', async () => {
+    const warns: string[] = [];
+    const r = await retrieveWeb(socialStack([], { fail: true }), '知乎 大模型', {
+      crawl: 0,
+      onWarn: (m) => warns.push(m),
+    });
+    expect(r.sources.length).toBe(3);
+    expect(warns.join()).toContain('风控');
+  });
+});

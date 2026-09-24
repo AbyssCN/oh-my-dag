@@ -17,6 +17,10 @@ import { classifySourceTier, orderForCrawl, type SourceTier } from './source-tie
 import { expandQueries, type QueryExpander } from './query-expand';
 import type { SourceDistiller } from './distill-source';
 
+/** query 点名知乎 → 自动开 MediaCrawler 站内搜 (见 retrieveWeb)。 */
+const ZHIHU_RE = /知乎|zhihu/i;
+const ZHIHU_RE_G = /知乎|zhihu/gi;
+
 export interface RetrieveOpts {
   /** 搜索模式: rotate / aggregate(全 provider 并行去重) / failover。默认 rotate。 */
   mode?: PoolMode;
@@ -123,9 +127,19 @@ export async function retrieveWeb(
     signal: opts.signal,
     onWarn: opts.onWarn,
   });
-  const rounds = await Promise.all(
-    queries.map((q) => stack.searchPool.search(q, k, { mode, signal: opts.signal })),
-  );
+  // 知乎自动开社媒语料 (2026-09-25 owner 裁): query 点名知乎 → 额外经 MediaCrawler 站内搜一次。
+  // 只用原 query 搜一次 (分钟级 + 上游单任务串行, 不随改写扇出); 平台词去掉再搜 (站内搜不需要它)。
+  // 挂了 fail-open: warn 不断链, 常规结果照返。
+  const wantSocial = !!stack.socialCorpus && ZHIHU_RE.test(query);
+  const [rounds, socialHits] = await Promise.all([
+    Promise.all(queries.map((q) => stack.searchPool.search(q, k, { mode, signal: opts.signal }))),
+    wantSocial
+      ? stack.socialCorpus!.search(query.replace(ZHIHU_RE_G, ' ').trim() || query, k, opts.signal).catch((e) => {
+          opts.onWarn?.(`知乎采集 (mediacrawler) 挂了, 已跳过: ${(e as Error).message}`);
+          return [] as SearchResult[];
+        })
+      : Promise.resolve([] as SearchResult[]),
+  ]);
   // 链上被跳过的 provider 的原文要念出来: 「一半 provider 挂了才显得没资料」与「确实没资料」
   // 在结果上长得一模一样, 不留这一行就再也分不开 (fail-open 可以吞异常, 不许吞证据)。
   const searchErrors = rounds.flatMap((r) => r.errors ?? []);
@@ -142,8 +156,19 @@ export async function retrieveWeb(
     }
   }
   const searchProviders = [...new Set(rounds.flatMap((r) => r.providers))];
+  if (socialHits.length) searchProviders.push(stack.socialCorpus!.name);
+  // 知乎命中排最前 + 不占常规爬取预算: 正文采集时已进 memo, 抓取是零成本的 memo 命中。
+  const socialKeys = new Set<string>();
+  const social: SearchResult[] = [];
+  for (const r of socialHits) {
+    const key = normalizeUrl(r.url);
+    if (socialKeys.has(key)) continue;
+    socialKeys.add(key);
+    social.push(r);
+  }
+  const rest = mergedResults.filter((r) => !socialKeys.has(normalizeUrl(r.url)));
   // 档位重排只决定谁吃 crawl 槽位 (A→B→C, 档内保留相关性序); 全部命中仍进索引。
-  const ranked = tierRank ? orderForCrawl(mergedResults) : mergedResults;
+  const ranked = [...social, ...(tierRank ? orderForCrawl(rest) : rest)];
   // ranked 每项定档一次算好 (选 toCrawl 的分层预算 + 后面 sources 标注共用, 避免重复分类)。
   const verdicts = ranked.map((r) => classifySourceTier(r.url));
 
@@ -163,7 +188,9 @@ export async function retrieveWeb(
     target = Math.min(Math.max(tierACount, crawlFloor), crawlCeil);
     crawlBudget = `分层预算: tier-A=${tierACount} → 爬 ${target}/上限${crawlCeil}`;
   }
-  const toCrawl = ranked.slice(0, target);
+  const socialCrawl = opts.crawl === 0 ? 0 : social.length; // 显式「只搜不抓」照样尊重
+  if (socialCrawl) crawlBudget += ` + 知乎语料 ${socialCrawl}`;
+  const toCrawl = ranked.slice(0, target + socialCrawl);
   const provs = clean
     ? stack.fetchProviders.map((fp) => new CleaningFetchProvider(fp, stack.cleaner))
     : stack.fetchProviders;

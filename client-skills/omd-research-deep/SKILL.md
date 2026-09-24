@@ -33,6 +33,7 @@ dag_research(question: "<研究问题>", super: true, rounds: 3)
 - **必须有 search provider**:`TAVILY_API_KEY` / `ANYSEARCH_API_KEY` / `SEARXNG_URL` 任一;`OMD_WEB_ORDER=searxng,anysearch,tavily` 覆盖默认 failover 序(默认 tavily→anysearch→searxng)。
   没有 → 工具**响亮拒绝**(不会静默降级成"看起来像调研的一段话")。这是有意的:
   没有 web 就没有调研。
+- **query 带「知乎/zhihu」→ 自动加一路 MediaCrawler 知乎站内搜**(需 `MEDIACRAWLER_URL` + 登录 cookie):分钟级,只用原 query 搜一次;挂了 warn 不断链。
 - **锚点文件 / 显式种子 query 不在 MCP 面上**:`--anchor`(把已有设计笔记原样送进
   groundTruth 之首)和 `--queries`(给死种子、不作者化)只有源码档的
   `bun run scripts/dag-research.ts` 有。要这两个 → 直接跑脚本(需 omd 源码/包目录),
