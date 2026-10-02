@@ -736,6 +736,29 @@ function commandBin(command: string): string {
 }
 
 /**
+ * 白名单 ∪ **owner 显式声明的命令**用到的 bin (2026-10-02)。
+ *
+ * 来由 (plana 实账): evidence-pass 照 `.omd/config.json` 的 `render.command` 补挂渲染步
+ * (`npm run drive:web && …`), 而 `npm` 刻意不在语言包里 (改环境的 `npm i` 不该进命令叶) ——
+ * owner 亲手写下的命令被自己的白名单拒掉, 下游 design-review 拿不到截图跟着失败。
+ * 声明本身就是授权, 所以只收**显式声明**的命令 (探测出来的不算), 按 `&&` 环与 `|` 段取首词。
+ * ⚠ 粒度是 bin: 声明了 `npm run …` 的仓, 命令叶里的 `npm` 整体放行; 危险命令表与 git 只读闸照旧在前面拦。
+ */
+export function withDeclaredCommands(allowlist: readonly string[], declared: readonly (string | undefined)[]): string[] {
+  const out = [...allowlist];
+  for (const cmd of declared) {
+    if (!cmd) continue;
+    for (const link of cmd.split('&&')) {
+      for (const seg of link.split('|')) {
+        const bin = commandBin(seg);
+        if (bin && !out.includes(bin)) out.push(bin);
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * **闸的单一真源** (2026-07-29 抽出): 一条命令串过不过 fail-closed 闸。
  * 过 → null; 不过 → 一行 `[blocked …]` 原因 (直接当 leaf 输出用)。
  *

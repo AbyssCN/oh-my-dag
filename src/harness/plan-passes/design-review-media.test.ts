@@ -35,11 +35,16 @@ const templates = new Map<string, AgentTemplate>([
 
 const plan = (nodes: ConductorPlan["nodes"]): ConductorPlan => ({ name: "t", nodes }) as ConductorPlan;
 
+/** evidence-pass 给产 UI 节点补的截图闸; 看图卡要接在它后面 (图片路径在它的 stdout 里, 2026-10-02)。 */
+const shots = (id: string): ConductorPlan["nodes"] => ({
+	[`${id}-shots-verify`]: { goal: "截图闸", executor: "command", command: "bun run scripts/omd-shots-verify.ts out", depends_on: [id] },
+});
+
 // ── GWT-7: design-review 触发补挂节点带 attach_media === true (INV-5) ───────────
 describe("D-4 design-review 补挂带 attach_media (GWT-7, INV-5)", () => {
 	test("★ FE 写集命中 design-review → 补挂节点 attach_media === true", () => {
 		const r = triggerPass(
-			plan({ fe: { goal: "写页面", executor: "agent", output_path: "web/src/a.tsx" } }),
+			plan({ fe: { goal: "写页面", executor: "agent", output_path: "web/src/a.tsx" }, ...shots("fe") }),
 			{ templates },
 		);
 		expect(r.attached).toEqual(["design-review-triggered"]);
@@ -50,14 +55,14 @@ describe("D-4 design-review 补挂带 attach_media (GWT-7, INV-5)", () => {
 
 	test("★ 节点其余字段与原 D-12 一卡一档形态保持一致 (profile/template/depends_on/advisory)", () => {
 		const r = triggerPass(
-			plan({ fe: { goal: "写页面", executor: "agent", output_path: "web/src/a.tsx" } }),
+			plan({ fe: { goal: "写页面", executor: "agent", output_path: "web/src/a.tsx" }, ...shots("fe") }),
 			{ templates },
 		);
 		const node = r.plan.nodes["design-review-triggered"]!;
 		expect(node.executor).toBe("agent");
 		expect(node.template).toBe("design-review");
 		expect(node.profile).toBe("design-review");
-		expect(node.depends_on).toEqual(["fe"]);
+		expect(node.depends_on).toEqual(["fe-shots-verify"]);
 		expect(node.requires).toBe("all");
 		// SEAT-1: 不写 tier (写就让 stamp 盖座位, 静默覆盖)。
 		expect(node.tier).toBeUndefined();
@@ -68,7 +73,7 @@ describe("D-4 design-review 补挂带 attach_media (GWT-7, INV-5)", () => {
 	test("★ 无图时引擎 fail-closed (GWT-7 旁证): 这里只验证节点字段, 注入行为由 agent-media-injection.test.ts 钉", () => {
 		// 注: engine 端 fail-closed 在 engine.ts:3641, 属 engine 护栏 (不在本写集), 此处只验
 		// 补挂节点确实把 attach_media 设为 true, 让引擎那条 fail-closed 走得通 (否则 0/0 假阴性)。
-		const r = triggerPass(plan({ fe: { goal: "写设置页", executor: "agent", output_path: "web/src/pages/Settings.tsx" } }), { templates });
+		const r = triggerPass(plan({ fe: { goal: "写设置页", executor: "agent", output_path: "web/src/pages/Settings.tsx" }, ...shots("fe") }), { templates });
 		expect(r.plan.nodes["design-review-triggered"]!.attach_media).toBe(true);
 	});
 });
@@ -94,6 +99,7 @@ describe("TRG-5 白名单 (非像素依赖卡不放大 attach_media)", () => {
 		const r = triggerPass(
 			plan({
 				fe: { goal: "写页面", executor: "agent", output_path: "web/src/a.tsx" },
+				...shots("fe"),
 				be: { goal: "写接口", executor: "agent", output_path: "src/api.ts" },
 			}),
 			{ templates },
@@ -119,6 +125,7 @@ describe("D-4 与既有不变量交互 (TRG-1/TRG-2/TRG-3)", () => {
 	test("图上已有该卡节点 (TRG-2 幂等) → 不重复补, alreadyPresent 记录, attach_media 不双写", () => {
 		const p = plan({
 			fe: { goal: "写页面", executor: "agent", output_path: "web/src/a.tsx" },
+				...shots("fe"),
 		});
 		const once = triggerPass(p, { templates });
 		expect(once.attached).toEqual(["design-review-triggered"]);
@@ -132,7 +139,7 @@ describe("D-4 与既有不变量交互 (TRG-1/TRG-2/TRG-3)", () => {
 	});
 
 	test("纯函数: 原 plan 不被变异 (TRG-3) — 既有节点一个字段都不碰", () => {
-		const p = plan({ fe: { goal: "写页面", executor: "agent", output_path: "web/src/a.tsx" } });
+		const p = plan({ fe: { goal: "写页面", executor: "agent", output_path: "web/src/a.tsx" }, ...shots("fe") });
 		const feBefore = p.nodes["fe"];
 		triggerPass(p, { templates });
 		expect(p.nodes["fe"]).toBe(feBefore); // 同一引用
@@ -143,7 +150,7 @@ describe("D-4 与既有不变量交互 (TRG-1/TRG-2/TRG-3)", () => {
 		const noTriggerTemplates = new Map<string, AgentTemplate>([
 			["code-reviewer", { name: "code-reviewer", description: "通用代码审查", body: "…" }],
 		]);
-		const p = plan({ fe: { goal: "写页面", executor: "agent", output_path: "web/src/a.tsx" } });
+		const p = plan({ fe: { goal: "写页面", executor: "agent", output_path: "web/src/a.tsx" }, ...shots("fe") });
 		const r = triggerPass(p, { templates: noTriggerTemplates });
 		expect(r.attached).toEqual([]);
 		expect(r.plan).toBe(p);

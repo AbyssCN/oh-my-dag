@@ -35,6 +35,7 @@
  */
 import type { AgentTemplate } from '../agent-templates';
 import type { ConductorPlan } from '../conductor-plan';
+import { shotsVerifyDescendants } from './evidence-pass';
 
 type PlanNode = ConductorPlan['nodes'][string];
 
@@ -60,6 +61,12 @@ export interface TriggerPassResult {
 	 * 压成一个空数组事后就分不开了 (本仓「NULL ≠ 0 ≠ 不适用」那条)。
 	 */
 	alreadyPresent: string[];
+	/**
+	 * 命中写集、但**图上没有截图来源**而没补的看图卡 (2026-10-02)。看图卡的图片来自 evidence-pass 补的
+	 * omd-shots-verify 节点 stdout; 没有这类节点 = 必然「attach_media 无可用媒体」→ failed (plana 14 次跑 13 次)。
+	 * 补一个注定失败的节点比不补更坏, 故不补, 卡名记在这里供接线层念出来 (与「没命中」分得开)。
+	 */
+	noMediaSource: string[];
 }
 
 /**
@@ -74,12 +81,13 @@ export function triggerPass(
 	const triggered = [...opts.templates.values()]
 		.filter((t): t is AgentTemplate & { trigger: { writeSetGlob: string } } => Boolean(t.trigger?.writeSetGlob))
 		.sort((a, b) => a.name.localeCompare(b.name));
-	if (triggered.length === 0) return { plan, attached: [], alreadyPresent: [] }; // TRG-1
+	if (triggered.length === 0) return { plan, attached: [], alreadyPresent: [], noMediaSource: [] }; // TRG-1
 
 	const ids = Object.keys(plan.nodes).sort();
 	let nodes: ConductorPlan['nodes'] | undefined; // 惰性拷贝: 真要补时才建, 否则保住原引用 (TRG-1)
 	const attached: string[] = [];
 	const alreadyPresent: string[] = [];
+	const noMediaSource: string[] = [];
 
 	for (const card of triggered) {
 		const glob = new Bun.Glob(card.trigger.writeSetGlob);
@@ -88,6 +96,14 @@ export function triggerPass(
 		// TRG-2 幂等: 图上已经有引用这张卡的节点 (conductor 自己挑了, 或上一遍本 pass 补的) → 不重复补。
 		if (ids.some((id) => plan.nodes[id]!.template === card.name)) {
 			alreadyPresent.push(card.name);
+			continue;
+		}
+		// 看图卡接在截图闸后面 (图片路径在 omd-shots-verify 的 stdout 里, 不在产 UI 节点的输出里)。
+		// 此前接在命中节点上 —— 直接前驱里永远解析不出图, 节点恒 failed。截图闸传递依赖命中节点, 顺序不变。
+		const needsMedia = MEDIA_REVIEW_CARDS.has(card.name);
+		const mediaSources = needsMedia ? [...new Set(hits.flatMap((h) => shotsVerifyDescendants(plan.nodes, h)))].sort() : [];
+		if (needsMedia && mediaSources.length === 0) {
+			noMediaSource.push(card.name);
 			continue;
 		}
 		nodes ??= { ...plan.nodes };
@@ -112,15 +128,15 @@ export function triggerPass(
 			// 刻意**不写 tier** (SEAT-1, stamp-pass:100 `if (!n.tier) return null`): 无 tier =
 			// 回落 executor 对应的座位, 而座位由上面那个 profile 覆盖。写 tier 反而会让 stamp 从池里
 			// 盖一个模型、把档里配的座位顶掉 —— 那是 SEAT-1 明令禁止的静默覆盖。
-			depends_on: hits,
+			depends_on: needsMedia ? mediaSources : hits,
 			requires: 'all',
 		} satisfies PlanNode;
 		attached.push(id);
 	}
 
-	if (!nodes || attached.length === 0) return { plan, attached: [], alreadyPresent }; // TRG-1 恒等
+	if (!nodes || attached.length === 0) return { plan, attached: [], alreadyPresent, noMediaSource }; // TRG-1 恒等
 	attached.sort();
-	return { plan: { ...plan, nodes }, attached, alreadyPresent };
+	return { plan: { ...plan, nodes }, attached, alreadyPresent, noMediaSource };
 }
 
 /**

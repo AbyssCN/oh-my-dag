@@ -23,10 +23,16 @@ const templates = new Map<string, AgentTemplate>([
 
 const plan = (nodes: ConductorPlan["nodes"]): ConductorPlan => ({ name: "t", nodes }) as ConductorPlan;
 
+/** evidence-pass 给产 UI 节点补的截图闸; 看图卡要接在它后面 (图片路径在它的 stdout 里, 2026-10-02)。 */
+const shots = (id: string): ConductorPlan["nodes"] => ({
+	[`${id}-shots-verify`]: { goal: "截图闸", executor: "command", command: "bun run scripts/omd-shots-verify.ts out", depends_on: [id] },
+});
+
 describe("trigger-pass 机械补挂 (C-5)", () => {
 	test("写集命中 glob → 补挂一个引用该卡的审核节点, depends_on = 命中节点", () => {
 		const p = plan({
 			fe: { goal: "写设置页", executor: "agent", output_path: "web/src/pages/Settings.tsx" },
+			...shots("fe"),
 			be: { goal: "写接口", executor: "agent", output_path: "src/serve/read-api.ts" },
 		});
 		const r = triggerPass(p, { templates });
@@ -35,25 +41,25 @@ describe("trigger-pass 机械补挂 (C-5)", () => {
 		const node = r.plan.nodes["design-review-triggered"]!;
 		expect(node.template).toBe("design-review");
 		expect(node.executor).toBe("agent");
-		// 只依赖命中的那个 —— 没命中的后端节点不该被拉进来。
-		expect(node.depends_on).toEqual(["fe"]);
+		// 看图卡接在命中节点的截图闸后面 (截图闸传递依赖命中节点) —— 没命中的后端节点不该被拉进来。
+		expect(node.depends_on).toEqual(["fe-shots-verify"]);
 		// advisory (O-2): 没有任何既有节点依赖补挂节点 → 它红了也没有下游可级联。
 		for (const id of ["fe", "be"]) {
 			expect(r.plan.nodes[id]!.depends_on ?? []).not.toContain("design-review-triggered");
 		}
 		// 纯函数: 原 plan 不被变异 (TRG-3 也顺带验了 —— 既有节点一个字段都没动)。
-		expect(Object.keys(p.nodes)).toEqual(["fe", "be"]);
+		expect(Object.keys(p.nodes)).toEqual(["fe", "fe-shots-verify", "be"]);
 		expect(p.nodes["fe"]).toEqual({ goal: "写设置页", executor: "agent", output_path: "web/src/pages/Settings.tsx" });
 	});
 
 	test("写集口径 = write_set ∪ output_path (只认一个就会在另一半图上漏)", () => {
 		// 机器画的图基本只有 output_path; 手写图才声明 write_set。两个都要认。
 		const viaWriteSet = triggerPass(
-			plan({ n: { goal: "改样式", executor: "agent", write_set: ["src/a.ts", "web/src/theme.css"] } }),
+			plan({ n: { goal: "改样式", executor: "agent", write_set: ["src/a.ts", "web/src/theme.css"] }, ...shots("n") }),
 			{ templates },
 		);
 		expect(viaWriteSet.attached).toEqual(["design-review-triggered"]);
-		expect(viaWriteSet.plan.nodes["design-review-triggered"]!.depends_on).toEqual(["n"]);
+		expect(viaWriteSet.plan.nodes["design-review-triggered"]!.depends_on).toEqual(["n-shots-verify"]);
 
 		// 两个都没有 → 不参与判定 (没声明写什么就不猜)。
 		const silent = triggerPass(plan({ n: { goal: "只读分析", executor: "leaf" } }), { templates });
@@ -73,6 +79,7 @@ describe("trigger-pass 机械补挂 (C-5)", () => {
 	test("TRG-2 幂等: 图上已有该卡的节点 → 不重复补, 但记进 alreadyPresent", () => {
 		const p = plan({
 			fe: { goal: "写设置页", executor: "agent", output_path: "web/src/pages/Settings.tsx" },
+			...shots("fe"),
 		});
 		const once = triggerPass(p, { templates });
 		expect(once.attached).toEqual(["design-review-triggered"]);
@@ -87,7 +94,7 @@ describe("trigger-pass 机械补挂 (C-5)", () => {
 	});
 
 	test("无卡带 trigger → 恒等 (词表里全是普通卡时本 pass 是零成本的)", () => {
-		const p = plan({ fe: { goal: "写页面", executor: "agent", output_path: "web/src/a.tsx" } });
+		const p = plan({ fe: { goal: "写页面", executor: "agent", output_path: "web/src/a.tsx" }, ...shots("fe") });
 		const noTrigger = new Map([["code-reviewer", templates.get("code-reviewer")!]]);
 		const r = triggerPass(p, { templates: noTrigger });
 		expect(r.attached).toEqual([]);
@@ -95,7 +102,7 @@ describe("trigger-pass 机械补挂 (C-5)", () => {
 	});
 
 	test("补挂节点挂了同名 profile 且**不写 tier** (D-12 一卡一档 + SEAT-1)", () => {
-		const r = triggerPass(plan({ fe: { goal: "写页面", executor: "agent", output_path: "web/src/a.tsx" } }), { templates });
+		const r = triggerPass(plan({ fe: { goal: "写页面", executor: "agent", output_path: "web/src/a.tsx" }, ...shots("fe") }), { templates });
 		const node = r.plan.nodes["design-review-triggered"]!;
 		// 只挂卡不挂档 = 拿 agent 座位的通用模型去跑设计审核, 而档里特意配了能看图的座位。
 		expect(node.profile).toBe("design-review");
@@ -104,7 +111,7 @@ describe("trigger-pass 机械补挂 (C-5)", () => {
 	});
 
 	test("C-6 顺序决定结果: 改图的 pass 排在 stamp 之后, 补挂节点就在 stamp 的视野之外", () => {
-		const p = plan({ fe: { goal: "写页面", executor: "agent", output_path: "web/src/a.tsx" } });
+		const p = plan({ fe: { goal: "写页面", executor: "agent", output_path: "web/src/a.tsx" }, ...shots("fe") });
 		const pools = { strong: ["s:strong"], mid: ["s:mid"], cheap: ["s:cheap"], multimodal: ["s:mm"] };
 		const stampOpts = { pools, familyOf: (c: string) => c.split(":")[0]!, templateHasModel: () => false };
 
@@ -150,10 +157,20 @@ describe("trigger-pass 机械补挂 (C-5)", () => {
 		const p = plan({
 			"design-review-triggered": { goal: "同名的既有节点 (无 template)", executor: "command", command: "echo hi" },
 			fe: { goal: "写页面", executor: "agent", output_path: "web/src/a.tsx" },
+				...shots("fe"),
 		});
 		const r = triggerPass(p, { templates });
 		expect(r.attached).toEqual(["design-review-triggered-2"]);
 		// 既有同名节点原样活着。
 		expect(r.plan.nodes["design-review-triggered"]!.command).toBe("echo hi");
+	});
+
+	test("★ 看图卡命中写集但图上无截图闸 → 不补, 记进 noMediaSource (2026-10-02, plana 14 跑 13 次 attach_media 无图 failed)", () => {
+		// 证伪方式: 删掉 trigger-pass 里 `needsMedia && mediaSources.length === 0` 的 continue → 本条红 (attached 非空)。
+		const p = plan({ fe: { goal: "写页面", executor: "agent", output_path: "web/src/a.tsx" } });
+		const r = triggerPass(p, { templates });
+		expect(r.attached).toEqual([]);
+		expect(r.noMediaSource).toEqual(["design-review"]);
+		expect(r.plan).toBe(p); // 没补 = 恒等
 	});
 });

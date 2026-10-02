@@ -133,9 +133,17 @@ export function evidencePass(
  * 渲染步不必单独结构校验: 没渲染 → 没图 → 这道闸运行时自己会红。**判据收敛成一条, 更强也更简单。**
  */
 function hasEvidenceChain(nodes: ConductorPlan["nodes"], id: string): boolean {
-	return descendantsOf(nodes, id).some(
-		(d) => nodes[d]!.executor === "command" && (nodes[d]!.command ?? "").includes(SHOTS_VERIFY_CLI),
-	);
+	return shotsVerifyDescendants(nodes, id).length > 0;
+}
+
+/**
+ * 节点 id 的截图闸后代 (跑 omd-shots-verify 的 command 节点), 排序去重。
+ * 导出给 trigger-pass: 看图审查要接在**这些**节点后面 —— 图片路径在它们的 stdout 里, 不在产 UI 的节点输出里。
+ */
+export function shotsVerifyDescendants(nodes: ConductorPlan["nodes"], id: string): string[] {
+	return descendantsOf(nodes, id)
+		.filter((d) => nodes[d]!.executor === "command" && (nodes[d]!.command ?? "").includes(SHOTS_VERIFY_CLI))
+		.sort();
 }
 
 /** 传递闭包: 所有 (直接/间接) 依赖 id 的节点。幻象 dep 自然被忽略 (只走 nodes 内的边)。 */

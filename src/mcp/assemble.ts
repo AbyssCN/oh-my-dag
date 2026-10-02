@@ -85,7 +85,7 @@ import type { SpinRung2StampPools } from '../harness/dag/spin-rung2';
 import { loadRepoChecksManifest } from '../harness/repo-checks-manifest';
 import type { AnyOmdTool } from '../harness/agent-tools';
 import { resolveVerification } from '../harness/verifier';
-import { allowlistForRoot, createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from '../harness/command-leaf';
+import { allowlistForRoot, createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST, withDeclaredCommands } from '../harness/command-leaf';
 import type { AgentLeafRunner, CommandLeafRunner } from '../harness/leaf-runners';
 import { createOmdMemory, type OmdMemory } from '../harness/memory';
 import { resolveMemoryDbPath } from '../harness/memory/db-path';
@@ -522,7 +522,9 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
   // 看起来像"测试没过", 实际上根本没跑。两处口径必须同时换。
   const runAllowlist = (root: string): string[] => {
     const base = allowlistForRoot(root);
-    const combined = runtimeAllowlistForRoot(root, env);
+    // ∪ owner 显式声明的渲染命令的 bin (见 withDeclaredCommands): evidence-pass 照声明补挂的渲染步不能被自家白名单拒。
+    // 只放宽运行期一侧 —— 分类期比运行期严只会少冻一条判据, 不会造「分类放行、执行拒掉」的假红。
+    const combined = withDeclaredCommands(runtimeAllowlistForRoot(root, env), [detectRenderCommand(root).command?.command]);
     const extra = combined.filter((b) => !base.includes(b));
     if (extra.length > 0) logger.info({ root, extra }, '[omd/mcp] 命令白名单按仓环境真探测扩充');
     return combined;
@@ -741,7 +743,9 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       // 放在 evidence 之后: 证据链补出来的渲染/校验节点是 command, 不带 output_path 也不该触发设计审核 ——
       // 让它们先落地再算写集, 不会改变结果, 但顺序固定下来读的人不用猜。
       (p) => {
-        const { plan, attached, alreadyPresent } = triggerPass(p, { templates: loadAgentTemplates({ root: cwd }) });
+        const { plan, attached, alreadyPresent, noMediaSource } = triggerPass(p, { templates: loadAgentTemplates({ root: cwd }) });
+        if (noMediaSource.length)
+          logger.info({ noMediaSource, render: describeRenderProbe(detectRenderCommand(cwd)) }, '[omd/mcp] trigger pass: 看图卡命中写集但图上无截图闸 → 不补 (补了必然无图 failed); 声明 .omd/config.json 的 render 即可接上');
         if (attached.length) logger.info({ attached }, '[omd/mcp] trigger pass: 按写集补挂卡审核节点 (D-9, advisory 不上关键路径)');
         // 「命中了但没补」要念出来 —— 与「没命中」在读数上必须分得开, 否则事后看不出闸有没有真跑 (坑 #1)。
         if (alreadyPresent.length)
