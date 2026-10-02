@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""omd-video (run.py) — MiMo 原生多模态视频采集 → 逐段结构化笔记 (可复用, 自包含)。
+"""omd-video (run.py) — 原生多模态视频采集 → 逐段结构化笔记 (可复用, 自包含)。
+
+后端: 默认 agy (Antigravity CLI 的 Gemini, 订阅额度, view_file 原生读 mp4); --backend mimo 走 MiMo API。
 
 讲解类视频画面有大量 PPT 框架图/提示词/代码 = 音频拿不到的信息 → 用 MiMo-v2.5 原生吃视频
 (画面+音频),而非 whisper 转写。本脚本把"抖音/通用视频 → 逐段结构化笔记"固化为确定性、
@@ -32,8 +34,9 @@
   # 单跑某阶段 (调试/补跑)
   python run.py --workdir /tmp/job --only fanout
 
-env: MIMO_API_KEY / MIMO_BASE_URL (os.environ 优先, 否则找 CWD/.env 或 ~/.omd/.env)。
-依赖: yt-dlp, ffmpeg/ffprobe (PATH 内); 仅标准库 (urllib)。
+env: agy 后端无 key (用 agy 自己的登录); mimo 后端要 MIMO_API_KEY / MIMO_BASE_URL
+(os.environ 优先, 否则找 CWD/.env 或 ~/.omd/.env)。
+依赖: yt-dlp, ffmpeg/ffprobe, agy (PATH 内); 仅标准库 (urllib)。
 """
 import argparse
 import base64
@@ -41,6 +44,7 @@ import glob
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -300,6 +304,93 @@ def stage_fanout(seg_dir, note_dir, prompt, workers, max_tokens, model, key, bas
     print(f"[fanout] {ok} 新增 ok / {len(segs)} 段 (失败段: 多为非关键帧切断, 重跑 segment 阶段再 fanout)")
 
 
+# ── fanout (agy = Antigravity CLI, Google 订阅通道的 Gemini) ─────────────
+# 2026-10-02 实测 (agy 1.1.28, gemini-3.8-flash-high, 170s 段): Gemini 经 agy 的 view_file 工具原生读 mp4
+# (画面 + 音轨), 单段 ~11s / ~44K 输入 token; 屏幕上的 settings.json/docstring 逐字转出, 口播引语与 whisper
+# 转写近乎逐字。没有 fps/media_resolution 旋钮 —— 采样由 Gemini 自定, 本地 --fps 只决定转码帧数。
+# 两个实测坑:
+#  · `--output-format json` 偶发 response 只有 "{truncated:true}" → 用 stream-json, result 坏了就拼 text_delta;
+#  · 模型会想跑 ffmpeg 之类命令, headless 下被拒后可能空答 → prompt 钉死「只用 view_file」,
+#    且不给 --dangerously-skip-permissions (--mode plan 只读)。
+AGY_PREAMBLE = (
+    "Use ONLY your file viewing tool on the video file {path} (it has video frames and an audio track; "
+    "the viewer reads video natively). Do NOT run any shell command. "
+    "Never transcribe secret values (API keys, tokens, passwords): write <redacted> in their place. "
+    "If the viewer cannot give you the frames or the audio, reply exactly CANNOT_READ_VIDEO.\n\n"
+)
+
+
+def agy_response(stdout):
+    """从 stream-json 取最终回答。result.response 坏 (空 / "{truncated:true}") 时, 拼最后一个
+    agent_response 步的 text_delta。"""
+    result, deltas, last_step = None, {}, None
+    for line in stdout.splitlines():
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if e.get("event") == "result":
+            result = e.get("result") or {}
+        su = e.get("step_update") or {}
+        if su.get("step_type") == "agent_response" and "text_delta" in su:
+            deltas.setdefault(su.get("step_index"), []).append(su["text_delta"])
+            last_step = su.get("step_index")
+    text = (result or {}).get("response") or ""
+    if text.strip() in ("", "{truncated:true}") and last_step is not None:
+        text = "".join(deltas[last_step])
+    return text
+
+
+def agy_refused(text):
+    """Gemini 安全过滤的拒答也是一段 >60 字的文本 —— 不认出来就会被当笔记写进磁盘 (2026-10-02 实测
+    一段讲 Jev 的 Claude Code 演示被拦 3 次, 同段同 prompt 单独再跑又过)。偶发 → 当失败重试。"""
+    return "blocked by Gemini's filters" in text or "CANNOT_READ_VIDEO" in text
+
+
+def stage_fanout_agy(seg_dir, note_dir, prompt, workers, model):
+    os.makedirs(note_dir, exist_ok=True)
+    segs = sorted(glob.glob(os.path.join(seg_dir, "*.mp4")))
+    print(f"[fanout] {len(segs)} 段 → agy {model} (并发 {workers})")
+
+    def call(seg):
+        note = os.path.join(note_dir, os.path.basename(seg).replace(".mp4", ".note.md"))
+        if (os.path.exists(note) and os.path.getsize(note) > 60
+                and not agy_refused(open(note).read())):  # 旧拒答当缺笔记重跑
+            return ("skip", seg)
+        seg_abs = os.path.abspath(seg)
+        full = AGY_PREAMBLE.format(path=seg_abs) + prompt
+        err = ""
+        for attempt in range(3):
+            try:
+                r = subprocess.run(
+                    ["agy", "--output-format", "stream-json", "--model", model, "--mode", "plan",
+                     "-p=" + full],  # -p= 必须等号连写 (agy-cli-complete.ts 实测坑)
+                    cwd=os.path.dirname(seg_abs), capture_output=True, text=True, timeout=600)
+                text = agy_response(r.stdout)
+                if agy_refused(text):  # 过滤拒答与 CANNOT_READ_VIDEO 实测都是偶发, 同段重跑会过
+                    err = "拒答: " + text.strip()[:40]
+                elif len(text.strip()) > 60:
+                    open(note, "w").write(text)
+                    return ("ok", seg)
+                else:
+                    err = f"exit={r.returncode} empty; stderr={r.stderr.strip()[-120:]}"
+            except subprocess.TimeoutExpired:
+                err = "timeout 600s"
+            time.sleep(5 * (attempt + 1))
+        return (f"err:{err}", seg)
+
+    ok = done = 0
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        for f in as_completed([ex.submit(call, s) for s in segs]):
+            status, seg = f.result()
+            done += 1
+            if status == "ok":
+                ok += 1
+            elif status != "skip":
+                print(f"  [{done}/{len(segs)}] {status}  {os.path.basename(seg)}")
+    print(f"[fanout] {ok} 新增 ok / {len(segs)} 段")
+
+
 # ── aggregate ────────────────────────────────────────────────────────
 def stage_aggregate(note_dir, ep_dir, all_notes):
     os.makedirs(ep_dir, exist_ok=True)
@@ -313,7 +404,9 @@ def stage_aggregate(note_dir, ep_dir, all_notes):
         for p in sorted(parts):
             idx = re.search(r"__(\d+)", p)
             out.append(f"\n--- 段 {idx.group(1) if idx else '?'} ---\n")
-            out.append(open(p).read().strip())
+            body = open(p).read().strip()
+            # 拒答文本不当笔记聚合; 留显式缺口, 不让一段静默消失 (§静默坑 2)
+            out.append("(本段无笔记: 模型拒答, 重跑 --only fanout)" if agy_refused(body) else body)
         open(os.path.join(ep_dir, ep + ".notes.md"), "w").write("\n".join(out))
     with open(all_notes, "w") as f:
         for ep in sorted(by_ep):
@@ -337,9 +430,11 @@ def main():
     ap.add_argument("--media-resolution", choices=["default", "max"], default="max",
                     help="MiMo 单帧解析档: max=按送进去的分辨率读(读代码/PPT 必须, 默认); "
                          "default=每帧封顶~300token≈739px(省钱但小字会糊)")
-    ap.add_argument("--workers", type=int, default=8, help="fanout 并发 (默认 8)")
-    ap.add_argument("--max-tokens", type=int, default=4000)
-    ap.add_argument("--model", default="mimo-v2.5", help="多模态模型 (默认 mimo-v2.5)")
+    ap.add_argument("--backend", choices=["agy", "mimo"], default="agy",
+                    help="fanout 后端: agy=Antigravity CLI 的 Gemini (默认, 订阅额度); mimo=MiMo API (按量)")
+    ap.add_argument("--workers", type=int, help="fanout 并发 (默认 agy 3 / mimo 8)")
+    ap.add_argument("--max-tokens", type=int, default=4000, help="仅 mimo")
+    ap.add_argument("--model", help="多模态模型 (默认 agy: gemini-3.8-flash-high / mimo: mimo-v2.5)")
     ap.add_argument("--prompt-file", help="自定义 fanout prompt 文件 (覆盖默认教学视频 prompt)")
     args = ap.parse_args()
 
@@ -350,10 +445,17 @@ def main():
     ep_dir, all_notes = os.path.join(wd, "episode-notes"), os.path.join(wd, "ALL-NOTES.md")
     prompt = open(args.prompt_file).read() if args.prompt_file else DEFAULT_PROMPT
 
-    key = load_env("MIMO_API_KEY")
-    base = load_env("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1")
-    if not key and args.only not in ("discover", "enumerate", "download", "segment", "aggregate"):
-        sys.exit("缺 MIMO_API_KEY (env 或 CWD/.env 或 ~/.omd/.env)")
+    needs_model = args.only in (None, "fanout")
+    key = base = None
+    if args.backend == "mimo":
+        key = load_env("MIMO_API_KEY")
+        base = load_env("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1")
+        if not key and needs_model:
+            sys.exit("缺 MIMO_API_KEY (env 或 CWD/.env 或 ~/.omd/.env)")
+    elif needs_model and not shutil.which("agy"):
+        sys.exit("agy 不在 PATH (Antigravity CLI; 或改 --backend mimo)")
+    model = args.model or ("gemini-3.8-flash-high" if args.backend == "agy" else "mimo-v2.5")
+    workers = args.workers or (3 if args.backend == "agy" else 8)
 
     run = (lambda s: args.only == s) if args.only else (lambda _s: True)
 
@@ -368,8 +470,11 @@ def main():
     if run("segment"):
         stage_segment(vid_dir, seg_dir, args.seg_len, args.scale, args.fps)
     if run("fanout"):
-        stage_fanout(seg_dir, note_dir, prompt, args.workers, args.max_tokens, args.model, key, base,
-                     args.fps, args.media_resolution)
+        if args.backend == "agy":
+            stage_fanout_agy(seg_dir, note_dir, prompt, workers, model)
+        else:
+            stage_fanout(seg_dir, note_dir, prompt, workers, args.max_tokens, model, key, base,
+                         args.fps, args.media_resolution)
     if run("aggregate"):
         stage_aggregate(note_dir, ep_dir, all_notes)
 

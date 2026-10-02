@@ -1,11 +1,11 @@
 ---
 name: omd-video
-description: 视频→逐段结构化笔记 (MiMo-v2.5 原生吃画面+音频, 非 whisper 转写; 可重入管线)。讲解/课程视频里 PPT 框架图/代码/提示词是画面独有、音频拿不到的信息。产 ALL-NOTES.md 交 /omd-council 或 dag_research 做综合。Trigger:/omd-video、抖音/B站/YouTube 讲解视频、课程系列、把这些视频学一遍/提炼、画面里有代码/图表/PPT。Skip:文字原文综合→/omd-council;网页内容→dag_research(检索版)。
+description: 视频→逐段结构化笔记 (默认 Antigravity `agy` 的 Gemini 原生吃画面+音频, 非 whisper 转写; 可重入管线)。讲解/课程视频里 PPT 框架图/代码/提示词是画面独有、音频拿不到的信息。产 ALL-NOTES.md 交 /omd-council 或 dag_research 做综合。Trigger:/omd-video、抖音/B站/YouTube 讲解视频、课程系列、把这些视频学一遍/提炼、画面里有代码/图表/PPT。Skip:文字原文综合→/omd-council;网页内容→dag_research(检索版)。
 ---
 
-# /omd-video — 视频→逐段结构化笔记 (MiMo 多模态)
+# /omd-video — 视频→逐段结构化笔记 (Gemini via agy 多模态)
 
-> 讲解类视频画面有大量 PPT/框架图/提示词/代码 = 音频拿不到 → MiMo-v2.5 **原生吃视频**(画面+音频),非 whisper 转写。确定性五阶段管线,**可重入**(已产出阶段自动跳过):discover/enumerate→download→segment→fanout→aggregate。综合/蒸馏不在本管线内——产物 `ALL-NOTES.md` 交给 omd dag 引擎。
+> 讲解类视频画面有大量 PPT/框架图/提示词/代码 = 音频拿不到 → 默认经 `agy`(Antigravity CLI,Google 订阅额度)让 Gemini **原生吃视频**(画面+音频;`--backend mimo` 走 MiMo API),非 whisper 转写。确定性五阶段管线,**可重入**(已产出阶段自动跳过):discover/enumerate→download→segment→fanout→aggregate。综合/蒸馏不在本管线内——产物 `ALL-NOTES.md` 交给 omd dag 引擎。
 
 ## 何时用
 抖音/B站/YouTube 讲解视频或课程系列要提炼成知识;画面信息密集(代码/图表/PPT)、音频拿不全的内容采集。
@@ -48,7 +48,7 @@ python "$SKILL" --enumerate "https://www.douyin.com/user/<sec_uid>" --workdir /t
 python "$SKILL" --workdir /tmp/<job> --only fanout
 ```
 
-**env**:`MIMO_API_KEY` 必需(os.environ 优先,否则找 `CWD/.env` 或 `~/.omd/.env`);`MIMO_BASE_URL` 默认 `https://api.xiaomimimo.com/v1`。**依赖**:`yt-dlp`、`ffmpeg`/`ffprobe` 在 PATH 内。
+**后端**:默认 `--backend agy`(`--model` 默认 `gemini-3.8-flash-high`,并发默认 3;无 key,用 `agy` 自己的登录)。`--backend mimo` 才要 `MIMO_API_KEY` / `MIMO_BASE_URL`(os.environ 优先,否则找 `CWD/.env` 或 `~/.omd/.env`)。**依赖**:`yt-dlp`(太旧会 403,`uv tool upgrade yt-dlp`)、`ffmpeg`/`ffprobe`、`agy` 在 PATH 内。
 
 ## 阶段与产物 (落 workdir)
 | 阶段 | 干什么 | 产物 |
@@ -57,16 +57,20 @@ python "$SKILL" --workdir /tmp/<job> --only fanout
 | enumerate | browser-harness 滚主页抓全部作品 | `urls.txt` |
 | download | yt-dlp 批量下 (钉死真 .mp4,ffprobe 校验) | `vids/*.mp4` |
 | segment | ffmpeg 逐段精确切 + 强制段首关键帧 | `seg/*__NN.mp4` |
-| fanout | N 段并发喂 mimo-v2.5,每段产笔记 | `notes/*.note.md` |
+| fanout | N 段并发喂多模态模型(agy: Gemini `view_file` 读段文件),每段产笔记 | `notes/*.note.md` |
 | aggregate | 按集聚合 | `episode-notes/*.md` + `ALL-NOTES.md` |
 
-## 采样精度调参 (MiMo 原生采样层)
+## 采样精度调参
+**agy 后端没有 fps/media_resolution 旋钮**(Gemini 自定采样;实测 170 s 段 ~44K 输入 token、~11 s);`--fps`/`--scale` 只决定本地转码。下面三条只对 `--backend mimo` 生效:
 `run.py` 显式对齐 MiMo 的 fps/media_resolution,别用 API 默认值坑自己:
 - **`--fps`(默认 1)** = 本地抽帧率 = 帧数上限,也作为 API 采样率发过去(两层对齐,否则本地多转的帧被 API 默认 2fps 截断)。纯口播留 1;**画面有翻页/逐步 build 动画升 2**(时序 grid 内两帧相隔 0.5s,接得住转场;fps>2 才涨时间戳 token,一般没必要)。
 - **`--media-resolution`(默认 max)** = 按送进去的分辨率读画面文字。`default` 档每帧封顶 ~300 token≈739px,会把 960×540 压糊、读不清密集代码 → 本管线读文字故默认 `max`;纯口播省钱可切 `default`。
 - **`--scale`(默认 960)** 视频宽,配 `max` 才真正生效;极密代码可临时 1280。
 
 ## 关键坑 (已在脚本内根除,勿回退)
+- **agy 拒答当笔记**:Gemini 安全过滤与 `CANNOT_READ_VIDEO` 都是偶发(同段 3 连拒,单独再跑又过)。脚本认出拒答→重试;仍拒则 aggregate 写显式缺口,不聚合拒答文本。
+- **agy json 截断**:`--output-format json` 偶发 response=`{truncated:true}` → 脚本用 stream-json,坏了拼 text_delta。
+- **密钥进笔记**:画面常有 `export XXX_KEY=…`,prompt 钉「密钥写 `<redacted>`」。
 - **段切 IDR**:必须逐段从原集 `-ss` 精确切 + `-force_key_frames`,不用 segment muxer——否则非关键帧切断致后续段无 IDR,mimo 报 `Multimodal corrupted`。
 - **假 .mp4**:yt-dlp 不限 format 常落 webm 命名成 .mp4 → 下游 `glob('*.mp4')` 全空 → 笔记空。脚本钉 `--remux-video mp4` + ffprobe 校验视频流。
 - **超长视频帧上限**:API 单请求帧数上限 2048(时长×fps 触顶后截断);170s@1fps 段远低于此,靠**分段**规避,别一整集高 fps 直灌。
