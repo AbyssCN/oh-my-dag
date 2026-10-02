@@ -27,14 +27,19 @@
  *  · **超时由 AbortController 钉死,不重试。** 传感器与模型思考并行跑,迟到的读数没有用处。
  */
 
-/** 问题的 wire 形(typesafe-sdk-js 源码逐字)。本阶段只用 `noul`,`choice` 先留着形不用。 */
+/**
+ * 问题的 wire 形(typesafe-sdk-js 源码逐字)。传感器用 `noul`;勘察排序(`goal/survey-rank`)用 `score`
+ * (criteria 是**有序**级别,低→高,返回值是概率加权的位置,可落在两级之间)。`choice` 先留着形不用。
+ */
 export type JevQuestion =
   | { type: 'noul'; instructions: string }
-  | { type: 'choice'; instructions: string; criteria: Record<string, string | null> };
+  | { type: 'choice'; instructions: string; criteria: Record<string, string | null> }
+  | { type: 'score'; instructions: string; criteria: string[] };
 
 /** 一问的答。字段按问题类型填,不出现的键就是不适用 —— **不要**拿 0 顶替缺席(仓规 §静默坑 1)。 */
 export interface JevAnswer {
   noul?: number;
+  score?: number;
   choice?: string;
   probabilities?: Record<string, number>;
   confidence?: number;
@@ -66,6 +71,7 @@ function toAnswer(raw: unknown): JevAnswer {
   const o = raw as Record<string, unknown>;
   const out: JevAnswer = {};
   if (typeof o.noul === 'number') out.noul = o.noul;
+  if (typeof o.score === 'number') out.score = o.score;
   if (typeof o.choice === 'string') out.choice = o.choice;
   if (o.probabilities !== null && typeof o.probabilities === 'object') {
     out.probabilities = o.probabilities as Record<string, number>;

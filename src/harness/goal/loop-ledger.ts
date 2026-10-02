@@ -384,6 +384,11 @@ export interface LoopLedger {
    */
   goalRecall?: import('./goal-recall').GoalRecallFacts;
   /**
+   * 勘察包第 8 段 (Jev 文件排序, 2026-10-02, 见 `./survey-rank`)。三态: 整格缺席 = 没开 (`OMD_SURVEY_RANK` 不是 `1`);
+   * 在场且 `scored: 0` = 开了没打成 (`why` 在场)。在线实验要收 top / ms / inputTokens 与 conductor 只读步数。
+   */
+  surveyRank?: import('./survey-rank').SurveyRankFacts;
+  /**
    * 判据三候选共识的一致性读数 (2026-09-05, 见 `./criterion-consensus`)。
    *
    * 挂这里的理由同上面两格: 只有 `r.loop` 整份 JSON 出得了 bench 容器。

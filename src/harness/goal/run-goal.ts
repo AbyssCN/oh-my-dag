@@ -124,6 +124,7 @@ import { buildLoopSurveyPack, conductorCtxOf, conductorGoalOf, withLoopConfig, t
 import { authorCriterionCrossFamily, type CriterionAuthorResult } from './criterion-author';
 import { buildSpecPack, specPackEnabled, type SpecPack } from './spec-pack';
 import { buildGoalRecall, goalRecallEnabled, type GoalRecall } from './goal-recall';
+import { buildSurveyRank, surveyRankEnabled, type SurveyRank } from './survey-rank';
 
 // D-I: 两条轴的类型与分类器都归 ./acceptance (那里是判据轴的单一真源); 此处 re-export 保旧调用面。
 export type { AcceptanceSpec, GoalClassification, GoalTier } from './classify-acceptance';
@@ -2178,6 +2179,17 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
     const text = loopSurveyPack.text === '' ? goalRecall.text : `${loopSurveyPack.text}\n\n${goalRecall.text}`;
     loopSurveyPack = { ...loopSurveyPack, text, facts: { ...loopSurveyPack.facts, chars: text.length } };
   }
+  // 第 8 段 Jev 文件排序 (2026-10-02, 见 ./survey-rank): 同一条注入口追加到末尾。默认关 (`OMD_SURVEY_RANK=1` 才开),
+  // 关着时这里一个字节都不动。`loop.surveyRank` 单列读数, `loop.surveyPack.chars` 开着时含这一段。
+  let surveyRank: SurveyRank | undefined;
+  if (loopPlan !== undefined && loopSurveyPack && surveyRankEnabled()) {
+    surveyRank = await buildSurveyRank(conductorGoalOf(loopPlan, task), config.cwd);
+    logger.info({ ...surveyRank.facts }, '[omd/goal] Jev 给候选源文件打分 (勘察包第 8 段)');
+    if (surveyRank.text) {
+      const text = loopSurveyPack.text === '' ? surveyRank.text : `${loopSurveyPack.text}\n\n${surveyRank.text}`;
+      loopSurveyPack = { ...loopSurveyPack, text, facts: { ...loopSurveyPack.facts, chars: text.length } };
+    }
+  }
   // D-9 开关: 默认关 (先当单变量臂)。⚠ 只有显式 `cross` 才开, 其余取值 (含缺席/空串/'1') 一律照旧,
   // 存量行为逐字节不变 —— 那是对照臂能成立的前提。
   if (loopPlan !== undefined && runnable && process.env.OMD_CRITERION_AUTHOR?.trim() === 'cross') {
@@ -3128,6 +3140,8 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
         ...(specPack ? { specPack: { ...specPack.facts, ...(specPack.why ? { why: specPack.why } : {}) } } : {}),
         // 召回读数 (2026-09-11): 缺席 = 没开; 在场 admitted 0 = 开了没命中 (why 在场)。
         ...(goalRecall ? { goalRecall: goalRecall.facts } : {}),
+        // 第 8 段读数 (2026-10-02): 缺席 = 没开; 在场 scored 0 = 开了没打成 (why 在场)。
+        ...(surveyRank ? { surveyRank: surveyRank.facts } : {}),
         // R4 异族先写判据读数 (2026-09-06): 同一条理由挂在 loop 上。缺席 = 开关没开 (三态见 LoopLedger.criterionAuthor)。
         ...(loopLedger.criterionAuthor ? { criterionAuthor: loopLedger.criterionAuthor } : {}),
         // R5 并行实装扇出读数 (2026-09-06): 同一条理由挂在 loop 上。缺席 = 没扇出 (三态见 LoopLedger.fanout)。
