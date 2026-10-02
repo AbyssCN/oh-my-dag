@@ -274,7 +274,8 @@ import { applyPoisonRollback, planPoisonRollback } from '../writeset/poison-roll
 import { ModelError, isTransientModelFault } from '../../model';
 import { classifyCommandExit, withFailureKind, upstreamFailureNotice, type NodeFailureKind } from '../node-failure';
 import { collectRepairGuidance, loadRepairFingerprints } from './repair-guidance';
-import { livePin } from '../../model/provider-health';
+import { inCooldown, livePin, reportProviderFailure } from '../../model/provider-health';
+import { roleModelWithFallback } from '../../model/role-fallback';
 import { makeRunNonce, fenceUntrusted } from '../prompt-fence';
 import type { ContentPart } from '../../model/gateway';
 // D-1 责备集 (SDD 2026-08-10-blame-scoped-node-retry): verifier 打回的结构化点名 → 失效闭包。
@@ -2330,7 +2331,15 @@ async function executePlan(
           '[omd/executor-dag] plan pin 座位在冷却窗 → dispatch 就地重解析 (死座不复活, 样本 B/C)',
         );
       }
-      const model = alivePin ?? (config.router ? config.router.select(bucket, staticModel) : staticModel);
+      const resolvedModel = alivePin ?? (config.router ? config.router.select(bucket, staticModel) : staticModel);
+      // 默认座位也过存活闸 (2026-10-02, plana 实账): 上面只查了 pin, 节点走默认 agent 座时死座照打 ——
+      // MiniMax 529 过载的叶子三发 L0 重试全打回同一个过载集群, 24/41 个 worker 失败是这一类。
+      // 冷却中 → 走 role-fallback 兜底链 (跳过冷却 channel); 链上无可用 → 原样返回, 行为同改前。
+      const model =
+        resolvedModel !== undefined && inCooldown(resolvedModel) ? roleModelWithFallback(resolvedModel, bucket) : resolvedModel;
+      if (model !== resolvedModel) {
+        logger.warn({ node: id, from: resolvedModel, to: model }, '[omd/executor-dag] 默认座位在冷却窗 → 换到兜底链上的可用坐标');
+      }
       const t0 = Date.now();
       // ── 声明产物的**跑前快照** (2026-07-30 live 冒烟挖出来的) ────────────────────
       // `filesTouched` 只统计 write/edit 族工具。agent 用 **bash 重定向** 写文件时它是空的 ——
@@ -3377,6 +3386,10 @@ async function executePlan(
       const cap = transient ? Math.max(budgetFor(thrown, leaf), TRANSIENT_PROVIDER_ATTEMPTS - 1) : budgetFor(thrown, leaf);
       if (attempt >= cap) break; // 预算用尽 (oracle 域判否越过 max_retry; 抛错补一次, 见 budgetFor; 瞬时 provider 故障抬到三发)
       if (transient) {
+        // 冷却在**本进程**登记 (2026-10-02): 沙箱叶在子进程里报的冷却留在子进程内存, 父引擎看不见,
+        // 下一发仍解析到同一坐标。从抛错原文取 `model=` 坐标, 这里补登记一次 —— 下一发的存活闸据此换座。
+        const failedCoord = /\(model=([^)\s]+)\)/.exec(transientMsg ?? '')?.[1];
+        if (failedCoord) reportProviderFailure(failedCoord);
         const delayMs = transientProviderDelayMs(attempt);
         logger.warn({ node: id, attempt, delayMs, cause: transientMsg?.slice(0, 160) }, '[omd/executor-dag] 瞬时 provider 故障 → 退避后重试');
         await new Promise<void>((r) => setTimeout(r, delayMs));

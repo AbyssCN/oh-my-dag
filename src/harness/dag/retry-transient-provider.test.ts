@@ -81,3 +81,42 @@ describe('瞬时 provider 故障 → L0 退避重试', () => {
     expect(transientProviderDelayMs(0)).toBe(5000);
   });
 });
+
+describe('瞬时 provider 故障 → 重试换到兜底链上的可用坐标 (2026-10-02, plana 实账 24/41 worker 失败是 MiniMax 529)', () => {
+  /**
+   * 此前: 三发 L0 重试全打回同一个过载坐标 (沙箱叶的冷却登记在子进程, 父引擎看不见; 默认座位不过存活闸)。
+   * **证伪方式**: 删掉 engine.ts 重试环里的 `reportProviderFailure(failedCoord)` → 第二发仍是 deadprov:m, ★④ 红;
+   * 删掉解析处的 `inCooldown(resolvedModel) ? roleModelWithFallback(...)` → 同样红。
+   */
+  test('★④ 首发 529 → 第二发换到兜底 provider, 成功收尾', async () => {
+    process.env.OMD_PROVIDER_RETRY_BASE_MS = '0';
+    const { registerProvider, listProviders, getProvider, clearProviders } = await import('../../model/providers');
+    const { resetProviderCooldowns } = await import('../../model/provider-health');
+    const snapshot = listProviders().map((n) => [n, getProvider(n)!] as const);
+    registerProvider('omdtestfb', { baseUrl: 'http://127.0.0.1:9', apiKey: 'k', api: 'openai-compatible', defaultModel: 'fbm' });
+    const cwd = mkdtempSync(join(tmpdir(), 'omd-transient-fb-'));
+    const models: (string | undefined)[] = [];
+    const agentRunner: AgentLeafRunner = (async (input: { model?: string }) => {
+      models.push(input.model);
+      if (input.model === 'deadprov:m') {
+        throw new Error('[agent-leaf] provider 报错 (model=deadprov:m): 529: {"type":"overloaded_error"}');
+      }
+      return { text: '做完了。', usage: { in: 1, out: 1 }, filesTouched: [], cwd };
+    }) as unknown as AgentLeafRunner;
+    const generate: GenerateFn = (async () => ({ text: 'x', usage: { in: 0, out: 0 } })) as unknown as GenerateFn;
+    const plan: ConductorPlan = { name: 'p', nodes: { W: { goal: '干活', executor: 'agent' } } };
+    const config = { cwd, agentRunner, generate, leafModel: 'deadprov:m', agentLeafModel: 'deadprov:m' } as unknown as ExecutorDagConfig;
+    try {
+      const r = await runExecutorDagWithPlan(plan, config);
+      expect(models[0]).toBe('deadprov:m');
+      expect(models.length).toBeGreaterThanOrEqual(2);
+      expect(models[1]).not.toBe('deadprov:m');
+      expect(r.results.W?.status).toBe('done');
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+      resetProviderCooldowns();
+      clearProviders();
+      for (const [n, cfg] of snapshot) registerProvider(n, cfg);
+    }
+  });
+});
