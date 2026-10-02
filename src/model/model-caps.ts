@@ -129,7 +129,9 @@ export const MODEL_CAPS: readonly ModelCaps[] = [
   {
     // developers.openai.com/api/docs/guides/reasoning: gpt-5.6 用 reasoning.mode + reasoning.effort,
     // max 为 Sol 专属。经 pi transport 走 Responses API, maxTokens 语义为 max_output_tokens。
-    match: /^gpt-5/,
+    // gpt-6 系 (gpt-6-sol / gpt-6.1-sol) 走同一条 Codex 通道: 2026-10-02 gpt-6.1-sol 带 temperature
+    // 同样 400 → 并入本条。effort 词表 codex models_cache 里是 gpt-5.6 的超集; maxOutput 沿用, 未实测。
+    match: /^gpt-[56]/,
     maxOutput: 128_000,
     efforts: ['low', 'medium', 'high', 'max'],
     // Codex 通道一带 temperature 就 400:`Unsupported parameter: temperature`(2026-07-31 实测)。

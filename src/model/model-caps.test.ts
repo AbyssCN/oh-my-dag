@@ -86,6 +86,8 @@ describe('samplingFor —— 过滤 + 丢弃告警', () => {
     _resetDroppedKnobShoutForTest();
     // gpt-5 只登记了拒 temperature (topP 未验过, 刻意没列)。
     expect(samplingFor('gpt-5.6-sol', { temperature: 0.7, topP: 0.9 })).toEqual({ topP: 0.9 });
+    // gpt-6 系同一条 Codex 通道, 同样拒 temperature (2026-10-02 gpt-6.1-sol 实测 400)。
+    expect(samplingFor('gpt-6.1-sol', { temperature: 0.7, topP: 0.9 })).toEqual({ topP: 0.9 });
     // kimi-k3 两个都拒。
     expect(samplingFor('kimi-k3', { temperature: 0.7, topP: 0.9 })).toEqual({});
   });
