@@ -567,3 +567,50 @@ describe('S3: read_skill 经 leaf 装配 (tmp cwd + 注入 roots, D-S3-9 不碰�
     expect(seen.options?.allowedTools).toContain('mcp__omd__mcp_call');
   });
 });
+
+describe('★ bash 超时上限 + 超时带回已产出输出 (2026-10-02)', () => {
+  /**
+   * 来由: code30 实测模型自传 `timeout: 900` 跑整份慢测试, 单次 896 s; 而超时报错只有 `timeout:120`,
+   * 跑了几分钟的输出全丢。
+   * **证伪方式**: 删掉 `Math.min(requested, maxTimeout)` → 第一条不再抛 (sleep 3 跑完) 红;
+   * 删掉超时分支里的 tail → 前两条找不到 `partial-out` 红。
+   */
+  const tools = (o: { bashTimeoutSec?: number; bashMaxTimeoutSec?: number }) =>
+    Object.fromEntries(createOmdAgentTools({ cwd: fixture(), ...o }).map((t) => [t.name, t]));
+
+  it('模型给的 timeout 超过上限 → 截到上限, 报错带上限与原值', async () => {
+    const { bash } = tools({ bashMaxTimeoutSec: 1 });
+    const t0 = Date.now();
+    const err = await run(bash!, { command: 'echo partial-out; sleep 3', timeout: 900 }).then(
+      () => null,
+      (e: Error) => e,
+    );
+    expect(err).not.toBeNull();
+    expect(err!.message).toContain('已被截到上限 1 s');
+    expect(err!.message).toContain('900');
+    expect(err!.message).toContain('partial-out');
+    expect(Date.now() - t0).toBeLessThan(2900);
+  });
+
+  it('默认超时也带回已产出输出, 且不说「被截」', async () => {
+    const { bash } = tools({ bashTimeoutSec: 1 });
+    const err = await run(bash!, { command: 'echo partial-out; sleep 3' }).then(
+      () => null,
+      (e: Error) => e,
+    );
+    expect(err!.message).toContain('partial-out');
+    expect(err!.message).toContain('单条命令最长 300 s');
+    expect(err!.message).not.toContain('已被截到');
+  });
+
+  it('上限之内的 timeout 原样生效; 不超时的命令行为不变', async () => {
+    const { bash } = tools({ bashMaxTimeoutSec: 5 });
+    expect(text(await run(bash!, { command: 'echo fine', timeout: 4 }))).toContain('fine');
+    const err = await run(bash!, { command: 'sleep 3', timeout: 1 }).then(
+      () => null,
+      (e: Error) => e,
+    );
+    expect(err!.message).toMatch(/timeout/i);
+    expect(err!.message).not.toContain('已被截到');
+  });
+});

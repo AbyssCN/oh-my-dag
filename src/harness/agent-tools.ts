@@ -470,7 +470,7 @@ const GREP_SCHEMA = Type.Object({
 });
 const BASH_SCHEMA = Type.Object({
   command: Type.String({ description: 'Shell command to run in the working root.' }),
-  timeout: Type.Optional(Type.Number({ description: 'Timeout in seconds. Default 120.' })),
+  timeout: Type.Optional(Type.Number({ description: 'Timeout in seconds. Default 120, max 300 (larger values are capped).' })),
 });
 /** `run_acceptance` 的参数面: **没有 command**(D-6)。`round` 只是给模型自己计数用的可选注记。 */
 const RUN_ACCEPTANCE_SCHEMA = Type.Object({
@@ -506,6 +506,10 @@ function imageMimeFor(path: string): string | null {
  * 常见 build/test transcript，同时把每条失控命令额外占用的内存和磁盘写入量锁在单个数量级内。
  */
 const BASH_SPILL_MAX_BYTES = 10 * 1024 * 1024;
+/** bash 单条命令超时上限 (秒), 见 {@link OmdAgentToolsOpts.bashMaxTimeoutSec}。 */
+export const BASH_MAX_TIMEOUT_SEC = 300;
+/** 超时报错里带回的末尾输出字符数 —— 模型据此知道超时前跑到哪了, 不用整条重跑。 */
+const BASH_TIMEOUT_TAIL_CHARS = 2000;
 
 export interface OmdAgentToolsOpts {
   /**
@@ -581,6 +585,12 @@ export interface OmdAgentToolsOpts {
   /** bash 单条命令默认超时 (秒)。默认 120。 */
   bashTimeoutSec?: number;
   /**
+   * bash 单条命令超时**上限** (秒)。默认 {@link BASH_MAX_TIMEOUT_SEC}。模型给的 `timeout` 超过它就截到它。
+   * 来由 (2026-10-02 code30 实测): 模型自己传 `timeout: 900` 跑整份慢测试文件, 单次 896 s,
+   * 3 次调用占 30 题总墙钟约 10%; 默认 120 一直正常生效, 漏的是「模型自报上限」这一口。
+   */
+  bashMaxTimeoutSec?: number;
+  /**
    * `grep` 一次最多走多少个文件。默认 {@link GREP_WALK_LIMIT}。
    *
    * ⚠ **存在的理由是"让上限可测"**,不是给人调的旋钮:上限一旦静默,症状就是
@@ -630,6 +640,7 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
   const guardDangerous = opts.dangerousCommandGuard !== false;
   const commandPolicy = opts.commandPolicy ?? DEFAULT_SANDBOX_CONFIG;
   const defaultTimeout = opts.bashTimeoutSec ?? 120;
+  const maxTimeout = opts.bashMaxTimeoutSec ?? BASH_MAX_TIMEOUT_SEC;
   /**
    * 围栏的可写边界 = `root` + 额外逃生口 + `/tmp`(bwrap 那侧是 tmpfs,这侧的 write/edit
    * 落在宿主真 `/tmp` —— 不一致但两边都"能写",而收紧到不许写 /tmp 会打断一堆正常用法)。
@@ -1187,8 +1198,11 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
             execOptions?.onStderr?.(chunk);
           },
         });
+      // 超时上限 (① 边界): 模型自报的 timeout 截到 maxTimeout; 被截时报错原文带上限与原值, 模型才知道该缩小范围。
+      const requested = timeout && timeout > 0 ? timeout : defaultTimeout;
+      const effectiveTimeout = Math.min(requested, maxTimeout);
       const r = await executeShellWithCapture(execEnv, toRun, {
-        timeout: timeout && timeout > 0 ? timeout : defaultTimeout,
+        timeout: effectiveTimeout,
         ...(signal ? { abortSignal: signal } : {}),
         ...(onUpdate
           ? {
@@ -1206,7 +1220,21 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
             }
           : {}),
       });
-      if (!r.ok) throw new Error(`bash 失败: ${r.error.message}`);
+      if (!r.ok) {
+        // 超时: 带回已产出的末尾输出 (rawOutput 旁路一直在收) + 上限原文。此前只回 `timeout:120`,
+        // 一条跑了几分钟的测试超时后模型什么都看不到, 只能整条重跑。
+        if (/timeout/i.test(r.error.message)) {
+          const partial = sanitizeBinaryOutput(rawOutput.subarray(0, rawOutputBytes).toString('utf8'));
+          const tail = partial.length > BASH_TIMEOUT_TAIL_CHARS ? `…${partial.slice(-BASH_TIMEOUT_TAIL_CHARS)}` : partial;
+          const capped = requested > maxTimeout ? ` (你给的 timeout ${requested} s 已被截到上限 ${maxTimeout} s)` : '';
+          throw new Error(
+            `bash 失败: ${r.error.message}${capped}。单条命令最长 ${maxTimeout} s —— 慢测试请缩小范围 ` +
+              `(单个测试文件 / -k 选测试 / -x 首错即停)。` +
+              `\n超时前的输出${tail ? `末尾:\n${tail}` : ': (无)'}`,
+          );
+        }
+        throw new Error(`bash 失败: ${r.error.message}`);
+      }
       const { output, exitCode, cancelled, truncated } = r.value;
       // 出口清洗: 正文过一遍 `sanitizeBinaryOutput`(通常是 no-op, 因为上面已证 `output` 到手时
       // 早被 pi 内部清过 —— 这里仍显式做一遍是防御性的, 不依赖上游行为不变)。`sanitized`
