@@ -63,8 +63,8 @@ const DYNAMIC_ENTRIES: Record<string, string> = {
   // 'src/harness/session/ledger.ts' 的豁免 2026-08-19 (#206) 删除 —— 照它自己写的退出条件:
   // 「消费点若哪天进了 src/ 或 scripts/, 请删掉本条豁免」。消费点进来了:
   // `scripts/session-continuity-hook.ts` 静态 import `appendLedger`。本闸当场抓到,没靠人记得。
-  'src/tui/ext/runner.ts':
-    '扩展子进程的入口, 按**路径字符串**拉起: `tui/ext/host.ts` 的 ' +
+  'src/harness/ext/runner.ts':
+    '扩展子进程的入口, 按**路径字符串**拉起: `harness/ext/host.ts` 的 ' +
     '`join(import.meta.dir, \'runner.ts\')` → `bwrap [binds] bun run <它> <扩展入口>`。\n' +
     '⚠ 它是**唯一 import 第三方扩展代码的地方**, 而宿主 (host.ts) 永远不 import 扩展 —— ' +
     '这条边界正是沙箱成立的前提, 所以它必须在子进程里, 也就必然不在静态 import 图上。',

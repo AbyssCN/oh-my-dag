@@ -175,7 +175,7 @@ do not translate to a one-shot command:
 
 | Tool | Why no CLI command |
 |---|---|
-| `conductor_chat` | Multi-turn session state lives in `serve` / the TUI; a one-shot CLI invocation has no session to attach to |
+| `solve` | Taken over by `omd solve` (`src/harness/cli-solve.ts`), not the generic registry path |
 
 If you find yourself wanting one of these from a script, the right primitive is usually
 `omd run` against a small wrapper, not a CLI command.
@@ -183,7 +183,7 @@ If you find yourself wanting one of these from a script, the right primitive is 
 ## Getting help
 
 - `omd --help` — prints USAGE (the registry-driven command list plus the legacy
-  `mcp`/`tui`/`serve`/`init`/... section, all generated from the table).
+  `mcp`/`init`/... section, all generated from the table).
 - `omd <command> --help` — every named command renders its `--key <type>` flags from the
   underlying tool's `inputSchema`, with 必填 / 可选 markers.
 - Full MCP-tool reference: [MCP tools](mcp-tools.md) — every command here maps to one

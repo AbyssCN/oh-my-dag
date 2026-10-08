@@ -22,7 +22,6 @@ export interface CliCommand {
 
 /** Tools intentionally without a one-shot named command. */
 export const MCP_ONLY: Readonly<Record<string, string>> = {
-  conductor_chat: '多轮会话状态只存在 serve/TUI 中, CLI 单发没有会话',
   // 不是"没有命令": `omd solve` 由 cli-solve.ts 单独接管 (goal-worker 通路 + resultOut 退出码映射),
   // 不走通用注册面 (findCommand 对 solve 返 undefined)。登记在这里只为对账闸 (D-3) 不漏它。
   solve: '由 src/harness/cli-solve.ts 单独接管 (omd solve), 不走通用注册面',

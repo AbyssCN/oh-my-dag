@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import type { ConfigIssue } from './issues';
 import { readDeclaredPlans } from './config-discovery';
 import { loadMcpClientConfig } from '../mcp/client/config';
-import { readExtensionList } from '../tui/ext/host';
+import { readExtensionList } from '../harness/ext/host';
 
 let dirs: string[] = [];
 function tmp(): string {

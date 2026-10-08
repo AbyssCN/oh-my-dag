@@ -11,7 +11,6 @@ import { describe, expect, test } from 'bun:test';
 import { createGhBackend } from './backend-gh';
 import { waitingHumanState } from './frontier';
 import { ghWaitingReminderBody, parseStaleAt } from './notify-gh';
-import { dispatchPhaseOf } from '../../serve/board-page';
 import type { GhResult, GhRunner } from './backend';
 import type { PathMap, WaitingLogEntry } from './types';
 
@@ -841,8 +840,6 @@ describe('归因剥离: gh 出口的 --body/--title 不放行 session 链接与�
         fakeGh(() => okr(mapResp([ruledSub(['Dispatch-open: run-1 2026-08-19T00:00:00Z', 'Dispatch-settle: 2026-08-19T01:00:00Z passed'])]))),
       ).readMap('/tmp', '5')!.tickets[0]!;
       expect(t.dispatch).toEqual({ runId: 'run-1', startedAt: '2026-08-19T00:00:00Z', finishedAt: '2026-08-19T01:00:00Z', outcome: 'passed' });
-      // 这张票在 board 上落 in-review: 锚在 · 有 finishedAt · 票仍 ruled。
-      expect(dispatchPhaseOf(t)).toBe('in-review');
     });
 
     test('★ 幂等: 已有 open 锚不重打; 已 settle 的不覆写 (第一次的真相是这次派发的真相)', () => {

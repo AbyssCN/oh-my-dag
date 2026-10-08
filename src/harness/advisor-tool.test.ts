@@ -1,16 +1,11 @@
 /**
- * 内部升档 advisor 契约测试。钉四条:recorder 截断/封顶口径(抄 hknet 实测数)/
- * 工具单发把 transcript 真交给 advisor 坐标 / advisor 失败响亮(反向自检)/
- * chat pi 路注入(工具面 + prompt 面 + seed 既往会话)。
+ * 内部升档 advisor 契约测试。钉三条:recorder 截断/封顶口径(抄 hknet 实测数)/
+ * 工具单发把 transcript 真交给 advisor 坐标 / advisor 失败响亮(反向自检)。
+ * (chat pi 路注入那条随对话位 2026-10-08 S1 删除。)
  */
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { describe, expect, test } from 'bun:test';
 import type { AgentEvent, AgentMessage } from '@earendil-works/pi-agent-core';
 import { ADVISOR_SYSTEM_PROMPT, createAdvisorTool, createTranscriptRecorder } from './advisor-tool';
-import { runChatTurn } from './chat/agent';
-import { createOmdSessionStore, resetSessionCacheForTest } from './chat/session-store';
 
 describe('transcript recorder', () => {
   test('★ 三类事件入录;参数 ≤800 / 结果 ≤2000 截断可见(带余量标注)', () => {
@@ -67,39 +62,5 @@ describe('advisor 工具', () => {
       callModelFn: async () => { throw new Error('advisor 掉线'); },
     });
     await expect(tool.execute('id1', {} as never)).rejects.toThrow('advisor 掉线');
-  });
-});
-
-describe('chat pi 路注入', () => {
-  let root: string;
-  beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), 'omd-advisor-chat-'));
-    resetSessionCacheForTest();
-  });
-  afterEach(() => rmSync(root, { recursive: true, force: true }));
-
-  test('★ opts.advisor 在 → 本轮工具面含 advisor 且 prompt 面列举它;不在 → 都不在(不自动选)', async () => {
-    const store = createOmdSessionStore(root);
-    const seen: { tools?: string[]; systemPrompt?: string } = {};
-    const fakeLoop = async (
-      prompts: AgentMessage[],
-      context: { messages: AgentMessage[]; tools: { name: string }[]; systemPrompt: string },
-    ): Promise<AgentMessage[]> => {
-      seen.tools = context.tools.map((t) => t.name);
-      seen.systemPrompt = context.systemPrompt;
-      return [...prompts, { role: 'assistant', content: [{ type: 'text', text: 'ok' }], timestamp: 2, stopReason: 'stop' } as unknown as AgentMessage];
-    };
-    await runChatTurn({
-      store, sessionId: 's1', prompt: 'x', model: 'deepseek:deepseek-v4-flash', cwd: root,
-      advisor: 'openai-codex:gpt-5.6-sol', loopFn: fakeLoop as never,
-    });
-    expect(seen.tools).toContain('advisor');
-    expect(seen.systemPrompt).toContain('advisor — consult a stronger reviewer model');
-
-    await runChatTurn({
-      store, sessionId: 's2', prompt: 'x', model: 'deepseek:deepseek-v4-flash', cwd: root,
-      loopFn: fakeLoop as never,
-    });
-    expect(seen.tools).not.toContain('advisor');
   });
 });

@@ -1,14 +1,14 @@
 /**
  * src/harness/skills/skills —— 方法论 skill 扫描与加载 (开放生态 S3 共享层, 真源唯一)。
  *
- * 从 src/tui/skills.ts 迁出扫描/加载件; TUI 侧 re-export 或改 import (O-S3-2)。
+ * 从 src/tui/skills.ts 迁出扫描/加载件 (TUI 已于 2026-10-08 S1 删除)。
  * defaultSkillRoots 新增项目级根 <cwd>/.omd/skills (D-S3-3)。
  */
 import { existsSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { applySkillArguments } from '../../tui/tools/skill-tool';
+import { applySkillArguments } from './skill-arguments';
 import { loadSkillSource } from './compile';
 
 /** 注入块的定界符。两端都要有(同 memory-inject:只有开头的话正文会被读成 skill 内容)。 */
@@ -169,7 +169,7 @@ export function loadSkillBlock(name: string, rest: string, roots: readonly strin
     `${SKILL_OPEN}\n` +
     `以下是 omd 的方法论 skill 「${name}」。**它是本轮的额外纪律,不是一件要执行的任务** ——\n` +
     '按它的做法办事;它与用户当前要求冲突时以用户为准。\n';
-  // 占位符替换真源在 src/tui/tools/skill-tool.ts 的 applySkillArguments (rest → parseCommandArgs → substituteArgs)。
+  // 占位符替换真源在 ./skill-arguments.ts 的 applySkillArguments (rest → parseCommandArgs → substituteArgs)。
   const body = applySkillArguments(src.body.trim(), rest);
   const tail = rest ? `\n用户补充: ${rest}\n${SKILL_CLOSE}` : `\n${SKILL_CLOSE}`;
   return { name, block: `${head}\n${body}${tail}` };

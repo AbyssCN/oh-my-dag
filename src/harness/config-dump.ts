@@ -19,7 +19,7 @@ import { readSeatOverrides } from '../model/seat-overrides';
 import { tryResolveSeatModel } from '../model/role-models';
 import { reportPools, renderPoolReport } from '../model/pool-report';
 import { langfuseStatus } from '../model/langfuse';
-import { readExtensionList } from '../tui/ext/host';
+import { readExtensionList } from './ext/host';
 
 export interface ConfigDumpOpts {
   cwd: string;

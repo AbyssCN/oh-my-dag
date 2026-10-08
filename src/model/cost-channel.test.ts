@@ -1,20 +1,18 @@
 /**
  * 订阅通道账契约(owner 验收 P2,2026-08-10):cost = NULL 非 $0,判别靠 channel 列。
  * 三态互斥的反向自检:计价(数字)/ unpriced(价表缺)/ subscription(不是美元资源)——
- * 三者在行上必须分得开,且周预算闸对订阅行**跳过而非读数不可用**。
+ * 三者在行上必须分得开(周预算闸那条随 `mcp/budget` 2026-10-08 S1 删除)。
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { channelOf, computeCost } from './cost-ledger';
-import { createTuiUsageLedger } from '../tui/usage/ledger';
-import { checkWeeklyBudget, resetBudgetLedgerMemoForTest } from '../mcp/budget';
+import { createTuiUsageLedger } from './usage-ledger';
 
 let dir: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'omd-cost-channel-'));
-  resetBudgetLedgerMemoForTest();
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -48,20 +46,5 @@ describe('账本行 + 合计', () => {
     expect(t.calls).toBe(2); // token 行照数
     expect(Number.isFinite(t.costUsd)).toBe(true); // 不许 NaN
     expect(t.costUsd).toBeGreaterThan(0); // deepseek 那笔还在
-  });
-});
-
-describe('周预算闸', () => {
-  test('★ 订阅行整行跳过:不进 USD 合计、不把闸读成不可用;API 行照常计', () => {
-    const now = Date.now();
-    const rows = [
-      { ts: now, model: 'deepseek:deepseek-v4-flash', source: 'engine', in: 10, out: 1, cacheHit: 0, costUsd: 2.5, unpriced: false },
-      { ts: now, model: 'claude-code:claude-sonnet-5', source: 'engine', in: 10, out: 1, cacheHit: 0, costUsd: null, unpriced: false, channel: 'subscription' },
-    ];
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, 'tui-usage.jsonl'), `${rows.map((r) => JSON.stringify(r)).join('\n')}\n`);
-    const s = checkWeeklyBudget({ dir, env: { OMD_WEEKLY_BUDGET_USD: '50' } });
-    expect(s.costUsd).toBe(2.5); // 只有 API 行;null = 读数不可用,这里必须是数字
-    expect(s.calls).toBe(1); // 订阅行整行跳过(calls 也不计 —— 它不占美元预算的样本)
   });
 });

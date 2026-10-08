@@ -8,7 +8,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createPathfinderTools, type PathfinderToolDeps } from './pathfinder';
 import { loadMap, saveMap } from '../../harness/pathfinder/map-store';
-import { dispatchPhaseOf } from '../../serve/board-page';
 import type { Ticket } from '../../harness/pathfinder/types';
 import { createOmdMemory } from '../../harness/memory/store';
 import { validateFactWrite } from '../../memory/safeguards/validator';
@@ -619,7 +618,6 @@ describe('D-6③ 派发锚: 票 → runId', () => {
       // runId 形状 = `<destination-slug>-<6hex>` (src/harness/dag/run-id.ts mintRunId) —— 任务可读、撞名有防。
       expect(midRun!.dispatch!.runId).toMatch(/^ship-x-[0-9a-f]{6}$/);
       expect(midRun!.dispatch!.finishedAt).toBeUndefined(); // 还在跑
-      expect(dispatchPhaseOf(midRun!)).toBe('in-flight');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -637,7 +635,6 @@ describe('D-6③ 派发锚: 票 → runId', () => {
       expect(t.status).toBe('delivered');
       expect(t.dispatch!.outcome).toBe('passed');
       expect(t.dispatch!.finishedAt).toBeTruthy();
-      expect(dispatchPhaseOf(t)).toBeNull();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -656,7 +653,6 @@ describe('D-6③ 派发锚: 票 → runId', () => {
       expect(t.status).toBe('ruled'); // 失败不翻交付 (既有语义, 不动)
       expect(t.dispatch!.outcome).toBe('failed');
       // 证伪: 删掉失败分支里的 settle('failed') → finishedAt 缺席 → 相位变 in-flight (永远在跑)。
-      expect(dispatchPhaseOf(t)).toBe('in-review');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -674,20 +670,9 @@ describe('D-6③ 派发锚: 票 → runId', () => {
       const t = ticket(dir);
       // 证伪: 去掉 finally 里的 settle('failed') → finishedAt 缺席 → in-flight 永久悬挂。
       expect(t.dispatch!.finishedAt).toBeTruthy();
-      expect(dispatchPhaseOf(t)).toBe('in-review');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
-
-  test('dispatchPhaseOf 纯判据四格 (缺席 ≠ 在跑 ≠ 待验)', () => {
-    const base = { status: 'ruled' as const };
-    expect(dispatchPhaseOf(base)).toBeNull(); // 从没派发过
-    expect(dispatchPhaseOf({ ...base, dispatch: { runId: 'r', startedAt: 'x' } })).toBe('in-flight');
-    expect(dispatchPhaseOf({ ...base, dispatch: { runId: 'r', startedAt: 'x', finishedAt: 'y', outcome: 'failed' } })).toBe('in-review');
-    // 跑过了但 markDelivered 没执行到 (进程死在两步之间) 也算「跑完待验」—— 刻意不看 outcome。
-    expect(dispatchPhaseOf({ ...base, dispatch: { runId: 'r', startedAt: 'x', finishedAt: 'y', outcome: 'passed' } })).toBe('in-review');
-    expect(dispatchPhaseOf({ status: 'delivered', dispatch: { runId: 'r', startedAt: 'x', finishedAt: 'y', outcome: 'passed' } })).toBeNull();
   });
 });
 
