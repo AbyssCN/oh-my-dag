@@ -166,6 +166,8 @@ export async function runToolCallTurn(opts: ToolCallTurnOpts): Promise<ToolCallT
       permissionMode: 'bypassPermissions',
       abortController: ac,
       maxTurns: 1, // 单轮:工具由容器执行, 桥这边永远不进第二轮
+      // 一次性调用不写 ~/.claude/projects:否则每次校验 / 判断都成一个可 resume 的 session,挤满用户的 /resume 列表。
+      persistSession: false,
       ...(effort ? { effort } : {}),
       ...(opts.maxTokens !== undefined ? { maxTokens: opts.maxTokens } : {}),
     } as Options,

@@ -99,6 +99,8 @@ export async function sdkCompleteRaw(modelId: string, messages: ModelMessage[], 
       // (模型试发一次 tool_use —— 工具面空、非交互 = 自动 deny —— deny 也消耗一轮; 触发非确定,
       // 同形复现两次未塌但生产塌了)。8 = 有界余量: 工具全 deny 下多的轮只能是文本续写, 撑不爆。
       maxTurns: 8,
+      // 一次性调用不写 ~/.claude/projects:否则每次校验 / 判断都成一个可 resume 的 session,挤满用户的 /resume 列表。
+      persistSession: false,
       abortController: abort,
       ...(systemPrompt !== undefined ? { systemPrompt } : {}),
       ...(effort ? { effort } : {}),
