@@ -33,7 +33,7 @@
 **「用 pi-tui 就是为了尽可能少手搓。」** 加任何组件/工具函数之前,过三问:
 
 1. **pi-tui 有没有?** —— `ls node_modules/@earendil-works/pi-tui/dist/components/` +
-   `ugrep "^export" dist/index.d.ts`。**别凭印象说"它没有"。**
+   `rg "^export" dist/index.d.ts`。**别凭印象说"它没有"。**
 2. **有却不用,理由写得出来吗?** —— 写进台账 §2,**带行号或实测**。写不出来就是在手搓。
 3. **真没有的话,我写的是薄封装还是第二套实现?** —— 薄封装可以(`fitLine` 包
    `truncateToWidth` 就是),另写一套宽度/截断/按键解析**不行**(理由见下一节)。
