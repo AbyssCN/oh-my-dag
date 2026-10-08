@@ -1,5 +1,5 @@
 ---
-name: omd-ui-reviewer
+name: ui-reviewer
 description: Review rendered UI screenshots for hierarchy, spacing, readability, states, consistency, and visual slop.
 ---
 

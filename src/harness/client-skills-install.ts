@@ -1,12 +1,13 @@
 /**
- * client-skills 自装 —— `omd mcp` 启动副作用:把包内自带的 `omd-*` 客户端技能幂等铺进用户级
- * `~/.claude/skills/`,让「装了 omd MCP」的用户新会话即得 `/omd-path` `/omd-deepen` 等斜杠命令,
+ * client-skills 自装 —— `omd mcp` 启动副作用:把包内 `client-skills/` 下每个技能目录幂等铺进用户级
+ * `~/.claude/skills/`,让「装了 omd MCP」的用户新会话即得 `/grill` `/omd-council` 等斜杠命令,
  * 免手 `cp`。设计三条铁律(反 happy-path):
  *   ① best-effort —— 任何失败只 stderr 记一行, 绝不阻断/崩 MCP server(同 server 版本读的兜底范式);
  *   ② 不覆盖用户改过的 —— 每个技能记 SKILL.md 内容 hash 到中央清单 `.omd-skills.json`;
  *      目标存在且 hash ≠ 我们上次写的 → 判定用户动过(或第三方同名)→ 跳过, 不碰;
  *   ③ opt-out —— `OMD_INSTALL_SKILLS=0|false|no` 关掉整个自装。
  * 幂等: 每次启动都跑, 目标缺 → 装; 是我们写的且源变了 → 更; 用户改过/第三方 → 跳。包更新自动带新技能。
+ * 修剪: 清单里有、源里已没有(删掉或改名)的技能 → 目标仍是我们写的那份 → 删; 用户改过 → 留目录, 只撤清单条目。
  */
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -15,13 +16,13 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 
 const SKILL_FILE = 'SKILL.md';
-const PREFIX = 'omd-';
 const MANIFEST = '.omd-skills.json'; // 住 skills 根, 记我们写过的每个技能 hash → 区分"我们的未改" vs "用户改过/第三方"
 
 export interface InstallSummary {
   installed: string[];
   updated: string[];
   skipped: string[]; // 用户改过或第三方同名, 保留不碰
+  removed: string[]; // 源里已删/改名, 且目标仍是我们写的那份 → 删掉
   reason?: string; // 整体跳过原因 (opt-out / 无源 / 错误)
 }
 
@@ -54,7 +55,7 @@ function optedOut(): boolean {
  * @param srcRootOverride/dstRootOverride 仅测试注入; 生产走 resolve*。
  */
 export function installClientSkills(opts: { srcRoot?: string; dstRoot?: string } = {}): InstallSummary {
-  const summary: InstallSummary = { installed: [], updated: [], skipped: [] };
+  const summary: InstallSummary = { installed: [], updated: [], skipped: [], removed: [] };
   try {
     if (optedOut()) return { ...summary, reason: 'opt-out (OMD_INSTALL_SKILLS)' };
 
@@ -72,9 +73,24 @@ export function installClientSkills(opts: { srcRoot?: string; dstRoot?: string }
     }
 
     const names = readdirSync(srcRoot, { withFileTypes: true })
-      .filter((e) => e.isDirectory() && e.name.startsWith(PREFIX))
+      .filter((e) => e.isDirectory() && !e.name.startsWith('.') && existsSync(join(srcRoot, e.name, SKILL_FILE)))
       .map((e) => e.name)
       .sort();
+
+    // 修剪: 清单记过、源里已没有 → 目标未被用户改过才删; 改过的留着, 只撤我们的所有权记录。
+    for (const name of Object.keys(manifest).sort()) {
+      if (names.includes(name)) continue;
+      const dstDir = join(dstRoot, name);
+      if (existsSync(dstDir)) {
+        if (skillHash(dstDir) === manifest[name]) {
+          rmSync(dstDir, { recursive: true, force: true });
+          summary.removed.push(name);
+        } else {
+          summary.skipped.push(name);
+        }
+      }
+      delete manifest[name];
+    }
 
     for (const name of names) {
       const srcDir = join(srcRoot, name);
@@ -104,7 +120,7 @@ export function installClientSkills(opts: { srcRoot?: string; dstRoot?: string }
       }
     }
 
-    // 清单只增不误删: 写回当前状态 (含本轮新 hash)。
+    // 写回当前状态 (含本轮新 hash, 已撤掉修剪掉的条目)。
     writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
     return summary;
   } catch (e) {
@@ -117,6 +133,7 @@ export function formatInstallSummary(s: InstallSummary): string {
   const parts: string[] = [];
   if (s.installed.length) parts.push(`装 ${s.installed.length}`);
   if (s.updated.length) parts.push(`更 ${s.updated.length}`);
+  if (s.removed.length) parts.push(`删 ${s.removed.length}`);
   if (s.skipped.length) parts.push(`跳 ${s.skipped.length}(用户改过/第三方)`);
   if (s.reason && !parts.length) return `omd client-skills 自装: ${s.reason}`;
   if (!parts.length) return '';

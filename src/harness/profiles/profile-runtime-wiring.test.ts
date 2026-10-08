@@ -114,9 +114,9 @@ describe('profile 调用期接缝', () => {
     // (task-profile-portability), 本测试钉的是包 skill root 的解析链本身。
     const cwd = mkdtempSync(join(tmpdir(), 'omd-profile-skill-root-'));
     roots.push(cwd);
-    const source = loadSkillSourceByName('omd-ui-reviewer', defaultSkillRoots(cwd));
+    const source = loadSkillSourceByName('ui-reviewer', defaultSkillRoots(cwd));
     expect(source).not.toBeNull();
-    expect(source?.dir).toBe(join(skillsRoot(), 'omd-ui-reviewer'));
+    expect(source?.dir).toBe(join(skillsRoot(), 'ui-reviewer'));
     expect(source?.files).toContain('SKILL.md');
     expect(source?.body).toContain('Judge rendered screenshots');
   });

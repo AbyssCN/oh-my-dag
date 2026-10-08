@@ -1,18 +1,18 @@
 ---
-name: omd-contract
-description: 把审议结论结晶成正式契约文档落盘 docs/plan/,当 /omd-execute 的执行契约。承接 /omd-grill 的决策记录表,写给没有对话上下文的执行器看。含 crystallize/crystals 职能。Trigger:/omd-contract、定契约、写成执行契约、写成 SDD、SDD、结晶、方案定了记下来、列结晶。
+name: contract
+description: 把审议结论结晶成正式契约文档落盘 docs/plan/,当 Opus 子 agent 或 omd-lite 的执行契约。承接 /grill 的决策记录表,写给没有对话上下文的执行器看。含 crystallize/crystals 职能。Trigger:/contract、定契约、写成执行契约、写成 SDD、SDD、结晶、方案定了记下来、列结晶。
 ---
 
-# /omd-contract — 审议结晶成执行契约
+# /contract — 审议结晶成执行契约
 
-审议(`/omd-grill`、pathfinder 裁决)收敛后,把结论写成结构化 SDD 落盘——它是 `/omd-execute` 的执行契约,写给**没有对话上下文的执行器**,不是给人读的散文。
+审议(`/grill`)收敛后,把结论写成结构化 SDD 落盘——它是执行方(Opus 子 agent 或 `omd-lite run`)的执行契约,写给**没有对话上下文的执行器**,不是给人读的散文。
 
-## 承接 /omd-grill 的决策记录表
+## 承接 /grill 的决策记录表
 
-| # | 决策 | 定论 | 落点(/omd-note · pathfinder 票 · SDD 章节) | 证据 |
-|---|------|------|--------------------------------------------|------|
+| # | 决策 | 定论 | 落点(/note · SDD 章节) | 证据 |
+|---|------|------|-------------------------|------|
 
-落点标「SDD 章节」的行 → 进「决策」与「契约」段;标 `/omd-note` 的留台账;标 pathfinder 票的附票 id 进「未决」段。「待 owner / 待实测」项原样进「未决」,不写成结论。
+落点标「SDD 章节」的行 → 进「决策」与「契约」段;标 `/note` 的留台账。「待 owner / 待实测」项原样进「未决」,不写成结论。
 
 ## 落盘
 
@@ -22,10 +22,10 @@ description: 把审议结论结晶成正式契约文档落盘 docs/plan/,当 /om
 # <标题>
 ## 目标 (Destination)   一句话讲清做成什么样
 ## 决策 (Decisions)     D-1..D-N:每条已定型裁决 + 一句为什么 + 证据
-## 契约 (Contracts)     不变量 + GWT 验收点——/omd-execute 逐条判 pass/fail 的依据
+## 契约 (Contracts)     不变量 + GWT 验收点——执行方验收时逐条判 pass/fail 的依据
 ## 分解 (Breakdown)     依赖图 + 并行波形(写法见下)
 ## 非目标 (Non-goals)   明确不做什么
-## 未决 (Open)          未裁的问题;附 pathfinder 票 id;待实测的标「待实测」
+## 未决 (Open)          未裁的问题;待实测的标「待实测」
 ```
 
 GWT 验收点越可证伪,验收越不含糊;一个模糊验收点 = 执行器和你各自解读的裂缝。
@@ -258,7 +258,7 @@ bun run plan-doc-check --ignite <文档>    # 文档形态闸 + 点火预演 (20
 
 ## 纪律
 
-- 只写已定型的决策;未决进 Open 段(或 `map_add` 开票)。
+- 只写已定型的决策;未决进 Open 段。
 - **验收分两栏**:判据(必须能区分做完/没做)与护栏(防回归、本来就该绿)。
   把护栏当判据写会被判据自证闸判 `[vacuous]` —— 它在活还没干之前就已经满足。
 - **⚠ 钉性质,别钉行号。** 写「只改被本片必然打断的整串字面量,别的断言不动」,
@@ -280,9 +280,9 @@ bun run plan-doc-check --ignite <文档>    # 文档形态闸 + 点火预演 (20
   (实测写过的做不到条款:`npx tsc`、「全量 0 fail」在执行体沙箱里、
   「`s1-green` 不许被合并」——那是引擎的优化,执行体控制不了。)
 - 无证据的决策行,先补证据或降级进 Open,不进 Contracts。
-- 写完提示 owner:确认后 `/omd-execute` 执行。
+- 写完提示 owner:确认后交 Opus 子 agent 或 `omd-lite run` 执行。
 - 看已有结晶 → `ls docs/plan/*.md` 按时间列出。
 
 ## 边界
 
-- 审议在 `/omd-grill`(问透之前不结晶);轻量决策/引用 → `/omd-note`;执行 → `/omd-execute`,本 skill 不碰实现。
+- 审议在 `/grill`(问透之前不结晶);轻量决策/引用 → `/note`;执行 → Opus 子 agent 或 `omd-lite run`,本 skill 不碰实现。
