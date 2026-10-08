@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { installClientSkills } from '../../src/harness/client-skills-install';
 
-// 自装器: 幂等铺 omd-* 客户端技能进用户级 skills 根, 不覆盖用户改过的, best-effort 从不抛。
+// 自装器: 幂等铺 client-skills/ 下每个技能目录进用户级 skills 根, 不覆盖用户改过的, best-effort 从不抛。
 // 全程注入临时 src/dst, 不碰真 ~/.claude。
 
 let base: string;
@@ -27,17 +27,22 @@ beforeEach(() => {
   mkdirSync(src, { recursive: true });
   writeSkill(src, 'omd-path', '# /omd-path v1');
   writeSkill(src, 'omd-deepen', '# /omd-deepen v1');
-  // 非 omd- 前缀目录: 不该被铺
-  writeSkill(src, 'unrelated', '# not ours');
+  // 无前缀技能照铺 (2026-10-08 起不再只认 omd- 前缀)
+  writeSkill(src, 'grill', '# /grill v1');
+  // 没有 SKILL.md 的目录 / 点目录: 不该被铺
+  mkdirSync(join(src, 'not-a-skill'), { recursive: true });
+  writeSkill(src, '.hidden', '# hidden');
 });
 afterEach(() => rmSync(base, { recursive: true, force: true }));
 
 describe('installClientSkills', () => {
-  test('首装: 只铺 omd-* 前缀技能, 非前缀目录忽略', () => {
+  test('首装: 铺每个带 SKILL.md 的技能目录(含无前缀), 无 SKILL.md 目录与点目录忽略', () => {
     const s = installClientSkills({ srcRoot: src, dstRoot: dst });
-    expect(s.installed.sort()).toEqual(['omd-deepen', 'omd-path']);
+    expect(s.installed.sort()).toEqual(['grill', 'omd-deepen', 'omd-path']);
     expect(existsSync(join(dst, 'omd-path', 'SKILL.md'))).toBe(true);
-    expect(existsSync(join(dst, 'unrelated'))).toBe(false);
+    expect(existsSync(join(dst, 'grill', 'SKILL.md'))).toBe(true);
+    expect(existsSync(join(dst, 'not-a-skill'))).toBe(false);
+    expect(existsSync(join(dst, '.hidden'))).toBe(false);
     expect(existsSync(join(dst, '.omd-skills.json'))).toBe(true);
   });
 
@@ -71,8 +76,43 @@ describe('installClientSkills', () => {
     writeSkill(dst, 'omd-path', '# 别的来源装的同名'); // 目标先存在, 但清单里没有
     const s = installClientSkills({ srcRoot: src, dstRoot: dst });
     expect(s.skipped).toContain('omd-path');
-    expect(s.installed).toEqual(['omd-deepen']); // 另一个照常装
+    expect(s.installed).toEqual(['grill', 'omd-deepen']); // 另外两个照常装
     expect(readSkill(dst, 'omd-path')).toBe('# 别的来源装的同名');
+  });
+
+  test('修剪: 源里删掉/改名的技能 → 我们写的那份删掉, 清单撤条目', () => {
+    installClientSkills({ srcRoot: src, dstRoot: dst });
+    rmSync(join(src, 'omd-deepen'), { recursive: true, force: true }); // 删
+    rmSync(join(src, 'omd-path'), { recursive: true, force: true }); // 改名 omd-path → path
+    writeSkill(src, 'path', '# /omd-path v1');
+    const s = installClientSkills({ srcRoot: src, dstRoot: dst });
+    expect(s.removed).toEqual(['omd-deepen', 'omd-path']);
+    expect(s.installed).toEqual(['path']);
+    expect(existsSync(join(dst, 'omd-deepen'))).toBe(false);
+    expect(existsSync(join(dst, 'omd-path'))).toBe(false);
+    const manifest = JSON.parse(readFileSync(join(dst, '.omd-skills.json'), 'utf8')) as Record<string, string>;
+    expect(Object.keys(manifest).sort()).toEqual(['grill', 'path']);
+    // 再跑一次: 零动作
+    const s2 = installClientSkills({ srcRoot: src, dstRoot: dst });
+    expect([...s2.installed, ...s2.updated, ...s2.removed, ...s2.skipped]).toEqual([]);
+  });
+
+  test('修剪不碰用户改过的: 源里删了但目标被用户编辑 → 目录保留, 只撤清单条目', () => {
+    installClientSkills({ srcRoot: src, dstRoot: dst });
+    writeSkill(dst, 'omd-deepen', '# 用户自己改的');
+    rmSync(join(src, 'omd-deepen'), { recursive: true, force: true });
+    const s = installClientSkills({ srcRoot: src, dstRoot: dst });
+    expect(s.removed).toEqual([]);
+    expect(s.skipped).toEqual(['omd-deepen']);
+    expect(readSkill(dst, 'omd-deepen')).toBe('# 用户自己改的');
+    const manifest = JSON.parse(readFileSync(join(dst, '.omd-skills.json'), 'utf8')) as Record<string, string>;
+    expect(manifest['omd-deepen']).toBeUndefined();
+  });
+
+  test('修剪不碰第三方: 不在清单里的目标目录从不删', () => {
+    writeSkill(dst, 'investigate', '# 别的来源装的');
+    installClientSkills({ srcRoot: src, dstRoot: dst });
+    expect(readSkill(dst, 'investigate')).toBe('# 别的来源装的');
   });
 
   test('opt-out: OMD_INSTALL_SKILLS=0 → 整体跳过, 不建目录', () => {

@@ -24,7 +24,7 @@
  *
  * ## 反向自检(本仓惯例:新加闸必须当场证伪一次)
  *
- * 三条都当场证伪过:① `mv client-skills/omd-sast /tmp/` → 判据 2 红(README 有行、目录没了)
+ * 三条都当场证伪过:① `mv client-skills/sast /tmp/` → 判据 2 红(README 有行、目录没了)
  * ② 在 README 表尾按同样格式加一行 omd-nonexistent → 判据 2 红
  * ③ 把 `omd-recall/SKILL.md` 的 `name:` 改成 `omd-recal` → 判据 3 红。
  * 复跑方式同上,改完记得改回来。
@@ -43,20 +43,20 @@ import { loadSkillSource } from './skills/compile';
 const ROOT = new URL('../..', import.meta.url).pathname.replace(/\/$/, '');
 const SKILLS_DIR = join(ROOT, 'client-skills');
 
-/** 目录里真正出厂的技能名(`client-skills/` 下的 omd- 前缀目录)。 */
+/** 目录里真正出厂的技能名(`client-skills/` 下每个非点目录;与自装器同一口径)。 */
 function shippedSkills(): string[] {
   return readdirSync(SKILLS_DIR, { withFileTypes: true })
-    .filter((d) => d.isDirectory() && d.name.startsWith('omd-'))
+    .filter((d) => d.isDirectory() && !d.name.startsWith('.'))
     .map((d) => d.name)
     .sort();
 }
 
-/** README 「技能一览」表里列出的名字(表格行首那个反引号包着的 /omd-xxx)。 */
+/** README 「技能一览」表里列出的名字(表格行首那个反引号包着的 /xxx)。 */
 function readmeListed(): string[] {
   const text = readFileSync(join(SKILLS_DIR, 'README.md'), 'utf8');
   const names: string[] = [];
   for (const line of text.split('\n')) {
-    const m = /^\|\s*`\/(omd-[a-z0-9-]+)`/.exec(line);
+    const m = /^\|\s*`\/([a-z0-9-]+)`/.exec(line);
     if (m?.[1]) names.push(m[1]);
   }
   return names.sort();

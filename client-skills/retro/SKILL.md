@@ -1,9 +1,9 @@
 ---
-name: omd-retro
-description: 一批 omd-lite(mcode / pi)run 合并后的复盘:先跑确定性汇总 omd-lite retro(零模型),再把 ≥ 2 次的重复模式按七类定位、分流到「闸 / 审查标准 / 任务书模板 / 不处理」四个去处,产出提案表交 owner 批;顺带 omd-lite gc 预览清 worktree。Trigger:/omd-retro、批后复盘、这批 run 复盘一下、坑变闸、retro。
+name: retro
+description: 一批 omd-lite(mcode / pi)run 合并后的复盘:先跑确定性汇总 omd-lite retro(零模型),再把 ≥ 2 次的重复模式按七类定位、分流到「闸 / 审查标准 / 任务书模板 / 不处理」四个去处,产出提案表交 owner 批;顺带 omd-lite gc 预览清 worktree。Trigger:/retro、批后复盘、这批 run 复盘一下、坑变闸、retro。
 ---
 
-# /omd-retro — 批后复盘:把重复的坑分流成闸或审查标准
+# /retro — 批后复盘:把重复的坑分流成闸或审查标准
 
 契约:`docs/plan/2026-10-08-mcode-loop-retro-and-spec-axis.md`(oh-my-dag)§3。分类法来自 mattpocock/skills 的 `retro`。
 **时机**:一批 omdl run 合并进 main 之后跑一次。**不自动改闸、不自动改模板**(D7)—— 产出是提案,owner 批了才落地。

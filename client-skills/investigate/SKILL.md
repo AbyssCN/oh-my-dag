@@ -1,13 +1,13 @@
 ---
-name: omd-debug
-description: 系统化根因调试:历史搜索→复现→scope lock→模式匹配→假设验证→修复→验证→报告 + 修完扫同类。铁律:无根因不修。Trigger:/omd-debug、debug、调查、排查、为什么挂了、这个bug、根因分析、investigate、stack trace、昨天还好的。
+name: investigate
+description: 系统化根因调试:历史搜索→复现→scope lock→模式匹配→假设验证→修复→验证→报告 + 修完扫同类。铁律:无根因不修。Trigger:/investigate、调查、排查、为什么挂了、这个bug、根因分析、stack trace、昨天还好的。
 ---
 
-# /omd-debug — 系统化根因调试
+# /investigate — 系统化根因调试
 
 > **铁律:无根因不修。** 修症状 = 打地鼠。找到根因再动手,诊断阶段禁提修复方案。
 
-方法论 skill:单线程串行用 runtime 原生 Grep/Read/git 走完 8 阶段;**假设验证需并发多路时派 omd `dag_debug`**(一假设一 leaf + skeptic 跨模型证伪 + codegraph 锁范围 + 三振纪律,见 Phase 5)。
+纯方法论 skill(不封特定 MCP 工具,用 runtime 原生 Grep/Read/git;需并行跑多假设时可派多个子 agent)。
 
 ## Phase 1 — 历史搜索(先查后调)
 同一消息并行发:`git log --oneline -20 -- <相关文件>`(近期变更)+ Grep 既有 `docs/plan/`·NOTES·error 记录搜错误关键词(有先例走 /omd-recall 先召回)。命中已知修复 → 直接引用,跳到修复。
@@ -24,8 +24,6 @@ description: 系统化根因调试:历史搜索→复现→scope lock→模式�
 ## Phase 5 — 假设验证(最多 3 个)
 每假设三步推导:**观察**(引 file:line 我看到什么)→ **推论**(若成立还应看到什么)→ **验证**(设计能区分成立/不成立的实验)。追踪表标 CONFIRMED/REJECTED。先验证再修(可疑根因处加临时 log/断言,跑复现看证据是否吻合)。**三振出局**:3 个假设全败 → STOP 问 owner(A 继续有新假设 / B 升级人工 / C 埋点观察)。危险信号:还没追数据流就提修复 = 在猜。
 
-> **并发扇出 → 派 `dag_debug`**:假设多、想并行验(一假设一 leaf + skeptic 证伪 + judge 收敛)而非单线程串行时,派 omd `dag_debug`(failure 必填,`repro`/`oracleCmd` 可选)。它把本阶段的假设验证 DAG 化,同守本 skill 铁律(无根因不修 / 默认只提议不改文件 / 三振停升 owner)。复现拿 red + codegraph 锁范围由引擎代跑;finding≠ground truth,回来仍你终裁。
-
 ## Phase 6 — 修复
 根因确认后最小改动:最少文件、最少行,不顺手重构相邻代码。写回归测试(不修 FAIL、修后 PASS),跑测试套件贴输出。改 >5 文件 → 问 owner(bugfix 爆炸半径偏大:继续 / 拆分 / 重想)。
 
@@ -36,4 +34,4 @@ description: 系统化根因调试:历史搜索→复现→scope lock→模式�
 报告:症状 / 根因(为什么)/ 模式 / 修复(file:line)/ 证据 / 回归测试 / 状态(DONE · DONE_WITH_CONCERNS · BLOCKED)。**修完扫一片**:用根因反推同类——Grep 同 pattern(根因是"缺 scope 过滤" → 全仓找所有 db 访问点;"未校验入参" → 找所有 untrusted 入口)。>5 处别一次全修,修 1-2 关键,其余记 NOTES 留 follow-up。
 
 ## 与既有 skill 的边界
-- omd-debug = 某**失败**的**根因**调查。**审一批 diff 找 bug** → /omd-review;**扫安全漏洞** → /omd-audit;**找过度工程** → /omd-slim。修复方案涉及大改前可用 /omd-grill 审。
+- investigate = 某**失败**的**根因**调查。**审一批 diff 找 bug** → /omd-review;**扫安全漏洞** → /security-review;**找过度工程** → /ponytail-review。修复方案涉及大改前可用 /grill 审。
