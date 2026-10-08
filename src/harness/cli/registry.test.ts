@@ -25,7 +25,7 @@ import {
 describe('CLI registry', () => {
   test('maps named paths to new MCP tool names', () => {
     expect(findCommand(['status', 'run-1'])?.cmd.tool).toBe('dag_status');
-    expect(findCommand(['map', 'add', '--title', 'ticket'])?.cmd.tool).toBe('map_add');
+    expect(findCommand(['research', 'q'])?.cmd.tool).toBe('dag_research');
     expect(findCommand(['config', 'set-model', '--role', 'leaf'])?.cmd.tool).toBe('omd_set_model');
   });
 
@@ -64,7 +64,7 @@ describe('CLI registry', () => {
   test('usage comes from registry', () => {
     const usage = renderUsage(CLI_COMMANDS);
     expect(usage).toContain('omd status');
-    expect(usage).toContain('omd map add');
+    expect(usage).toContain('omd research');
   });
 
   test('every renamed production name has command or explicit exclusion', () => {

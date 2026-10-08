@@ -4,15 +4,12 @@
  * 覆盖:
  *   ① applyNodeEvent start → startedAt ISO + running 行含耗时
  *   ② dispatchBriefing L1 层级行 + >20 节点降采样
- *   ③ fogBar 迷雾条渲染
  *   ④ assemble agentRunner 超时 env 覆盖 (标注跳过理由)
  */
 import { describe, expect, test } from 'bun:test';
 import { RunRegistry } from '../../src/mcp/run-registry';
 import type { DagNodeEvent } from '../../src/harness/dag/types';
 import { renderProgressAscii, dispatchBriefing } from '../../src/mcp/tools/dag-tools';
-import { fogBar } from '../../src/mcp/tools/pathfinder';
-import type { PathMap, Ticket } from '../../src/harness/pathfinder/types';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
 import type { ExecutorDagConfig } from '../../src/harness/dag/types';
 
@@ -38,16 +35,6 @@ const BASE_CONFIG: ExecutorDagConfig = {
   conductorModel: 'test:conductor',
   leafModel: 'test:leaf',
 };
-
-/** 造票 helper。 */
-function ticket(id: string, status: Ticket['status'], type: Ticket['type'] = 'task'): Ticket {
-  return { id, type, title: `title-${id}`, blockedBy: [], status };
-}
-
-/** 造地图 helper。 */
-function makeMap(destination: string, tickets: Ticket[]): PathMap {
-  return { destination, slug: destination.toLowerCase().replace(/\s+/g, '-'), tickets, decisionsLog: [] };
-}
 
 // ── ① applyNodeEvent: startedAt ISO + running 行耗时 ────────────────────────
 
@@ -166,55 +153,6 @@ describe('renderProgressAscii', () => {
     expect(out).toContain('○23');
     // 不含具体 id
     expect(out).not.toContain('n0(');
-  });
-});
-
-// ── ③ fogBar: 迷雾条渲染 ────────────────────────────────────────────────────
-
-describe('fogBar', () => {
-  test('空地图: 0/0 散雾', () => {
-    const map = makeMap('TestDest', []);
-    const out = fogBar(map);
-    expect(out).toContain('0/0 散雾');
-  });
-
-  test('全 delivered: ████… 3/3 散雾', () => {
-    const map = makeMap('Done', [
-      ticket('t1', 'delivered'),
-      ticket('t2', 'ruled'),
-      ticket('t3', 'delivered'),
-    ]);
-    const out = fogBar(map);
-    expect(out).toContain('3/3 散雾');
-    expect(out).toContain('█ t1 t2 t3');
-    expect(out).toContain('▒ —'); // 无 open
-    expect(out).toContain('░ —'); // 无 blocked
-  });
-
-  test('混合状态: 比例条 + 分类 id 行', () => {
-    const map = makeMap('Mixed', [
-      ticket('t1', 'delivered'),
-      ticket('t2', 'open'),
-      ticket('t3', 'blocked'),
-      ticket('t4', 'ruled'),
-    ]);
-    const out = fogBar(map);
-    // 2/4 散雾
-    expect(out).toContain('2/4 散雾');
-    // 分类行
-    expect(out).toContain('█ t1 t4');
-    expect(out).toContain('▒ t2');
-    expect(out).toContain('░ t3');
-    // 目的地标签
-    expect(out).toContain('<Mixed>');
-  });
-
-  test('全 open: ▒▒▒… 0/N 散雾', () => {
-    const map = makeMap('Open', [ticket('a', 'open'), ticket('b', 'open')]);
-    const out = fogBar(map);
-    expect(out).toContain('0/2 散雾');
-    expect(out).toContain('▒ a b');
-    expect(out).toContain('█ —');
   });
 });
 

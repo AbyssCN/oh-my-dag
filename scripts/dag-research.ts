@@ -33,7 +33,7 @@
 import '../src/harness/script-bootstrap';
 import { createWebStackFromEnv, createModelQueryExpander, createModelSourceDistiller } from '../src/harness/web';
 import { researchWebFanout } from '../src/harness/research/web-fanout';
-import { CHILDREN_INSTRUCTION, writeResultAtomic } from '../src/harness/pathfinder/result-format';
+import { CHILDREN_INSTRUCTION, writeResultAtomic } from '../src/harness/research/result-format';
 import { bootstrapModelRuntime } from '../src/model/bootstrap';
 
 const USAGE =

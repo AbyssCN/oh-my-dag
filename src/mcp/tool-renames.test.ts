@@ -36,7 +36,7 @@ describe('applyToolRenames', () => {
     expect(out[0]!.description).toBe('desc-dag_status');
   });
 
-  test('全表变换: 9 条改名 → 面上多 9 个 alias, 无重名', () => {
+  test('全表变换: 每条改名 → 面上多一个 alias, 无重名', () => {
     const olds = Object.keys(TOOL_RENAMES);
     const out = applyToolRenames(olds.map(fake));
     expect(out).toHaveLength(olds.length * 2);
@@ -48,10 +48,10 @@ describe('applyToolRenames', () => {
     }
   });
 
-  test('三层承诺名就位: map_* ⊃ solve ⊃ run', () => {
+  test('承诺名就位: solve ⊃ run (map_* 随 pathfinder 删除, 2026-10-08 S3)', () => {
     const values = Object.values(TOOL_RENAMES);
     expect(values).toContain('solve');
     expect(values).toContain('run');
-    expect(values.filter((v) => v.startsWith('map_'))).toHaveLength(7);
+    expect(values.filter((v) => v.startsWith('map_'))).toHaveLength(0);
   });
 });

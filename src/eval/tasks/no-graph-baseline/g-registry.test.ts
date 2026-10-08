@@ -10,7 +10,12 @@ const ROOT = new URL('../../../..', import.meta.url).pathname;
 describe('G1/G2 语料规范表', () => {
   test('G1: 7 锚全部接地于真实存在的文件', () => {
     expect(G1_ANCHORS).toHaveLength(7);
-    for (const a of G1_ANCHORS) expect(existsSync(join(ROOT, a.groundedIn)) ? '' : `${a.id} 证物不存在: ${a.groundedIn}`).toBe('');
+    // 冻结 eval 不改锚; 证物随 pathfinder CLI 删除 (2026-10-08 S3) 的, 只在此登记豁免, 不改评分。
+    const DELETED_EVIDENCE = new Set(['scripts/omd-path.ts']);
+    for (const a of G1_ANCHORS) {
+      if (DELETED_EVIDENCE.has(a.groundedIn)) continue;
+      expect(existsSync(join(ROOT, a.groundedIn)) ? '' : `${a.id} 证物不存在: ${a.groundedIn}`).toBe('');
+    }
   });
 
   test('G2: 4 失效点接地 + 变化描述含阈值两端数字', () => {

@@ -14,7 +14,7 @@ describe("parseDocsMap", () => {
     // 2026-08-11 收割集成修正后的真值: 覆盖 glob 指工具真源 (src/mcp/tools/** + 别名表),
     // 锚含当天新参数 (sddPath/slug —— goal 指令点名的需求样本)。
     expect(mcpTools?.sourceGlobs).toEqual(["src/mcp/tools/**/*.ts", "src/mcp/tool-renames.ts"]);
-    expect(mcpTools?.anchors).toEqual(["sddPath", "slug", "detached", "map_prefetch", "path_prefetch"]);
+    expect(mcpTools?.anchors).toEqual(["sddPath", "slug", "detached"]);
   });
 
   test("跳过表头行与分隔行", () => {

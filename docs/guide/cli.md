@@ -94,19 +94,6 @@ Logs always go to stderr; only the result lands on stdout. Pipe-friendly by cons
 | `omd triage <runId>` | `dag_triage` | owner inbox — decision forks a running graph raised |
 | `omd rule <runId> "<ruling>"` | `dag_rule` | rule on a triage fork; the ruling becomes a verbatim owner directive |
 
-## Map commands (decision maps)
-
-| Command | Maps to | Notes |
-|---|---|---|
-| `omd map init` | `map_init` | initialize the pathfinder backend (probe + recommendation, or set `backend`) |
-| `omd map open` | `map_open` | list / create / resume decision maps |
-| `omd map add --title <t> --blocked-by <ids>` | `map_add` | add a typed ticket (`research` · `grill` · `prototype` · `task`) |
-| `omd map tickets` | `map_tickets` | show the frontier; folds in landed background results |
-| `omd map rule <ticketId> "<ruling>"` | `map_rule` | adjudicate a decision onto the map |
-| `omd map confirm <ticketId>` | `map_confirm` | accept or reject a machine-suggested ticket |
-| `omd map deliver` | `map_deliver` | the power gate — compile the clear region to a slice, run the DAG |
-| `omd map prefetch` | `map_prefetch` | dispatch frontier research to detached background processes |
-
 ## Memory commands
 
 | Command | Maps to | Notes |
@@ -191,6 +178,6 @@ If you find yourself wanting one of these from a script, the right primitive is 
 | | |
 |---|---|
 | [MCP tools](mcp-tools.md) | the full raw API every command here wraps |
-| [Workflow](workflow.md) | when to reach for `run` vs `solve` vs `map_*` |
+| [Workflow](workflow.md) | when to reach for `run` vs `solve` |
 | [Model config](model-config.md) | the seat matrix the config commands edit |
 | [Architecture overview](../architecture/overview.md) | the engine shape these commands target |

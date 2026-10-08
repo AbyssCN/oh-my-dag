@@ -121,10 +121,10 @@ describe('GWT-5 USAGE 由表生成 + 既有手写段保留在前', () => {
     expect(r?.stdout).toContain('omd pack');
   });
 
-  test('USAGE 含 registry 段 (status / map add / doctor / call)', async () => {
+  test('USAGE 含 registry 段 (status / research / doctor / call)', async () => {
     const r = await dispatchCli(['--help'], depsWith());
     expect(r?.stdout).toContain('omd status');
-    expect(r?.stdout).toContain('omd map add');
+    expect(r?.stdout).toContain('omd research');
     expect(r?.stdout).toContain('omd doctor');
     expect(r?.stdout).toContain('omd call');
   });
@@ -160,17 +160,17 @@ describe('命名命令 → invokeTool (GWT-8 / INV-1)', () => {
     expect(captured).toEqual({ runId: 'r1' });
   });
 
-  test('omd map add --title "fix" --blocked-by a,b → 调 map_add,key 自动转 camelCase', async () => {
+  test('omd research --question "q" --lens-count 3 → 调 dag_research,key 自动转 camelCase', async () => {
     let captured: unknown;
     const tools = [
-      makeTool('map_add', async (args) => {
+      makeTool('dag_research', async (args) => {
         captured = args;
-        return { content: [{ type: 'text', text: 'ticket created' }] };
+        return { content: [{ type: 'text', text: 'runId: r1' }] };
       }),
     ];
-    const r = await dispatchCli(['map', 'add', '--title', 'fix', '--blocked-by', 'a,b'], depsWith({ tools }));
+    const r = await dispatchCli(['research', '--question', 'q', '--lens-count', '3'], depsWith({ tools }));
     expect(r?.exitCode).toBe(0);
-    expect(captured).toEqual({ title: 'fix', blockedBy: 'a,b' });
+    expect(captured).toEqual({ question: 'q', lensCount: 3 });
   });
 
   test('handler isError:true → dispatch exitCode 2 (INV-3 单点, exitCodeFor 路径)', async () => {

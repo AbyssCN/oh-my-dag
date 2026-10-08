@@ -11,7 +11,8 @@
  *  ③ 反闸一       — 在盘上段尾部加一个字节, 断言 compareSegment 判不等 (证明闸非恒真)。
  *  ④ 反闸二       — 喂一份假源 (伪造 TOOL_RENAMES + 伪造工具定义), 断言抽取 / 渲染确实
  *                  反映假源, 且与真源盘上比对被判为不一致。
- *  ⑤ 结构绊线     — 硬编码字面量 3 层 / 8 工具 / 18 行 (刻意不派生, 派生即恒真式)。
+ *  ⑤ 结构绊线     — 硬编码字面量 2 层 / 19 行 (刻意不派生, 派生即恒真式)。
+ *                  2026-10-08 S3: map_* 层 (原 8 工具) 随 pathfinder 删除, 3 层→2 层是 owner 重定。
  *                  **冲突时请停下报「勘察计数与代码冲突」, 不许就地改数** —— 绊线是冻结判据,
  *                  抬数 = 先回 owner 重定冻结接口规格。
  *
@@ -83,8 +84,8 @@ describe('capability-matrix 对账闸', () => {
   // ───────────────────────────────────────────────────────────────────────
   // ④ 反闸二 — 假源: 伪造 TOOL_RENAMES + 伪造工具定义
   //
-  // 假源设计: 8 个 map_* 工具 (空 inputSchema, 不贡献 rows) + 1 个 dag_goal (10 独立键)
-  // + 1 个 dag_run (另 9 独立键) → union = 19 rows, 三层都齐, map = 8, 全 绊线 通过
+  // 假源设计: 1 个 dag_goal (10 独立键) + 1 个 dag_run (另 9 独立键)
+  // → union = 19 rows, 两层都齐, 全 绊线 通过
   // → extractMatrix + renderSegment 走全程, 真源盘上段与它必不一致。
   //  —— 一道闸同时证两件事: (a) 抽取 / 渲染真反映假源 (b) compareSegment 判红。 ─────
   test('反闸二: 假源 → 抽取反映假源 (promise / 工具名) + 渲染与真源盘上比对红', () => {
@@ -105,20 +106,8 @@ describe('capability-matrix 对账闸', () => {
  * ## 为什么
  */
 export const TOOL_RENAMES: Readonly<Record<string, string>> = {
-  map_a: 'map_alpha',
+  dag_goal: 'fake_solve',
 };
-`,
-      pathfinder: `
-const tools: any[] = [
-  { name: 'map_a', inputSchema: {} },
-  { name: 'map_b', inputSchema: {} },
-  { name: 'map_c', inputSchema: {} },
-  { name: 'map_d', inputSchema: {} },
-  { name: 'map_e', inputSchema: {} },
-  { name: 'map_f', inputSchema: {} },
-  { name: 'map_g', inputSchema: {} },
-  { name: 'map_h', inputSchema: {} },
-];
 `,
       goal: goalTpl,
       dagTools: runTpl,
@@ -128,7 +117,7 @@ const tools: any[] = [
     try {
       m = extractMatrix(fakeSources);
     } catch (e) {
-      throw new Error(`假源本应过 绊线 (3 层 / map=8 / rows=18), 却 throw: ${(e as Error).message}`);
+      throw new Error(`假源本应过 绊线 (2 层 / rows=19), 却 throw: ${(e as Error).message}`);
     }
 
     // (a) 抽取真反映假源 — promise 与工具 sourceName 来自 fake, 不是真源
@@ -136,11 +125,7 @@ const tools: any[] = [
       throw new Error(`promise 没从假源抽 (期望 "FAKE PROMISE FROM FAKE SOURCE."): ${m.promise}`);
     }
     const sourceNames = m.tools.map((t) => t.sourceName).sort();
-    const expectedSources = [
-      ...Array.from({ length: 8 }, (_, i) => `map_${String.fromCharCode(97 + i)}`),
-      'dag_goal',
-      'dag_run',
-    ].sort();
+    const expectedSources = ['dag_goal', 'dag_run'].sort();
     if (sourceNames.join(',') !== expectedSources.join(',')) {
       throw new Error(`抽出的 sourceName 不是来自假源: got [${sourceNames.join(',')}] expected [${expectedSources.join(',')}]`);
     }
@@ -154,7 +139,7 @@ const tools: any[] = [
     if (!rendered.includes('FAKE PROMISE FROM FAKE SOURCE.')) {
       throw new Error('rendered 未含假源 promise (提取没进渲染)');
     }
-    if (!rendered.includes('`map_a`') || !rendered.includes('`dag_goal`')) {
+    if (!rendered.includes('`fake_solve`') || !rendered.includes('`dag_run`')) {
       throw new Error('rendered 未含假源工具名');
     }
     const cmp = compareSegment(rendered, built);
@@ -164,26 +149,20 @@ const tools: any[] = [
   });
 
   // ───────────────────────────────────────────────────────────────────────
-  // ⑤ 结构绊线 — 硬编码字面量 3 层 / 8 工具 / 19 行
+  // ⑤ 结构绊线 — 硬编码字面量 2 层 / 19 行
   //   派生就成恒真式, 绊线消失。冲突请停下报「勘察计数与代码冲突」, 不许就地改数。
   //   抬数 = 回 owner 重定冻结接口规格 (capability-matrix 冻结接口规格 §5)。
   // ───────────────────────────────────────────────────────────────────────
-  test('结构绊线: 3 层 / map_*=8 / 矩阵 19 行 (硬编码字面量)', () => {
+  test('结构绊线: 2 层 / 矩阵 19 行 (硬编码字面量)', () => {
     const seg = readSegment(onDisk);
     if (!seg.ok) throw new Error(`readSegment: ${seg.error}`);
 
-    // 行 3-5: 三个层头 (- **map_* 层**(N 工具, ...), - **solve 层**, - **run 层**)
+    // 行 3-4: 两个层头 (- **solve 层**, - **run 层**); map_* 层头不许再出现
     const layerHeaders = seg.segment
       .split('\n')
       .filter((l) => /^-\s+\*\*(map_\* 层|solve 层|run 层)\*\*/.test(l));
-    expect(layerHeaders).toHaveLength(3);
-
-    // map_* 层工具数: 行 3 中 "(N 工具" 的 N; 不派生 — 直接期待字面量 8
-    const mapLine = layerHeaders.find((l) => l.includes('map_* 层'));
-    if (!mapLine) throw new Error('map_* 层头缺失 (理论上不会发生, 上一步已断言 3 个)');
-    const m = mapLine.match(/\((\d+) 工具/);
-    if (!m) throw new Error(`map_* 层头未含 (N 工具: ${mapLine}`);
-    expect(m[1]).toBe('8');
+    expect(layerHeaders).toHaveLength(2);
+    expect(layerHeaders.some((l) => l.includes('map_* 层'))).toBe(false);
 
     // 矩阵数据行: 行 18..36 = 19 行 "| `param` | ✓ | — |" 形态; 不派生 — 直接期待 19
     const dataRows = seg.segment

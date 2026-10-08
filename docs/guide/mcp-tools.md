@@ -9,11 +9,10 @@ The MCP tools below are the raw API; the slash commands in
 [client-skills](../../client-skills/) are thin workflow wrappers that call these and add the
 discipline (when to escalate, how to accept, who holds the trigger).
 
-> **Naming (2026-08-04)** — the three layers now say their own promise: `map_*`
-> (slow-loop decision maps, human in the loop) ⊃ `solve` (goal convergence with repair
-> rounds, was `dag_goal`) ⊃ `run` (execute a settled plan, was `dag_run`); `path_*` became
-> `map_*` (`path_map` → `map_open`). Old names still work as **deprecated aliases** for one
-> release — same schema, same handler, `[deprecated → new]` in the description.
+> **Naming (2026-08-04)** — `solve` (goal convergence with repair rounds, was `dag_goal`)
+> ⊃ `run` (execute a settled plan, was `dag_run`). Old names still work as **deprecated
+> aliases** for one release — same schema, same handler, `[deprecated → new]` in the
+> description. The `map_*` / `path_*` decision-map tools were removed 2026-10-08.
 
 **Engine** — delegate work to the cheap fleet:
 
@@ -34,19 +33,6 @@ discipline (when to escalate, how to accept, who holds the trigger).
 | `dag_triage` | **owner inbox** (read-only): decision forks a running graph raised, plus runs that need a human look |
 | `dag_rule` | rule on one of those forks; the ruling becomes a verbatim owner directive for the run's next round |
 | `dag_intervene` | record a human intervention: append an `intervened` entry to the run-board (cause = `NodeFailureKind`); powers the avoidability readout |
-
-**Pathfinder** — persistent planning for foggy, multi-session work:
-
-| Tool | What it does |
-|---|---|
-| `map_init` (alias: `path_init`) | initialize the pathfinder backend: no args → probe + recommendation; or set the backend (git-markdown / issues) |
-| `map_open` (alias: `path_map`) | list / create / resume decision maps |
-| `map_add` (alias: `path_add`) | add typed tickets (research / grill / prototype / task) with dependency edges |
-| `map_tickets` (alias: `path_tickets`) | show the frontier; folds in landed background results first |
-| `map_rule` (alias: `path_rule`) | adjudicate a decision onto the map (owner's call) |
-| `map_confirm` | confirm a machine-suggested ticket: accept (optionally retitle) into the frontier, or reject — logged for the acceptance-rate readout |
-| `map_deliver` (alias: `path_deliver`) | **the power gate**: compile the clear region to a slice, run the DAG, mark delivered only on full success |
-| `map_prefetch` (alias: `path_prefetch`) | dispatch frontier research to detached background processes that outlive the client |
 
 **Memory** — persistence across sessions:
 
@@ -80,16 +66,12 @@ prompts**: each carries its own shape, seat assignment and gates.
 
 | Command | Wraps | What it adds |
 |---|---|---|
-| `/omd-path` | `map_open` · `map_add` · `map_prefetch` | open or resume a decision map, break a goal into tickets |
-| `/omd-tickets` | `map_tickets` | show the frontier, folding in landed background research |
-| `/omd-rule` | `map_rule` | adjudicate a decision onto the map — the owner's explicit call |
-| `/omd-deliver` | `map_deliver` | the delivery gate: compile the ruled region and run it |
-| `/omd-grill` | deliberation → `map_rule` | interrogate a plan before it's locked; open a council at wide forks |
+| `/omd-grill` | deliberation | interrogate a plan before it's locked; open a council at wide forks |
 | `/omd-contract` | writes a spec to `docs/plan/` | crystallise the argument into the contract the engine executes |
 | `/omd-execute` | `run` → `dag_status` / `dag_result` | run a spec as a DAG, then accept the result against it |
 | `/omd-iterate` | `run` (fixpoint loop) | re-run to convergence, carrying the failure reason forward |
 | `/omd-resume` | `dag_runs` · `dag_resume` | list broken runs, pick one, resume it from its checkpoint |
-| `/omd-note` | `map_add` · `map_rule` | a decision ledger for the conversation |
+| `/omd-note` | writes `docs/plan/NOTES.md` | a decision ledger for the conversation |
 | `/omd-recall` | `memory_recall` | pull prior facts when reasoning stalls |
 | `/omd-council` | `dag_research` (council) | judged multi-persona debate over a hard call |
 | `/omd-research-deep` | `dag_research` (`super` + `rounds`) | seeded multi-angle crawl → council → multi-round gap-filling |

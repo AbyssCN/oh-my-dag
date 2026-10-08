@@ -8,7 +8,7 @@
  *
  * ## 切片 6 (2026-09-05) — registry 接线
  *
- * 注册表驱动的命令 (`status` / `map add` / `doctor` / `call` 等 36 + 1 条) 走
+ * 注册表驱动的命令 (`status` / `research` / `doctor` / `call` 等) 走
  * `dispatchCli()` 单点编排: 装配 → 找 handler → 调 → 渲染 → 退出码。
  * 既有子命令 (`mcp` / `init` / `touch` / `touches` / `gc` / `pack`
  * / `config dump` / `config verify-seats` / `plan --dry-run` / `run --fixture` /

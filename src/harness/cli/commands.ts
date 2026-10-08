@@ -4,7 +4,7 @@
  * ## 这是什么
  *
  * 把 registry.ts 的命令表**按工具分组**导出,供消费方按域查 (例如 cli.ts 接线可以
- * 单独引用 `MAP_COMMANDS`;文档对账测试可单独引用 `MEMORY_COMMANDS`)。同时承载
+ * 单独引用 `DAG_COMMANDS`;文档对账测试可单独引用 `MEMORY_COMMANDS`)。同时承载
  * `renderRunResult` / `renderStatus` 两个**人读渲染**函数 —— registry 的 `CliCommand.render`
  * 字段正是为它们留的注入点 (见 invoke.ts 的 render 覆盖路径)。
  *
@@ -135,21 +135,6 @@ const DAG_COMMANDS: readonly CliCommand[] = [
   build(['slim'], 'dag_slim', 'find over-engineering'),
   build(['triage'], 'dag_triage', 'show owner triage inbox', ['runId']),
   build(['rule'], 'dag_rule', 'rule on owner decision', ['runId', 'ruling']),
-];
-
-// ---------------------------------------------------------------------------
-// MAP_COMMANDS —— map init/open/add/tickets/rule/confirm/deliver/prefetch (8 条)
-// ---------------------------------------------------------------------------
-
-const MAP_COMMANDS: readonly CliCommand[] = [
-  build(['map', 'init'], 'map_init', 'initialize decision map'),
-  build(['map', 'open'], 'map_open', 'open decision map'),
-  build(['map', 'add'], 'map_add', 'add map ticket'),
-  build(['map', 'tickets'], 'map_tickets', 'list map tickets'),
-  build(['map', 'rule'], 'map_rule', 'rule on map ticket'),
-  build(['map', 'confirm'], 'map_confirm', 'confirm or reject suggested ticket'),
-  build(['map', 'deliver'], 'map_deliver', 'deliver ruled map region'),
-  build(['map', 'prefetch'], 'map_prefetch', 'prefetch map context'),
 ];
 
 // ---------------------------------------------------------------------------
@@ -293,4 +278,4 @@ function renderStructuredResult(result: Record<string, unknown>): string {
   return lines.join('\n');
 }
 
-export { CONFIG_COMMANDS, DAG_COMMANDS, MAP_COMMANDS, MEMORY_COMMANDS };
+export { CONFIG_COMMANDS, DAG_COMMANDS, MEMORY_COMMANDS };

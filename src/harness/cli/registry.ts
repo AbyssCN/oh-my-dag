@@ -5,10 +5,10 @@
  * assembled MCP tool surface; legacy subcommands continue through cli.ts.
  */
 
-import { CONFIG_COMMANDS, DAG_COMMANDS, MAP_COMMANDS, MEMORY_COMMANDS } from './commands';
+import { CONFIG_COMMANDS, DAG_COMMANDS, MEMORY_COMMANDS } from './commands';
 
 export interface CliCommand {
-  /** Command path, for example ['status'] or ['map', 'add']. */
+  /** Command path, for example ['status'] or ['config', 'set-role']. */
   readonly path: readonly string[];
   /** New MCP tool name. */
   readonly tool?: string;
@@ -122,13 +122,12 @@ function command(
   };
 }
 
-// 命名命令表的**唯一真源**是 ./commands.ts (按 dag / map / memory / config 分组)。
+// 命名命令表的**唯一真源**是 ./commands.ts (按 dag / memory / config 分组)。
 // 此前这里还有一份同名拷贝 —— 两份表各自维护必漂, 而且 commands.ts 因此成了 import 图上的孤儿
 // (reachability 闸红)。Aalto 验收修 2026-09-05: 这里只组合, 不再声明。
 /** All named commands. Order is user-facing usage order and longest paths are unique. */
 export const CLI_COMMANDS: readonly CliCommand[] = [
   ...DAG_COMMANDS,
-  ...MAP_COMMANDS,
   ...MEMORY_COMMANDS,
   ...CONFIG_COMMANDS,
   command(['call'], undefined, 'call any MCP tool; use --json or --key value', ['tool']),

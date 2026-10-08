@@ -2,7 +2,7 @@
  * src/harness/cli/commands.test.ts —— 切片 5 验收 (SDD 2026-09-05, 写集只这两个文件)。
  *
  * 验收范围:
- *   · DAG_COMMANDS / MAP_COMMANDS / MEMORY_COMMANDS / CONFIG_COMMANDS 四张表导出且非空,
+ *   · DAG_COMMANDS / MEMORY_COMMANDS / CONFIG_COMMANDS 三张表导出且非空,
  *     path / tool / summary 字段格式与注册面 (TOOL_RENAMES) 对得上。
  *   · 命令 argv 映射:位置参 → camelCase handler key;flag 解析与 registry.ts 的 parseGenericArgs 一致。
  *   · renderStatus / renderRunResult 是纯函数;能识别 handler content 形态 (单 text 段 / JSON 串 / 字符串结果)。
@@ -16,15 +16,14 @@ import { describe, expect, test } from 'bun:test';
 import {
   CONFIG_COMMANDS,
   DAG_COMMANDS,
-  MAP_COMMANDS,
   MEMORY_COMMANDS,
   renderRunResult,
   renderStatus,
 } from './commands';
 
 describe('命令表导出与最小形态', () => {
-  test('四张表都非空且类型是 readonly CliCommand[]', () => {
-    for (const list of [DAG_COMMANDS, MAP_COMMANDS, MEMORY_COMMANDS, CONFIG_COMMANDS]) {
+  test('三张表都非空且类型是 readonly CliCommand[]', () => {
+    for (const list of [DAG_COMMANDS, MEMORY_COMMANDS, CONFIG_COMMANDS]) {
       expect(Array.isArray(list)).toBe(true);
       expect(list.length).toBeGreaterThan(0);
       for (const cmd of list) {
@@ -57,13 +56,6 @@ describe('命令表导出与最小形态', () => {
       'rule',
     ]) {
       expect(paths.has(want), `missing DAG path: ${want}`).toBe(true);
-    }
-  });
-
-  test('MAP_COMMANDS 含切片表约定的 8 个 path', () => {
-    const paths = new Set(MAP_COMMANDS.map((c) => c.path.join(' ')));
-    for (const want of ['map init', 'map open', 'map add', 'map tickets', 'map rule', 'map confirm', 'map deliver', 'map prefetch']) {
-      expect(paths.has(want), `missing MAP path: ${want}`).toBe(true);
     }
   });
 
@@ -100,13 +92,12 @@ describe('命令表导出与最小形态', () => {
       'run', 'dag_run_plan', 'dag_status', 'dag_result', 'dag_runs', 'dag_resume', 'dag_cancel',
       'dag_intervene', 'dag_node_output', 'dag_research', 'dag_review', 'dag_debug', 'dag_deepen',
       'dag_slim', 'dag_triage', 'dag_rule',
-      'map_init', 'map_open', 'map_add', 'map_tickets', 'map_rule', 'map_confirm', 'map_deliver', 'map_prefetch',
       'memory_recall', 'memory_fact', 'memory_remember',
       'omd_env', 'omd_config_status', 'omd_set_key', 'omd_set_model', 'omd_set_role',
       'omd_apply_preset', 'omd_register_provider', 'omd_models_auto',
       'omd_shapes', 'omd_primitive', 'omd_web', 'omd_distill', 'omd_plans',
     ]);
-    for (const list of [DAG_COMMANDS, MAP_COMMANDS, MEMORY_COMMANDS, CONFIG_COMMANDS]) {
+    for (const list of [DAG_COMMANDS, MEMORY_COMMANDS, CONFIG_COMMANDS]) {
       for (const cmd of list) {
         expect(allowed.has(cmd.tool ?? ''), `unexpected tool: ${cmd.tool}`).toBe(true);
       }
@@ -115,7 +106,7 @@ describe('命令表导出与最小形态', () => {
 
   test('路径没有重复 (跨表也不重)', () => {
     const seen = new Set<string>();
-    for (const list of [DAG_COMMANDS, MAP_COMMANDS, MEMORY_COMMANDS, CONFIG_COMMANDS]) {
+    for (const list of [DAG_COMMANDS, MEMORY_COMMANDS, CONFIG_COMMANDS]) {
       for (const cmd of list) {
         const key = cmd.path.join(' ');
         expect(seen.has(key), `duplicate path: ${key}`).toBe(false);
@@ -141,12 +132,6 @@ describe('命令表 argv 映射', () => {
     const runs = DAG_COMMANDS.find((c) => c.path.join(' ') === 'runs')!;
     expect(runs.argv(['--limit', '5'])).toEqual({ limit: 5 });
     expect(runs.argv(['--limit', '5', '--verbose'])).toEqual({ limit: 5, verbose: true });
-
-    const mapAdd = MAP_COMMANDS.find((c) => c.path.join(' ') === 'map add')!;
-    expect(mapAdd.argv(['--title', 'fix bug', '--blocked-by', 'a,b'])).toEqual({
-      title: 'fix bug',
-      blockedBy: 'a,b',
-    });
   });
 
   test('--detached 是 boolean (run 真跑要求逐字识别,D-4/D-6 联用)', () => {

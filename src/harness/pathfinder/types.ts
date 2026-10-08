@@ -9,8 +9,9 @@
  *       D-3 控制面统一 (2026-08-11: 票语义三类 + 裁决票不可派发, 见下 TicketClass)。
  */
 
-/** 票类型 (D-9): research=AFK 后台调研 / grill=HITL 审议 (纪律不动手, 无代码闸) / prototype=沙盒 spike / task=待编译施工。 */
-export type TicketType = 'research' | 'grill' | 'prototype' | 'task';
+// 票类型 (D-9) 的真身随 result-format 搬到 research/ (2026-10-08 S3, dag-research 仍用 result-format)。
+import type { TicketType } from '../research/result-format';
+export type { TicketType };
 
 /** 票状态: suggested=机器建议待人确认(S-1) / open=前沿可动 / blocked=前置未散 / ruled=已裁决 / delivered=slice 已交付(终态) / escalated=`?` 上报 owner。 */
 export type TicketStatus = 'suggested' | 'open' | 'blocked' | 'ruled' | 'delivered' | 'escalated';

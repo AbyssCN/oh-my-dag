@@ -14,7 +14,6 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createGoalTool } from './goal';
-import { createPathfinderTools, type PathfinderToolDeps } from './pathfinder';
 import { createDagTools, type DagEngine } from './dag-tools';
 import { createComposeTools } from './compose';
 import { RunRegistry } from '../run-registry';
@@ -193,91 +192,6 @@ describe('dag_run 的运行留痕接线', () => {
     // entry 复用 launchPlanRun 已有的 toolName —— 不是另造的一套分类法。
     expect(rows[0]!.entry).toBe('dag_run_plan');
     recorder.close();
-  });
-});
-
-/**
- * `path_deliver` 的留痕接线 (2026-08-02 新接)。
- *
- * 它是四个**会真跑图**的入口里最后一个不进账本的。这一格空着的后果不是"少一列":
- * 「各入口占比」会**系统性看不见慢回路那一块**,而"缺一个入口"与"没人用这个入口"
- * 在读数上长得一模一样 —— 正是本文件头注说的那种沉默。
- *
- * ⚠ **这条网的边界**: 它钉的是 `path_deliver → executeSlice` 那一跳传对了 recorder/entry/runId。
- * `executeSlice` 内部把 `opts.entry` 转进 `record()` meta 的那几行**没有网**
- * (它要真跑 `iterateExecutorDag`,建夹具不成比例)。所以别把这条的绿读成"端到端记上了"。
- */
-describe('path_deliver 的运行留痕接线', () => {
-  test('把 recorder / entry / runId 传进 executeSlice —— 慢回路这条此前完全不进账本', async () => {
-    const recorder = createDagRecorder({ path: ':memory:' });
-    const dir = mkdtempSync(join(tmpdir(), 'omd-pf-rec-'));
-    let seen: Record<string, unknown> | undefined;
-
-    const deps: PathfinderToolDeps = {
-      cwd: dir,
-      env: {},
-      models: { conductorModel: '', leafModel: 'fake:leaf' },
-      agentRunner: (async () => ({ text: '', usage: { in: 0, out: 0 } })) as PathfinderToolDeps['agentRunner'],
-      commandRunner: (async () => ({
-        text: '', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 0,
-      })) as PathfinderToolDeps['commandRunner'],
-      dispatchFrontier: (() => ({ dispatched: [], reported: [] })) as unknown as PathfinderToolDeps['dispatchFrontier'],
-      executeSlice: (async (plan: { nodes: Record<string, unknown> }, opts: Record<string, unknown>) => {
-        seen = opts;
-        return { results: Object.fromEntries(Object.keys(plan.nodes).map((id) => [id, { status: 'done' }])) };
-      }) as unknown as PathfinderToolDeps['executeSlice'],
-      recorder,
-    };
-    const byName = new Map(createPathfinderTools(deps).map((t) => [t.name, t]));
-    const call = async (n: string, a: Record<string, unknown> = {}) =>
-      (await byName.get(n)!.handler(a as never, {} as never)) as { content: { text: string }[]; isError?: boolean };
-
-    await call('path_map', { destination: 'Ship X' });
-    // #197: executorKind 显式给 ('inproc' 取代旧静默回落, 不撞 spec gate)
-    await call('path_add', { title: 'build the thing', type: 'task', executorKind: 'inproc' });
-    await call('path_rule', { ticketId: 't1', ruling: 'do it with bun' });
-    const deliver = await call('path_deliver');
-
-    expect(deliver.isError).not.toBe(true);
-    expect(seen?.recorder).toBe(recorder);
-    expect(seen?.entry).toBe('map_deliver'); // entry 新词表 (t7)
-    // runId 现造: executeSlice 可能落多条 (iterate 每轮一张图), 没有共同 runId 就归不成"这一次交付"。
-    expect(typeof seen?.runId).toBe('string');
-    recorder.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  test('没给 recorder → 不传 recorder/entry, 也不炸 (留痕是可选项)', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'omd-pf-rec-'));
-    let seen: Record<string, unknown> | undefined;
-    const deps: PathfinderToolDeps = {
-      cwd: dir,
-      env: {},
-      models: { conductorModel: '', leafModel: 'fake:leaf' },
-      agentRunner: (async () => ({ text: '', usage: { in: 0, out: 0 } })) as PathfinderToolDeps['agentRunner'],
-      commandRunner: (async () => ({
-        text: '', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 0,
-      })) as PathfinderToolDeps['commandRunner'],
-      dispatchFrontier: (() => ({ dispatched: [], reported: [] })) as unknown as PathfinderToolDeps['dispatchFrontier'],
-      executeSlice: (async (plan: { nodes: Record<string, unknown> }, opts: Record<string, unknown>) => {
-        seen = opts;
-        return { results: Object.fromEntries(Object.keys(plan.nodes).map((id) => [id, { status: 'done' }])) };
-      }) as unknown as PathfinderToolDeps['executeSlice'],
-    };
-    const byName = new Map(createPathfinderTools(deps).map((t) => [t.name, t]));
-    const call = async (n: string, a: Record<string, unknown> = {}) =>
-      (await byName.get(n)!.handler(a as never, {} as never)) as { content: { text: string }[]; isError?: boolean };
-
-    await call('path_map', { destination: 'Ship Y' });
-    // #197: executorKind 显式给 ('inproc' 取代旧静默回落, 不撞 spec gate)
-    await call('path_add', { title: 'x', type: 'task', executorKind: 'inproc' });
-    await call('path_rule', { ticketId: 't1', ruling: 'go' });
-    await call('path_deliver');
-
-    // **不许编一个 entry** —— 没 recorder 时这两位一律缺席 (同 DagRunRecord.entry 的纪律)。
-    expect(seen?.recorder).toBeUndefined();
-    expect(seen?.entry).toBeUndefined();
-    rmSync(dir, { recursive: true, force: true });
   });
 });
 

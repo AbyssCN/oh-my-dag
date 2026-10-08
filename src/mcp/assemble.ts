@@ -30,7 +30,6 @@ import { probeShellSandbox } from '../harness/hooks/shell-sandbox';
 import { createDagTools, type DagEngine } from './tools/dag-tools';
 import type { BranchStrategy } from '../harness/run-worktree';
 import { createMemoryTools } from './tools/memory';
-import { createPathfinderTools, type PathfinderToolDeps } from './tools/pathfinder';
 import { createDagResearchTool, type ResearchFanout } from './tools/research';
 import { createGoalTool } from './tools/goal';
 import { runGoal } from '../harness/goal/run-goal';
@@ -203,8 +202,6 @@ export interface AssembleOmdMcpDeps {
   researchRunner?: ResearchLeafRunner;
   /** engine config 追加覆盖 (在 env 角色矩阵解析结果之上, caller 显式指定优先)。 */
   configOverrides?: Partial<ExecutorDagConfig>;
-  /** pathfinder 工具接缝覆盖 (测试传 fake executeSlice/dispatchFrontier)。 */
-  pathfinder?: Partial<Pick<PathfinderToolDeps, 'executeSlice' | 'dispatchFrontier'>>;
   /** fleet spawn 接缝 (测试注入 fake; 生产默认 Bun.spawn)。 */
   spawn?: SpawnFn;
   /**
@@ -914,20 +911,6 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     }),
     // root = 代码锚判陈旧的基准 (evidence[].path 是仓相对的)。与其余工具同一个 cwd。
     ...createMemoryTools({ memory, root: cwd }),
-    // pathfinder 六件套 (TUI-less 决策地图: map/add/tickets/rule/deliver/prefetch, pull 式回流)。
-    ...createPathfinderTools({
-      cwd,
-      env,
-      models: resolveEngineModels(env),
-      agentRunner,
-      commandRunner,
-      // 裁决增益: path_rule 成功后经同款 OmdMemory 写 omd.pattern fact (memory_recall 消费端可召回)。
-      memory,
-      // 运行留痕与 dag_run / dag_goal 同一个实例 (2026-08-02 补: path_deliver 是四个会真跑图的
-      // 入口里最后一个没接的 —— 缺它, 「各入口占比」会系统性看不见慢回路那一块)。
-      recorder,
-      ...deps.pathfinder,
-    }),
     // fleet 四工具: review/slim/deepen/debug 异步子进程。
     // D-4 (SDD C-5): onNodeEvent 也达 fleet —— dag_review 的进度翻成标准 DagNodeEvent 灌 pushDagEvent
     // (此前只达 createDagTools, review 这条观察面是断的)。省略 = 不转 (现状)。
