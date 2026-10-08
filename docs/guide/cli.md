@@ -127,7 +127,6 @@ Logs always go to stderr; only the result lands on stdout. Pipe-friendly by cons
 | `omd config preset` | `omd_apply_preset` | apply a wizard preset (base-opencode-go · cn-standard · cn-ultimate) |
 | `omd config register-provider` | `omd_register_provider` | register an OpenAI-compatible provider |
 | `omd config models-auto` | `omd_models_auto` | auto-assign per-node models by channel economics |
-| `omd config hud` | `omd_toggle_hud` | toggle the statusline HUD |
 
 ## Misc commands
 

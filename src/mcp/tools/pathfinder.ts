@@ -41,8 +41,6 @@ import {
 import type { PathMap, Ticket, TicketType } from '../../harness/pathfinder/types';
 import type { OmdMemory } from '../../harness/memory/store';
 import type { DagRecorder } from '../../harness/dag/dag-record';
-import type { HudMirror } from '../../hud/mirror';
-import { compactFog } from '../../hud/fog';
 
 export interface PathfinderToolDeps {
   cwd: string;
@@ -58,8 +56,6 @@ export interface PathfinderToolDeps {
   dispatchGoal?: typeof realDispatchGoalTicket;
   /** 后端解析器 (省略 = resolveBackend(cwd, {env}): env OMD_PATH_BACKEND > 仓库配置 > md)。测试注入 gh 替身。 */
   resolveBackend?: (cwd: string) => PathBackend;
-  /** omd-hud 迷雾镜像 (给则每次 renderStatus 把当前地图迷雾原子写 .omd/hud/fog.json)。省略 = 不写。 */
-  hudMirror?: HudMirror;
   /**
    * 记忆接缝 (裁决增益): path_rule 成功后把「<destination>: <title> 裁决 = <ruling>」记为 omd.pattern
    * fact, 经 memory_remember 同款底层 (OmdMemory.writeFact, scanSecrets:false 用户主权), **不绕道 MCP
@@ -168,10 +164,8 @@ export function fogBar(map: PathMap): string {
   return lines.join('\n');
 }
 
-/** 地图快照文本: 目的地 + 状态计数 + 前沿逐行 + 区域散尽提示 (path_deliver 报信)。
- *  副作用: 给 hudMirror 则把当前迷雾原子写 fog.json (omd-hud 数据源; fail-open 内建)。 */
-function renderStatus(map: PathMap, hudMirror?: HudMirror): string {
-  hudMirror?.writeFog(compactFog(map));
+/** 地图快照文本: 目的地 + 状态计数 + 前沿逐行 + 区域散尽提示 (path_deliver 报信)。 */
+function renderStatus(map: PathMap): string {
   const fr = computeFrontier(map);
   const counts = new Map<string, number>();
   for (const t of map.tickets) counts.set(t.status, (counts.get(t.status) ?? 0) + 1);
@@ -374,7 +368,7 @@ function makeMap(deps: PathfinderToolDeps): OmdMcpTool {
       const hit = maps.find((m) => m.slug === d || m.destination === d || m.slug === slugifyDestination(d));
       try {
         const map = hit ? backend.readMap(cwd, hit.slug)! : backend.createMap(cwd, d, slugifyDestination(d));
-        return ok(renderStatus(map, deps.hudMirror));
+        return ok(renderStatus(map));
       } catch (e) {
         return err(errMsg(e));
       }
@@ -443,7 +437,7 @@ function makeAdd(deps: PathfinderToolDeps): OmdMcpTool {
           ? `\n⚠ prototype 恒走 goal 档 (detached solve, #135) — executorKind='${executorKind}' 不生效, 可去掉。`
           : '';
       const map = backend.readMap(cwd, r.slug);
-      return ok(`✓ 已加票 ${created.id}${deadKnob}${map ? `\n${renderStatus(map, deps.hudMirror)}` : ''}`);
+      return ok(`✓ 已加票 ${created.id}${deadKnob}${map ? `\n${renderStatus(map)}` : ''}`);
     },
   };
 }
@@ -470,7 +464,7 @@ function makeTickets(deps: PathfinderToolDeps): OmdMcpTool {
         (e) => `⏳ 等人超时: ${e.ticketId} 已等 ${Math.floor(e.waitedMs / 3_600_000)}h (自 ${e.waitingSince}) — 已标 stale, 台账留痕。`,
       );
       const map = backend.readMap(deps.cwd, r.slug)!;
-      return ok([...reflow, ...staleLines, renderStatus(map, deps.hudMirror)].join('\n'));
+      return ok([...reflow, ...staleLines, renderStatus(map)].join('\n'));
     },
   };
 }
@@ -535,7 +529,7 @@ function makeRule(deps: PathfinderToolDeps): OmdMcpTool {
           ...reflow,
           ack,
           ...(memNote ? [memNote] : []),
-          renderStatus(map, deps.hudMirror),
+          renderStatus(map),
         ].join('\n'),
       );
     },
@@ -570,7 +564,7 @@ function makeConfirm(deps: PathfinderToolDeps): OmdMcpTool {
           ...(title !== undefined ? { title: title as string } : {}),
         });
         const map = backend.readMap(deps.cwd, r.slug)!;
-        return ok([`✓ 建议 ${ticketId} → ${entry.outcome}`, renderStatus(map, deps.hudMirror)].join('\n'));
+        return ok([`✓ 建议 ${ticketId} → ${entry.outcome}`, renderStatus(map)].join('\n'));
       } catch (e) {
         return err(errMsg(e));
       }
@@ -634,7 +628,7 @@ function makeDeliver(deps: PathfinderToolDeps): OmdMcpTool {
       if (region.slice.length === 0) {
         // 纯 goal 区域: 没有 slice 可执行, 汇报 fire 结果即完成 (票留 ruled 等回流)。
         if (goalLines.length === 0) return err('区域为空 (不该发生: readyRegion 非 null 但两侧都空)。');
-        return ok([...goalLines, renderStatus(backend.readMap(cwd, r.slug)!, deps.hudMirror)].join('\n'));
+        return ok([...goalLines, renderStatus(backend.readMap(cwd, r.slug)!)].join('\n'));
       }
       // D-3/G-4 (切片 6): **第二条派发路径**的装配期闸 —— compileSlice→executeSlice 这条同样
       // 会把票交给执行体, 而 readyRegion 只看 type+status **不看类**: 一张标了
@@ -700,7 +694,7 @@ function makeDeliver(deps: PathfinderToolDeps): OmdMcpTool {
         return ok([
           ...goalLines,
           `◈ slice "${plan.name}" 已执行 (${Object.keys(plan.nodes ?? {}).length} 节点) — 区域 [${region.slice.join(', ')}] 已交付。`,
-          renderStatus(backend.readMap(cwd, r.slug)!, deps.hudMirror),
+          renderStatus(backend.readMap(cwd, r.slug)!),
         ].join('\n'));
       } catch (e) {
         return err(`slice 执行失败: ${String(e)}`);

@@ -85,7 +85,6 @@ describe('命令表导出与最小形态', () => {
       'config preset',
       'config register-provider',
       'config models-auto',
-      'config hud',
       'shapes',
       'primitive',
       'web',
@@ -104,7 +103,7 @@ describe('命令表导出与最小形态', () => {
       'map_init', 'map_open', 'map_add', 'map_tickets', 'map_rule', 'map_confirm', 'map_deliver', 'map_prefetch',
       'memory_recall', 'memory_fact', 'memory_remember',
       'omd_env', 'omd_config_status', 'omd_set_key', 'omd_set_model', 'omd_set_role',
-      'omd_apply_preset', 'omd_register_provider', 'omd_models_auto', 'omd_toggle_hud',
+      'omd_apply_preset', 'omd_register_provider', 'omd_models_auto',
       'omd_shapes', 'omd_primitive', 'omd_web', 'omd_distill', 'omd_plans',
     ]);
     for (const list of [DAG_COMMANDS, MAP_COMMANDS, MEMORY_COMMANDS, CONFIG_COMMANDS]) {

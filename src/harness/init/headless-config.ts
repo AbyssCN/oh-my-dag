@@ -30,7 +30,6 @@ import {
 import { listCustomProviderStatus, modelsJsonPath, upsertProvider } from '../../model/models-json';
 import { providerCredentialed } from '../../model/role-fallback';
 import { ROLE_PRESETS, coordProvider } from './role-presets';
-import { hudStatusLineCommand, installHudStatusLine } from './hud-statusline';
 import { upsertEnv } from './wizard';
 
 /** native registry provider → 其 env key 名 (registerProvidersFromEnv 硬编码消费点)。 */
@@ -387,41 +386,4 @@ export function configSnapshot(deps: HeadlessDeps = {}): ConfigSnapshot {
     customApis: listCustomProviderStatus(env).map((cp) => ({ id: cp.id, baseUrl: cp.baseUrl })),
     warnings,
   };
-}
-
-// ---------------------------------------------------------------------------
-// toggleHud — 装/卸 omd-hud statusLine (本 repo .claude/settings.local.json)。
-// ---------------------------------------------------------------------------
-
-export interface ToggleHudResult {
-  on: boolean;
-  status: 'installed' | 'already' | 'removed' | 'not-present' | 'failed';
-  path: string;
-  reason?: string;
-}
-
-export function toggleHud(cwd: string, on: boolean, deps: HeadlessDeps = {}): ToggleHudResult {
-  const path = join(cwd, '.claude', 'settings.local.json');
-  if (on) {
-    const r = installHudStatusLine(cwd);
-    return {
-      on: true,
-      status: r.status === 'installed' ? 'installed' : r.status === 'already' ? 'already' : 'failed',
-      path: r.path,
-      ...(r.reason ? { reason: r.reason } : {}),
-    };
-  }
-  // off: 仅当 statusLine 是本 repo 的 omd-hud 时移除, 不动其它。
-  if (!existsSync(path)) return { on: false, status: 'not-present', path };
-  let obj: Record<string, unknown>;
-  try {
-    obj = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
-  } catch {
-    return { on: false, status: 'failed', path, reason: 'settings.local.json 非法 JSON — 拒绝改动' };
-  }
-  const cur = obj.statusLine as { command?: string } | undefined;
-  if (!cur || cur.command !== hudStatusLineCommand(cwd)) return { on: false, status: 'not-present', path };
-  delete obj.statusLine;
-  (deps.writeFile ?? ((p, c) => writeFileSync(p, c, 'utf8')))(path, `${JSON.stringify(obj, null, 2)}\n`);
-  return { on: false, status: 'removed', path };
 }

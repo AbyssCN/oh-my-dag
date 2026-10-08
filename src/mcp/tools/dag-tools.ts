@@ -20,8 +20,7 @@ import type { ConductorPlan } from '../../harness/conductor-plan.js';
 import { parsePlan } from '../../harness/conductor-plan.js';
 import { knownMcpServerNames } from '../client/config.js';
 import { topoLevels } from '../../harness/dag/engine.js';
-import { renderProgressAscii } from './dag-ascii.js';
-import type { HudMirror } from '../../hud/mirror.js';
+import { renderProgressAscii } from './dag-ascii';
 import type { PlanLedger } from '../../harness/plan/plan-ledger.js';
 import { recordDagRun, type DagRecorder } from '../../harness/dag/dag-record.js';
 import { computeCost } from '../../model/cost-ledger.js';
@@ -206,18 +205,9 @@ export interface DagToolDeps {
    */
   continuity?: { manager: CheckpointManager; repoRoot: string };
   /**
-   * omd-hud 活体镜像 (给则每个 onNodeEvent + 完成态把 DAG 进度原子写 .omd/hud/dag.json,
-   * statusline 数据源)。fail-open 不影响执行; 省略 = 不写 (HUD 空闲)。
-   */
-  hudMirror?: HudMirror;
-  /**
-   * **进程内节点事件旁路**(TUI SDD §6,切片 S11):给了就在 hud 镜像写盘**之后**原样转一份。
+   * **进程内节点事件旁路**(TUI SDD §6,切片 S11):给了就在 registry 记账**之后**原样转一份。
    *
-   * 为什么不让 TUI 去读 `.omd/hud/dag.json`:owner 已拍板进程内直订阅 —— 零文件 IO、零延迟。
-   * 为什么仍然写那个文件:它是 statusline 的数据源,**加 TUI 不许把 statusline 断掉**。
-   * 两条路各有各的消费者,不是重复。
-   *
-   * fail-open 且不吞证据:订阅者抛错记一行、不打断执行(HUD 画不出来不该拖垮 DAG)。
+   * fail-open 且不吞证据:订阅者抛错记一行、不打断执行。
    */
   onNodeEvent?: (runId: string, e: DagNodeEvent) => void;
   /**
@@ -397,7 +387,7 @@ function launchPlanRun(
   opts: { resume?: string; leafModel?: string; maxFanout?: number; task?: string; toolName: string; branchStrategy?: BranchStrategy },
   deps: DagToolDeps,
 ): { content: { type: 'text'; text: string }[]; isError?: boolean } {
-  const { engine, runRegistry, continuity, hudMirror, ledger, recorder, onNodeEvent } = deps;
+  const { engine, runRegistry, continuity, ledger, recorder, onNodeEvent } = deps;
   const { resume, leafModel, maxFanout, task, toolName } = opts;
   const runId = resume ?? randomUUID();
   const goal = task?.slice(0, 200) ?? parsedPlan.name ?? 'prebuilt plan';
@@ -424,12 +414,6 @@ function launchPlanRun(
     runRegistry.fail(runId, (e as Error).message);
     return { content: [{ type: 'text' as const, text: `${opts.toolName} 拒绝: ${(e as Error).message}` }], isError: true };
   }
-  let hudLevels: string[][] | undefined;
-  try {
-    hudLevels = topoLevels(parsedPlan);
-  } catch {
-    hudLevels = undefined;
-  }
   const config: ExecutorDagConfig = {
     ...defaultConfig,
     leafModel: leafModel ?? defaultConfig?.leafModel ?? '',
@@ -438,9 +422,6 @@ function launchPlanRun(
     cancelSignal: runRegistry.attachCancel(runId),
     onNodeEvent: (e) => {
       runRegistry.applyNodeEvent(runId, e);
-      hudMirror?.write(runId, runRegistry.getRecord(runId), hudLevels);
-      // 旁路在镜像写盘**之后** —— 顺序是判据不是口味: 订阅者再慢也不许让 statusline 的
-      // 数据源等它, 而反过来 statusline 写盘失败 (fail-open) 也不该吃掉这一份转发。
       if (onNodeEvent) {
         try {
           onNodeEvent(runId, e);
@@ -491,13 +472,11 @@ function launchPlanRun(
       if (result.cancelled) runRegistry.cancel(runId, result.cancelled.reason, summarizeResult(result));
       else if (zd) runRegistry.fail(runId, zd, summarizeResult(result));
       else runRegistry.succeed(runId, summarizeResult(result));
-      hudMirror?.write(runId, runRegistry.getRecord(runId), hudLevels);
       if (ledger && task) recordPlanRun(ledger, task, result, config.conductorModel);
     })
     .catch((err) => {
       const msg = err instanceof Error ? err.message : String(err);
       runRegistry.fail(runId, msg);
-      hudMirror?.write(runId, runRegistry.getRecord(runId), hudLevels);
     });
   return {
     content: [{
@@ -724,7 +703,7 @@ function executeDagRunInProc(
   args: { task: string; conductorModel?: string; leafModel?: string; resume?: string; maxFanout?: number; branchStrategy?: BranchStrategy },
   deps: DagToolDeps,
 ): { content: { type: 'text'; text: string }[]; isError?: boolean } {
-  const { engine, runRegistry, continuity, hudMirror, ledger, recorder, onNodeEvent } = deps;
+  const { engine, runRegistry, continuity, ledger, recorder, onNodeEvent } = deps;
   const { task, conductorModel, leafModel, resume, maxFanout } = args;
   const goal = task.slice(0, 200);
   if (resume) {
@@ -764,11 +743,9 @@ function executeDagRunInProc(
     ...(leafModel ? { agentLeafModel: leafModel } : {}),
     // D-P: 取消把手 (dag_cancel 拉它)。
     cancelSignal: runRegistry.attachCancel(runId),
-    // 活体进度: conductor 出图后引擎发 planned → start/settle 流进 registry (dag_status 实时) +
-    // hudMirror 原子写 .omd/hud/dag.json (omd-hud statusline 数据源; conductor 路径无 topo → levels=null 平铺)。
+    // 活体进度: conductor 出图后引擎发 planned → start/settle 流进 registry (dag_status 实时)。
     onNodeEvent: (e) => {
       runRegistry.applyNodeEvent(runId, e);
-      hudMirror?.write(runId, runRegistry.getRecord(runId));
       if (onNodeEvent) {
         try {
           onNodeEvent(runId, e);
@@ -834,14 +811,12 @@ function executeDagRunInProc(
       if (result.cancelled) runRegistry.cancel(runId, result.cancelled.reason, summarizeResult(result));
       else if (zd) runRegistry.fail(runId, zd, summarizeResult(result));
       else runRegistry.succeed(runId, summarizeResult(result));
-      hudMirror?.write(runId, runRegistry.getRecord(runId)); // 终态 done → statusline grace 后收起
       // plan-memory Phase A: 记一笔 (family 聚类 + 版本 + 战绩)。record 自身 fail-open。
       if (ledger) recordPlanRun(ledger, task, result, config.conductorModel);
     })
     .catch((err) => {
       const msg = err instanceof Error ? err.message : String(err);
       runRegistry.fail(runId, msg);
-      hudMirror?.write(runId, runRegistry.getRecord(runId)); // 终态 failed
     });
 
   return {
