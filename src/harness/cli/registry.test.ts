@@ -27,7 +27,6 @@ describe('CLI registry', () => {
     expect(findCommand(['status', 'run-1'])?.cmd.tool).toBe('dag_status');
     expect(findCommand(['map', 'add', '--title', 'ticket'])?.cmd.tool).toBe('map_add');
     expect(findCommand(['config', 'set-model', '--role', 'leaf'])?.cmd.tool).toBe('omd_set_model');
-    expect(findCommand(['history', 'search', '--query', 'needle'])?.cmd.tool).toBe('history_search');
   });
 
   test('preserves legacy fixture run and solve dispatch', () => {
@@ -71,7 +70,6 @@ describe('CLI registry', () => {
   test('every renamed production name has command or explicit exclusion', () => {
     const names = new Set(CLI_COMMANDS.flatMap((command) => (command.tool ? [command.tool] : [])));
     for (const name of Object.values(TOOL_RENAMES)) expect(names.has(name) || name in MCP_ONLY).toBe(true);
-    expect(MCP_ONLY.conductor_chat).toContain('多轮');
   });
 
   test('production assembled names have command or explicit exclusion', () => {

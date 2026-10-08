@@ -30,7 +30,6 @@ discipline (when to escalate, how to accept, who holds the trigger).
 | `dag_deepen` | architecture-deepening scan: git-hotspot discovery → one agent per hotspot → leverage-ranked HTML report |
 | `dag_debug` | parallel multi-hypothesis root-cause debug fleet, async — reproduce + codegraph → fan out hypotheses |
 | `solve` (alias: `dag_goal`) | autonomous goal loop: research → spec → execute → verify → one repair round |
-| `conductor_chat` | chat with the conductor (persistent session): it answers directly or plans DAG runs; read-only hands, all writes go through graphs; reply header carries sessionId + spawned runIds |
 | `dag_cancel` | cooperative stop: no new nodes dispatched, in-flight ones finish, ends `cancelled` (resumable) |
 | `dag_triage` | **owner inbox** (read-only): decision forks a running graph raised, plus runs that need a human look |
 | `dag_rule` | rule on one of those forks; the ruling becomes a verbatim owner directive for the run's next round |

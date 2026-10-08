@@ -37,7 +37,7 @@ describe('OMD_WEB_ORDER', () => {
 
   test('② failover 真的先打排第一的 provider', async () => {
     const hosts: string[] = [];
-    globalThis.fetch = (async (input: RequestInfo | URL) => {
+    globalThis.fetch = (async (input: string | URL | Request) => {
       hosts.push(new URL(String(input instanceof Request ? input.url : input)).host);
       throw new Error('offline');
     }) as unknown as typeof fetch;

@@ -98,7 +98,6 @@ describe('全仓闸: 调了 unref() 的 spawn 必须同时传 detached', () => {
     'src/mcp/tools/goal.ts',
     'src/mcp/tools/dag-tools.ts',
     'src/harness/pathfinder/dispatch.ts',
-    'src/harness/session/final-spawn.ts',
     'scripts/session-continuity-hook.ts',
   ];
 

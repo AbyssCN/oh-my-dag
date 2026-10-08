@@ -112,11 +112,11 @@ describe('GWT-5 dispatch: --help / 空 / 未知 / legacy 落空', () => {
 });
 
 describe('GWT-5 USAGE 由表生成 + 既有手写段保留在前', () => {
-  test('USAGE 含 legacy 段 (mcp/tui/serve/init/touch/...)', async () => {
+  test('USAGE 含 legacy 段 (mcp/init/touch/...)', async () => {
     const r = await dispatchCli(['--help'], depsWith());
     expect(r?.stdout).toContain('omd mcp');
-    expect(r?.stdout).toContain('omd tui');
-    expect(r?.stdout).toContain('omd serve');
+    expect(r?.stdout).not.toContain('omd tui');
+    expect(r?.stdout).not.toContain('omd serve');
     expect(r?.stdout).toContain('omd init');
     expect(r?.stdout).toContain('omd pack');
   });

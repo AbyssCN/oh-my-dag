@@ -74,7 +74,7 @@ describe('命令表导出与最小形态', () => {
     }
   });
 
-  test('CONFIG_COMMANDS 含切片表约定的 env/config/* + shapes/primitive/web/distill/plans/history', () => {
+  test('CONFIG_COMMANDS 含切片表约定的 env/config/* + shapes/primitive/web/distill/plans', () => {
     const paths = new Set(CONFIG_COMMANDS.map((c) => c.path.join(' ')));
     for (const want of [
       'env',
@@ -91,8 +91,6 @@ describe('命令表导出与最小形态', () => {
       'web',
       'distill',
       'plans',
-      'history read',
-      'history search',
     ]) {
       expect(paths.has(want), `missing CONFIG path: ${want}`).toBe(true);
     }
@@ -108,7 +106,6 @@ describe('命令表导出与最小形态', () => {
       'omd_env', 'omd_config_status', 'omd_set_key', 'omd_set_model', 'omd_set_role',
       'omd_apply_preset', 'omd_register_provider', 'omd_models_auto', 'omd_toggle_hud',
       'omd_shapes', 'omd_primitive', 'omd_web', 'omd_distill', 'omd_plans',
-      'history_read', 'history_search',
     ]);
     for (const list of [DAG_COMMANDS, MAP_COMMANDS, MEMORY_COMMANDS, CONFIG_COMMANDS]) {
       for (const cmd of list) {

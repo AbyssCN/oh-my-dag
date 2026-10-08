@@ -46,7 +46,7 @@ import { assembleOmdMcpTools } from '../src/mcp/assemble';
 import { RunRegistry } from '../src/mcp/run-registry';
 import { createRunStore } from '../src/mcp/run-store';
 import { verifyTerminalPersisted } from '../src/mcp/terminal-verify';
-import { createTuiUsageLedger } from '../src/tui/usage/ledger';
+import { createTuiUsageLedger } from '../src/model/usage-ledger';
 import { observeModelUsage } from '../src/model/accounting';
 import { join } from 'node:path';
 

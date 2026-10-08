@@ -12,12 +12,12 @@
  *
  * ## 复用既有 IPC, 不造第二套
  *
- * 复用 `src/tui/ext/host.ts` 的 loadExtension / readExtensionList(同一套子进程 IPC 协议),
+ * 复用 `src/harness/ext/host.ts` 的 loadExtension / readExtensionList(同一套子进程 IPC 协议),
  * 把 `ToolDecl` 包成 `AnyOmdTool` 经 agent-leaf 既有 `customTools` 通道进 leaf —— 不新开通道
  * (防重议段 ③)。wrap 形状与 cli.ts:156-167 的 TUI chat-seat 加载块同款。
  */
-import { loadExtension, readExtensionList, type HostDeps, type LoadedExtension } from '../tui/ext/host';
-import type { ObserveEvent } from '../tui/ext/protocol';
+import { loadExtension, readExtensionList, type HostDeps, type LoadedExtension } from './ext/host';
+import type { ObserveEvent } from './ext/protocol';
 import type { AnyOmdTool } from './agent-tools';
 import type { DagNodeEvent } from './dag/types';
 import { logger } from '../logger';

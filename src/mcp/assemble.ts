@@ -93,9 +93,6 @@ import { HOST_SAFEGUARD } from '../memory/safeguards/namespaces';
 import type { ResearchFanoutResult } from '../harness/research/fanout';
 import { logger } from '../harness/logger';
 import { applyToolRenames } from './tool-renames';
-import { createConductorChatTool, type ConductorChatDeps } from './tools/chat';
-import { checkWeeklyBudget, usageLedgerDir } from './budget';
-import { createOmdSessionStore, type OmdSessionStore } from '../harness/chat/session-store';
 import { notifyOwner, type NotifyDeps } from '../harness/notify';
 
 /**
@@ -237,10 +234,6 @@ export interface AssembleOmdMcpDeps {
   router?: ModelRouterHandle;
   /** owner 收件箱接缝 (S3; 测试注入 :memory:; 默认与 runs.db 同库)。 */
   inbox?: OwnerInbox;
-  /** 会话持久层接缝 (S1 conductor_chat; 测试注入临时目录 store, 默认 createOmdSessionStore(cwd))。 */
-  chatStore?: OmdSessionStore;
-  /** conductor_chat 的 agent 循环接缝 (真循环要真模型; 测试注入 fake)。 */
-  chatLoopFn?: ConductorChatDeps['loopFn'];
   /**
    * 自主环接缝 (默认真 `runGoal`)。
    *
@@ -988,20 +981,5 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     // plan-memory 账本可观测 (Phase A 证据门仪表, issue #10)。
     createPlansTool(ledger),
   ]);
-  // S1 conductor_chat (SDD 2026-08-09 远程指挥接缝): 对话位入口。**必须挂在改名之后** ——
-  // 它内部的 createConductorChatTools 按新名 (run/solve/map_tickets…) 点名, 挂早了装配期响亮抛。
-  assembled.push(
-    createConductorChatTool({
-      cwd,
-      store: deps.chatStore ?? createOmdSessionStore(cwd),
-      resolveModel: () => resolveEngineModels(env).conductorModel,
-      tools: assembled,
-      // §2 周预算闸 (SDD 2026-08-09 ECON): 账本目录与上限都按**装配层的 env** 解 ——
-      // 与本文件其余接缝同口径 (测试注入 env, 不必污染进程)。每次调用现读盘 + 现读 env:
-      // 改 OMD_WEEKLY_BUDGET_USD 下一句就生效, 不必重连 server (INV-MODEL-3 同款理由)。
-      budget: () => checkWeeklyBudget({ dir: usageLedgerDir(cwd, env), env }),
-      ...(deps.chatLoopFn ? { loopFn: deps.chatLoopFn } : {}),
-    }),
-  );
   return assembled;
 }

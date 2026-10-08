@@ -11,7 +11,7 @@
  * |--------|---|
  * | GWT-7a | NodeCheckpoint.spinLadderReport 透传 `saveCheckpoint → loadCheckpoint` 字节级一致 |
  * | GWT-7b | 字段缺席 (无 spin 史) 不被读成 `null` / 不被读成 `{}` —— INV-8 / NULL ≠ 0 |
- * | GWT-7c | `readRun` 暴露的 `RunNodeView.checkpoint.spinLadderReport` 与内存对象一致 |
+ * | GWT-7c | (随 `omd serve` 的 `readRun` 2026-10-08 S1 删除) |
  * | GWT-7d | `readings` 必恰含 `[r1, r2]` 两条, 每条都有 `dimension/criterionDiff/blockerSignature/outcome` 四字段 |
  *
  * ⚠ 怎么让它红 (反向自检, 必须真跑一次才认闸活着):
@@ -19,8 +19,6 @@
  *            读回的对象上该字段缺席 → 严格 toEqual 失败。
  *   · GWT-7b: 把 spread 条件改成 `?? null` → 缺席被读成 null, 等式两边变 null vs undefined,
  *            @若测试只判字段在不在, 也会被 toBeNull 反向咬红。验证后保留 `in` 操作符 + toBeUndefined 双向断言。
- *   · GWT-7c: readRun 里把 `spinLadderReport` 那段 spread 删掉 → RunNodeView.checkpoint 上字段
- *             缺席 → 同 GWT-7a 反咬红。
  *   · GWT-7d: 把 `SpinLadderReport` readonly tuple 改成 `readonly SpinLadderReading[]` —— shape 检查
  *             仍过, length 检查仍过, 但少条 (删其一) 会判红。
  *
@@ -37,7 +35,6 @@ import {
   type SpinLadderReport,
   type SpinLadderReading,
 } from '../dag/spin-rung2';
-import { readRun } from '../../serve/read-api';
 
 let root: string;
 let mgr: CheckpointManager;
@@ -169,47 +166,6 @@ describe('GWT-7b — 节点无 spin 史 → checkpoint 上 spinLadderReport 字�
     // 既有字段一律不变 (INV-8: 存量语义不回退)
     expect(back.tokenUsage).toEqual({ in: 8000, out: 200 });
     expect(back.summary).toBe('two consecutive spins, both rungs failed');
-  });
-});
-
-// ────────────────────────────────────────────────────────────────────────────
-// GWT-7c — readRun 暴露的 RunNodeView.checkpoint.spinLadderReport 与内存对象一致
-// ────────────────────────────────────────────────────────────────────────────
-describe('GWT-7c — readRun 暴露的 RunNodeView.checkpoint.spinLadderReport = 内存报告', () => {
-  test('写入磁盘后 readRun 读回的 checkpoint.spinLadderReport 与内存对象深相等', () => {
-    const report = mkFailingReport();
-    mgr.saveCheckpoint(runId, mkFailedCheckpoint({ spinLadderReport: report }));
-    const detail = readRun(root, runId);
-    expect(detail).not.toBeNull();
-    const nodeView = detail!.nodes.find((n) => n.id === 'L1');
-    expect(nodeView).toBeDefined();
-    expect(nodeView!.checkpoint).not.toBeNull();
-    expect(nodeView!.checkpoint!.spinLadderReport).toBeDefined();
-    expect(nodeView!.checkpoint!.spinLadderReport).toEqual(report);
-  });
-
-  test('无 spinLadderReport 的失败节点 → readRun 的 checkpoint 上字段缺席 (不在 JSON 里)', () => {
-    mgr.saveCheckpoint(runId, mkFailedCheckpoint()); // 不带报告
-    const detail = readRun(root, runId)!;
-    const nodeView = detail.nodes.find((n) => n.id === 'L1')!;
-    expect(nodeView.checkpoint).not.toBeNull();
-    // 在 JSON 序列化里缺席 ≠ 字面 undefined; JSON.parse 后访问是 undefined
-    expect(nodeView.checkpoint!.spinLadderReport).toBeUndefined();
-    expect('spinLadderReport' in nodeView.checkpoint!).toBe(false);
-  });
-
-  test('成功节点 (status=done) 不携带 spinLadderReport 字段 — INV-8 / 报告只属于阶梯失败', () => {
-    const cp: NodeCheckpoint = {
-      ...mkFailedCheckpoint(),
-      status: 'done',
-      failureKind: undefined,
-    };
-    delete (cp as { failureKind?: string }).failureKind; // 成功节点无 failureKind
-    mgr.saveCheckpoint(runId, cp);
-    const detail = readRun(root, runId)!;
-    const nodeView = detail.nodes.find((n) => n.id === 'L1')!;
-    expect(nodeView.checkpoint!.status).toBe('done');
-    expect(nodeView.checkpoint!.spinLadderReport).toBeUndefined();
   });
 });
 
