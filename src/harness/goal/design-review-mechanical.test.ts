@@ -104,13 +104,13 @@ describe('#98 机械层 —— 确定性规则命中直接落 finding', () => {
       expect(DETECTOR_SCRIPT).toContain('impeccable');
       return;
     }
-    const findings = runMechanicalLayer(['web/index.html'], ROOT);
+    const findings = runMechanicalLayer(['docs/design/2026-08-07-omd-agent-架构与-tui-设计稿.html'], ROOT);
     expect(findings.length).toBeGreaterThan(0);
     expect(findings[0]!.severity).toBe('p2');
-    expect(findings[0]!.where).toStartWith('web/index.html');
+    expect(findings[0]!.where).toStartWith('docs/design/2026-08-07-omd-agent-架构与-tui-设计稿.html');
     expect(findings[0]!.evidence).toStartWith('[');
     // 同一份输入跑两遍指纹必须一致 —— 去重靠它跨轮生效。
-    expect(runMechanicalLayer(['web/index.html'], ROOT).map((f) => f.fingerprint)).toEqual(findings.map((f) => f.fingerprint));
+    expect(runMechanicalLayer(['docs/design/2026-08-07-omd-agent-架构与-tui-设计稿.html'], ROOT).map((f) => f.fingerprint)).toEqual(findings.map((f) => f.fingerprint));
   });
 
   /**
