@@ -60,7 +60,6 @@
     "dag-fanout": "bun run scripts/dag-fanout.ts",
     "dag-review": "bun run scripts/dag-review.ts",
     "dag-debug": "bun run scripts/dag-debug.ts",
-    "omd-path": "bun run scripts/omd-path.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "seat-check": "bun run scripts/seat-check.ts --quiet",
@@ -70,7 +69,6 @@
     "omd-debt": "bun run scripts/omd-debt.ts",
     "plan-doc-check": "bun run scripts/plan-doc-check.ts",
     "omd-render": "bun run scripts/omd-render.ts",
-    "omd-deliver": "bun run scripts/omd-deliver.ts",
     "licenses": "bun run scripts/third-party-licenses.ts",
     "licenses:check": "bun run scripts/third-party-licenses.ts --check"
   },

@@ -27,11 +27,9 @@ import { RunRegistry } from './run-registry';
 import { CheckpointManager } from '../harness/continuity/checkpoint-manager';
 // 生产 jail 的可用性判据 —— 与对话位围栏**共用同一个已缓存的真探针** (2026-08-21, 见下方 jailRoot 注)。
 import { probeShellSandbox } from '../harness/hooks/shell-sandbox';
-import { HudMirror } from '../hud/mirror';
 import { createDagTools, type DagEngine } from './tools/dag-tools';
 import type { BranchStrategy } from '../harness/run-worktree';
 import { createMemoryTools } from './tools/memory';
-import { createPathfinderTools, type PathfinderToolDeps } from './tools/pathfinder';
 import { createDagResearchTool, type ResearchFanout } from './tools/research';
 import { createGoalTool } from './tools/goal';
 import { runGoal } from '../harness/goal/run-goal';
@@ -204,8 +202,6 @@ export interface AssembleOmdMcpDeps {
   researchRunner?: ResearchLeafRunner;
   /** engine config 追加覆盖 (在 env 角色矩阵解析结果之上, caller 显式指定优先)。 */
   configOverrides?: Partial<ExecutorDagConfig>;
-  /** pathfinder 工具接缝覆盖 (测试传 fake executeSlice/dispatchFrontier)。 */
-  pathfinder?: Partial<Pick<PathfinderToolDeps, 'executeSlice' | 'dispatchFrontier'>>;
   /** fleet spawn 接缝 (测试注入 fake; 生产默认 Bun.spawn)。 */
   spawn?: SpawnFn;
   /**
@@ -409,7 +405,7 @@ function renderResearchReport(question: string, runId: string, result: ResearchF
 /**
  * 装配 v1 全工具面: dag_run/dag_run_plan/dag_status/dag_result + dag_research +
  * memory_recall/memory_remember + dag_review/dag_slim/dag_deepen + dag_runs +
- * config 工具族 (omd_set_key/omd_apply_preset/omd_set_role/omd_config_status/omd_toggle_hud)。
+ * config 工具族 (omd_set_key/omd_apply_preset/omd_set_role/omd_config_status)。
  * 纯组装: 解析 deps → 调各工厂 → 拍平返回。
  */
 export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[] {
@@ -844,10 +840,6 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     return defaultConfig;
   };
 
-  // omd-hud 活体镜像: DAG 进度 (dag.json) + pathfinder 迷雾 (fog.json) 原子写 .omd/hud/,
-  // statusline (scripts/omd-hud.ts) 数据源。dag + pathfinder 工具共用一个实例 (同 repoRoot)。
-  const hudMirror = new HudMirror(cwd);
-
   // plan-memory Phase A 账本 (SDD 2026-07-21): 每个完成 run 记 family/版本/战绩, 纯记账零行为改变。
   // 证据门 (issue #10, 2026-08-11): omd_plans 显示任一 family runs≥3 ∧ ok率≥0.8 → 开 Phase B 召回闸。
   const ledger = deps.ledger ?? createPlanLedger({ path: join(cwd, '.omd', 'plan-ledger.db') });
@@ -892,7 +884,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
   // 真源 = tool-renames.ts 一张表; 文档/徽章两条闸 import 同表, 注册面与闸不可能漂移。
   const assembled = applyToolRenames([
     // continuity 恒开 (D-3): checkpoint 落 <cwd>/.omd/continuity/<runId>/, dag_run_plan resume 可续。
-    ...createDagTools({ engine, runRegistry, defaultConfig: buildDefaultConfig, continuity: { manager: new CheckpointManager(cwd), repoRoot: cwd }, hudMirror, ledger, recorder, onNodeEvent: onNodeEventComposed, defaultBranchStrategy }),
+    ...createDagTools({ engine, runRegistry, defaultConfig: buildDefaultConfig, continuity: { manager: new CheckpointManager(cwd), repoRoot: cwd }, ledger, recorder, onNodeEvent: onNodeEventComposed, defaultBranchStrategy }),
     createDagResearchTool(researchFanout, { runRegistry }),
     // 自主 goal 环 (P1 / INV-GOAL-1): buildDefaultConfig 传 thunk = 每次调用重解座位 (INV-MODEL-3)。
     // continuity 同 dag_run 恒开: 内层节点 checkpoint + **外层轮 journal** (INV-P2-6),
@@ -903,10 +895,6 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       cwd,
       buildConfig: buildDefaultConfig,
       continuity: { manager: new CheckpointManager(cwd), repoRoot: cwd },
-      // 活体进度/HUD 与 dag_run 同一条线 (2026-07-30 补: goal 这条从 P1 起就漏了)。
-      // ⚠ 2026-08-21: 上面这句在补线前**是不成立的** —— dag_run 那条线有三半 (registry ·
-      //   hudMirror · 订阅者旁路), 而 goal 只接了前两半, TUI 那半一直空着。补齐见下一行。
-      hudMirror,
       // 节点事件旁路 —— **与 dag_run 同一个 composed 实例**, 于是 TUI 活图 / fleet 对
       // solve 与 run 两条路一视同仁。缺了这行, 走 solve 的 run 在 TUI 上全程是黑的。
       onNodeEvent: onNodeEventComposed,
@@ -923,21 +911,6 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     }),
     // root = 代码锚判陈旧的基准 (evidence[].path 是仓相对的)。与其余工具同一个 cwd。
     ...createMemoryTools({ memory, root: cwd }),
-    // pathfinder 六件套 (TUI-less 决策地图: map/add/tickets/rule/deliver/prefetch, pull 式回流)。
-    ...createPathfinderTools({
-      cwd,
-      env,
-      models: resolveEngineModels(env),
-      agentRunner,
-      commandRunner,
-      hudMirror,
-      // 裁决增益: path_rule 成功后经同款 OmdMemory 写 omd.pattern fact (memory_recall 消费端可召回)。
-      memory,
-      // 运行留痕与 dag_run / dag_goal 同一个实例 (2026-08-02 补: path_deliver 是四个会真跑图的
-      // 入口里最后一个没接的 —— 缺它, 「各入口占比」会系统性看不见慢回路那一块)。
-      recorder,
-      ...deps.pathfinder,
-    }),
     // fleet 四工具: review/slim/deepen/debug 异步子进程。
     // D-4 (SDD C-5): onNodeEvent 也达 fleet —— dag_review 的进度翻成标准 DagNodeEvent 灌 pushDagEvent
     // (此前只达 createDagTools, review 这条观察面是断的)。省略 = 不转 (现状)。
@@ -948,7 +921,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     ...createTriageTools({ inbox, runRegistry }),
     // #160 D-4: dag_intervene —— 人介入记录面 (appendBoard event:'intervened'), 读数板据此算可避免性率。
     ...createInterveneTools({ cwd }),
-    // config 工具族: set_key/apply_preset/set_role/config_status/toggle_hud (omd init 的 MCP 面, 即时生效)。
+    // config 工具族: set_key/apply_preset/set_role/config_status (omd init 的 MCP 面, 即时生效)。
     ...createConfigTools({ cwd, router }),
     // 组合模式入口 (2026-07-26): 原语与图式递到图外, 让外部 SOTA agent 不必先出图就能用引擎能力。
     // runPlan 走同一条 runExecutorDagWithPlan —— 零新执行路径, stamp/闸/checkpoint 全部照旧。

@@ -13,7 +13,6 @@ import type { PathMap, Ticket } from './types';
 import { computeFrontier, deriveStatus, waitingHumanState } from './frontier';
 import { parseMapMarkdown, renderMapMarkdown, saveMapDb, loadMapDb } from './map-store';
 import { compileSlice } from './slice-compiler';
-import { readyRegion } from '../../mcp/tools/pathfinder';
 
 const t = (over: Partial<Ticket> & { id: string }): Ticket => ({
   type: 'task',
@@ -42,11 +41,6 @@ describe('GWT-1 · INV-S1-1: suggested 无执行力', () => {
     const f = computeFrontier(mapWithSuggested()).map((x) => x.id);
     expect(f).not.toContain('s1');
     expect(f).toContain('t2'); // 对照: 同样零前置的 open 票在前沿
-  });
-
-  test('readyRegion 不含 suggested, 且 suggested 在图上不阻塞区域交付', () => {
-    const region = readyRegion(mapWithSuggested());
-    expect(region).toEqual({ slice: ['t1'], goals: [] }); // s1 不在; 且 region 非 null — 雾中带不挡路
   });
 
   test('slice 编译只吃 region 票 — suggested 编不进图', () => {
@@ -103,7 +97,6 @@ import { join } from 'node:path';
 import { applySuggestions, computeFingerprint, confirmSuggestion } from './suggest';
 import { resolveBackend } from './backend';
 import { saveMap } from './maps';
-import { createPathfinderTools } from '../../mcp/tools/pathfinder';
 
 const AT = '2026-08-04T12:00:00Z';
 
@@ -193,44 +186,6 @@ describe('confirmSuggestion (GWT-3/4/5)', () => {
     confirmSuggestion(m, 's1', 'reject', { at: AT });
     expect(m.tickets).toHaveLength(0);
     expect(m.suggestionsLog!.some((x) => x.ticketId === 's1' && x.outcome === 'rejected')).toBe(true);
-  });
-});
-
-describe('工具面: map_confirm + map_rule 挡 suggested (GWT-8)', () => {
-  const wireTmp = () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'sugg-'));
-    const m: PathMap = { destination: '图', slug: 'm1', tickets: [], decisionsLog: [] };
-    applySuggestions(m, [{ type: 'task', title: '机器建议', suggestedBy: 'run-7' }], { at: AT });
-    saveMap(m, cwd);
-    const tools = createPathfinderTools({
-      cwd,
-      env: { OMD_PATH_BACKEND: 'md' },
-      models: { conductorModel: 'x', leafModel: 'x' },
-      agentRunner: (async () => ({ text: '', usage: { in: 0, out: 0 } })) as never,
-      commandRunner: (async () => ({ text: '', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 0 })) as never,
-      resolveBackend: (c) => resolveBackend(c, { env: { OMD_PATH_BACKEND: 'md' } }),
-    });
-    const call = async (name: string, args: Record<string, unknown>) =>
-      (await tools.find((t) => t.name === name)!.handler(args, {} as never)) as { content: { text: string }[]; isError?: boolean };
-    return { cwd, call };
-  };
-
-  test('GWT-8: map_rule 打 suggested 票 → isError 含 confirm, 状态不变', async () => {
-    const { cwd, call } = wireTmp();
-    const r = await call('path_rule', { ticketId: 's1', ruling: '直接裁' });
-    expect(r.isError).toBe(true);
-    expect(r.content[0]!.text).toContain('map_confirm');
-    rmSync(cwd, { recursive: true, force: true });
-  });
-
-  test('map_confirm accept 走通并渲染新状态; 再 rule 就许了', async () => {
-    const { cwd, call } = wireTmp();
-    const c = await call('map_confirm', { ticketId: 's1', action: 'accept' });
-    expect(c.isError).not.toBe(true);
-    expect(c.content[0]!.text).toContain('accepted');
-    const r = await call('path_rule', { ticketId: 's1', ruling: '现在可以裁了' });
-    expect(r.isError).not.toBe(true);
-    rmSync(cwd, { recursive: true, force: true });
   });
 });
 

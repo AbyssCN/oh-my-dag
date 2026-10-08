@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path';
 import { watchAfkResults } from './afk-hook';
 import { dispatchTicket, researchDispatchedPath, researchResultPath } from './dispatch';
 import { parseMapMarkdown, renderMapMarkdown } from './map-store';
-import { distill, writeResultAtomic } from './result-format';
+import { distill, writeResultAtomic } from '../research/result-format';
 import type { PathMap, Ticket } from './types';
 
 function tk(p: Partial<Ticket> & Pick<Ticket, 'id'>): Ticket {

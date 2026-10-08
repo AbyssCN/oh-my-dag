@@ -8,7 +8,7 @@
  *
  * ## 切片 6 (2026-09-05) — registry 接线
  *
- * 注册表驱动的命令 (`status` / `map add` / `doctor` / `call` 等 36 + 1 条) 走
+ * 注册表驱动的命令 (`status` / `research` / `doctor` / `call` 等) 走
  * `dispatchCli()` 单点编排: 装配 → 找 handler → 调 → 渲染 → 退出码。
  * 既有子命令 (`mcp` / `init` / `touch` / `touches` / `gc` / `pack`
  * / `config dump` / `config verify-seats` / `plan --dry-run` / `run --fixture` /
@@ -386,16 +386,8 @@ if (userArgs[0] === 'touch') {
       console.log(`${it.runId.slice(0, 8)} [${it.category}] ${r.ok ? '✓' : '✗'} ${r.note}`);
     }
   }
-  // HUD 分片归档 (2026-09-02, src/hud/gc.ts): 与 worktree 回收同一把开关 —— 缺省只报数, --apply 才挪。
-  {
-    const { readTerminalRunIds, sweepHudSnapshots } = await import('../hud/gc');
-    const hud = sweepHudSnapshots(root, Date.now(), { terminalRunIds: readTerminalRunIds(root), dryRun: !doApply });
-    const by: Record<string, number> = {};
-    for (const a of hud.archived) by[a.reason] = (by[a.reason] ?? 0) + 1;
-    console.log(`hud 分片: 扫 ${hud.scanned} · ${doApply ? '已归档' : '待归档'} ${hud.archived.length} ${JSON.stringify(by)}${hud.failed.length ? ` · 失败 ${hud.failed.length}` : ''}`);
-  }
   // 溢出文件回收 (2026-09-02, scripts/runs-gc.ts 尾节): `.omd/tool-result-*.txt` 与
-  // `.omd/bash-output-*.log` 与 worktree / HUD 分片共用同一把 --apply 开关 —— 缺省只报数。
+  // `.omd/bash-output-*.log` 与 worktree 共用同一把 --apply 开关 —— 缺省只报数。
   // 判据不是「关联 run 是否终态」(文件名里没有 runId), 换成年龄 + 在飞 run 起跑下限, 理由见实装头注。
   {
     const spill = sweepSpillFiles(realSpillDeps(root), { dryRun: !doApply });

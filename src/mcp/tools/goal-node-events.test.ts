@@ -15,7 +15,6 @@
  * ## 证伪方式(加闸必须当场证伪一次)
  *
  * 把 `goal.ts` 的 `deps.onNodeEvent?.(runId, e)` 那一段删掉 → 第一条测立刻红(收到 0 个事件)。
- * 把它挪到 `hudMirror.write` 之前 → 第二条测红(顺序是判据不是口味, 与 `dag-tools.ts:418-425` 同)。
  */
 import { describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, realpathSync } from 'node:fs';
@@ -46,7 +45,6 @@ const EVENTS: DagNodeEvent[] = [
 
 function make(opts: { subscriber?: (runId: string, e: DagNodeEvent) => void } = {}) {
   const anchor = makeRepo();
-  const trace: string[] = [];
   const seen: { runId: string; e: DagNodeEvent }[] = [];
   const tool = createGoalTool({
     // 替身 runGoal: 把引擎会发的事件原样打进 config.onNodeEvent, 模拟真引擎那一侧。
@@ -57,11 +55,10 @@ function make(opts: { subscriber?: (runId: string, e: DagNodeEvent) => void } = 
     runRegistry: new RunRegistry(),
     cwd: anchor,
     buildConfig: () => ({ conductorModel: 'c:m', leafModel: 'l:m' }),
-    hudMirror: { write: () => trace.push('mirror') },
-    onNodeEvent: opts.subscriber ?? ((runId, e) => { trace.push('subscriber'); seen.push({ runId, e }); }),
+    onNodeEvent: opts.subscriber ?? ((runId, e) => { seen.push({ runId, e }); }),
   });
   const call = () => tool.handler({ goal: '把 HudMirror 拆成每 run 一文件' } as never, {} as never) as Promise<{ content: { text: string }[]; isError?: boolean }>;
-  return { call, trace, seen };
+  return { call, seen };
 }
 
 describe('dag_goal 节点事件旁路 (2026-08-21 补的第三半)', () => {
@@ -79,15 +76,6 @@ describe('dag_goal 节点事件旁路 (2026-08-21 补的第三半)', () => {
     const v = seen[2]!.e as Extract<DagNodeEvent, { type: 'verdict' }>;
     expect(v.gate).toBe('verifier');
     expect(v.reason).toBe('产物不成立');
-  });
-
-  test('顺序: 镜像写盘在前, 订阅者在后 (与 dag-tools.ts:418-425 同一条判据)', async () => {
-    const { call, trace } = make();
-    await call();
-    // 每个事件都是先 mirror 后 subscriber, 不许交错成 subscriber 先。
-    // 尾上多一次 mirror (2026-09-02): 终态 (succeed/cancel/fail) 之后再无节点事件, 不补这一笔分片就永远停在
-    // `running` (实测 96 份僵尸分片, TUI 当「waiting」挂一辈子)。它没有订阅者对应项 —— 终态不是节点事件。
-    expect(trace).toEqual([...EVENTS.flatMap(() => ['mirror', 'subscriber']), 'mirror']);
   });
 
   test('订阅者抛错被吞, 不打断这次 goal —— 观测面挂了不许拖垮执行', async () => {

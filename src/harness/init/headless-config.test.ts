@@ -1,6 +1,6 @@
 /**
  * headless-config 不变量: key 路由 (auth.json/​.env) + 合并不伤他人 + 活注入 + preset 写盘 +
- * 角色校验 (plan 拒) + HUD 开关 + key 反向删除。凭证 flag 依赖真 ~/.pi/auth.json, 由 dag_run 端到端验, 此处不锁。
+ * 角色校验 (plan 拒) + key 反向删除。凭证 flag 依赖真 ~/.pi/auth.json, 由 dag_run 端到端验, 此处不锁。
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { clearProviders, getProvider } from '../../model/providers';
 import { resetConfigCache } from '../../model/role-models';
-import { applyPresetHeadless, removeKeyHeadless, setKeyHeadless, setRoleHeadless, toggleHud } from './headless-config';
+import { applyPresetHeadless, removeKeyHeadless, setKeyHeadless, setRoleHeadless } from './headless-config';
 
 let dir: string;
 let prevConfigPath: string | undefined;
@@ -189,22 +189,5 @@ describe('setRoleHeadless', () => {
     // 切片 A: 全座位可调 —— judge 在登记表里 (旧清单只有 conductor/leaf/verifier), 现在能落。
     expect(() => setRoleHeadless('judge', 'x:y')).not.toThrow();
     expect(() => setRoleHeadless('conductor', 'not-a-coord')).toThrow(/格式非法/);
-  });
-});
-
-describe('toggleHud', () => {
-  test('on 装 → off 卸 (settings.local.json)', () => {
-    const settings = join(dir, '.claude', 'settings.local.json');
-    const on = toggleHud(dir, true, { cwd: dir });
-    expect(on.status).toBe('installed');
-    expect(JSON.parse(readFileSync(settings, 'utf8')).statusLine.command).toContain('omd-hud.ts');
-
-    const off = toggleHud(dir, false, { cwd: dir });
-    expect(off.status).toBe('removed');
-    expect(JSON.parse(readFileSync(settings, 'utf8')).statusLine).toBeUndefined();
-  });
-
-  test('off 空 repo → not-present', () => {
-    expect(toggleHud(dir, false, { cwd: dir }).status).toBe('not-present');
   });
 });

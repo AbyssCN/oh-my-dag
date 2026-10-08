@@ -41,16 +41,6 @@ const ALL_TOOLS = [
   'memory_recall',
   'memory_fact', // recall 截断后的 L2 出口 (2026-08-28)
   'memory_remember',
-  // pathfinder 七件套 (TUI-less 决策地图; path_init = SDD 2026-07-22 gh 后端接入向导)
-  'path_map',
-  'path_add',
-  'path_tickets',
-  'path_rule',
-  'path_deliver',
-  'path_prefetch',
-  'path_init',
-  // S-1 片b (2026-08-04): t7 后出生的新工具, 直接新词表名, 无 alias。
-  'map_confirm',
   // fleet 增量 (SDD 2026-07-20: 车队四工具 + run 发现)
   'dag_review',
   'dag_slim',
@@ -68,7 +58,6 @@ const ALL_TOOLS = [
   'omd_set_model',
   'omd_config_status', 'omd_env',
   'omd_distill',
-  'omd_toggle_hud',
   // plan-memory 账本 (Phase A 证据门仪表)
   'omd_plans',
   'omd_primitive',

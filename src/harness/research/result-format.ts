@@ -1,5 +1,5 @@
 /**
- * src/harness/pathfinder/result-format —— AFK research 结果的**双端共享契约** (生产者 dag-research /
+ * src/harness/research/result-format —— AFK research 结果的**双端共享契约** (生产者 dag-research /
  * 消费者 afk-hook 同一模块, 防止格式各表)。
  *
  * 结果文件形状 (dag-research --out 写盘):
@@ -15,7 +15,10 @@
  */
 import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import type { TicketType } from './types';
+
+/** 票类型 (D-9): research=AFK 后台调研 / grill=HITL 审议 (纪律不动手, 无代码闸) / prototype=沙盒 spike / task=待编译施工。
+ *  2026-10-08 S3 从 pathfinder/types 搬来 (parseChildren 要它), pathfinder/types 反向 re-export。 */
+export type TicketType = 'research' | 'grill' | 'prototype' | 'task';
 
 /** 终稿段标题前缀 (dag-research 写 `## 终稿 (综合判优)`; 前缀匹配容忍括注变化)。 */
 const FINAL_HEADING = /^##\s+终稿/;

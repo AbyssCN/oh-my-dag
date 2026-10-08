@@ -4,7 +4,7 @@
  * ## 这是什么
  *
  * 把 registry.ts 的命令表**按工具分组**导出,供消费方按域查 (例如 cli.ts 接线可以
- * 单独引用 `MAP_COMMANDS`;文档对账测试可单独引用 `MEMORY_COMMANDS`)。同时承载
+ * 单独引用 `DAG_COMMANDS`;文档对账测试可单独引用 `MEMORY_COMMANDS`)。同时承载
  * `renderRunResult` / `renderStatus` 两个**人读渲染**函数 —— registry 的 `CliCommand.render`
  * 字段正是为它们留的注入点 (见 invoke.ts 的 render 覆盖路径)。
  *
@@ -138,21 +138,6 @@ const DAG_COMMANDS: readonly CliCommand[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// MAP_COMMANDS —— map init/open/add/tickets/rule/confirm/deliver/prefetch (8 条)
-// ---------------------------------------------------------------------------
-
-const MAP_COMMANDS: readonly CliCommand[] = [
-  build(['map', 'init'], 'map_init', 'initialize decision map'),
-  build(['map', 'open'], 'map_open', 'open decision map'),
-  build(['map', 'add'], 'map_add', 'add map ticket'),
-  build(['map', 'tickets'], 'map_tickets', 'list map tickets'),
-  build(['map', 'rule'], 'map_rule', 'rule on map ticket'),
-  build(['map', 'confirm'], 'map_confirm', 'confirm or reject suggested ticket'),
-  build(['map', 'deliver'], 'map_deliver', 'deliver ruled map region'),
-  build(['map', 'prefetch'], 'map_prefetch', 'prefetch map context'),
-];
-
-// ---------------------------------------------------------------------------
 // MEMORY_COMMANDS —— memory recall/fact/remember (3 条)
 // ---------------------------------------------------------------------------
 
@@ -164,8 +149,8 @@ const MEMORY_COMMANDS: readonly CliCommand[] = [
 
 // ---------------------------------------------------------------------------
 // CONFIG_COMMANDS —— env · config status/set-key/set-model/set-role/preset/
-//                    register-provider/models-auto/hud · shapes · primitive ·
-//                    web · distill · plans (14 条; history read/search 2026-10-08 S1 随对话位删除)
+//                    register-provider/models-auto · shapes · primitive ·
+//                    web · distill · plans (13 条; history read/search 2026-10-08 S1 随对话位删除)
 //
 // SDD §命名命令表 把这一段 (config + misc) 写在一个 block,contract 也只列 CONFIG_COMMANDS
 // 一个出口 —— 本片不分 MISC_COMMANDS (与 registry.ts 的五分组不同;这里对齐 contract 字面)。
@@ -180,7 +165,6 @@ const CONFIG_COMMANDS: readonly CliCommand[] = [
   build(['config', 'preset'], 'omd_apply_preset', 'apply model preset'),
   build(['config', 'register-provider'], 'omd_register_provider', 'register provider'),
   build(['config', 'models-auto'], 'omd_models_auto', 'discover provider models'),
-  build(['config', 'hud'], 'omd_toggle_hud', 'toggle HUD'),
   build(['shapes'], 'omd_shapes', 'show plan shapes'),
   build(['primitive'], 'omd_primitive', 'run primitive plan'),
   build(['web'], 'omd_web', 'search and retrieve web content'),
@@ -294,4 +278,4 @@ function renderStructuredResult(result: Record<string, unknown>): string {
   return lines.join('\n');
 }
 
-export { CONFIG_COMMANDS, DAG_COMMANDS, MAP_COMMANDS, MEMORY_COMMANDS };
+export { CONFIG_COMMANDS, DAG_COMMANDS, MEMORY_COMMANDS };

@@ -15,7 +15,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { computeFrontier } from './frontier';
 import { researchResultPath } from './dispatch';
-import { distill, MAX_CHILDREN_PER_TICKET, parseChildren } from './result-format';
+import { distill, MAX_CHILDREN_PER_TICKET, parseChildren } from '../research/result-format';
 import { NON_DISCOVERY_OUTCOMES } from './run-tickets';
 import { isDeliveredOutcome, type RunOutcomeKind } from '../run-outcome';
 import { runBranchLanded } from '../run-worktree';
@@ -23,7 +23,7 @@ import type { SuggestionDraft } from './suggest';
 import type { PathBackend } from './backend';
 import type { PathMap, Ticket, WaitingLogEntry } from './types';
 // distill / parseChildren 的真身在 result-format.ts (双端共享契约); 这里 re-export 兼容既有 import。
-export { distill, parseChildren } from './result-format';
+export { distill, parseChildren } from '../research/result-format';
 
 // ── applyAfkResult (纯) ─────────────────────────────────────────────────────────
 

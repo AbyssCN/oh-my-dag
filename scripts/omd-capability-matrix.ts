@@ -1,8 +1,8 @@
 /**
  * Capability matrix generator (2026-08-18, owner 拍板 docs/plan/2026-08-18-...).
  *
- * 真源 = src/mcp/tool-renames.ts + src/mcp/tools/pathfinder.ts + src/mcp/tools/goal.ts +
- * src/mcp/tools/dag-tools.ts (TS AST, 照抄 scripts/gen-seam-catalog.ts 的机制 —— createSourceFile
+ * 真源 = src/mcp/tool-renames.ts + src/mcp/tools/goal.ts + src/mcp/tools/dag-tools.ts
+ * (map_* 层随 pathfinder 删除, 2026-10-08 S3) (TS AST, 照抄 scripts/gen-seam-catalog.ts 的机制 —— createSourceFile
  * 走 + forEachChild 递归, 不用正则啃注释)。本脚本抽出 TOOL_RENAMES 映射与三层承诺 doc 注释、
  * 各工具 name 与 inputSchema 顶层键, 按上游冻结接口规格渲染出能力矩阵段落; 默认把渲染结果
  * 写回 .claude/CLAUDE.md 两条 marker 之间, --check 用 compareSegment 与盘上段落比对。
@@ -26,7 +26,6 @@ import { join, relative } from 'node:path';
 
 const ROOT = join(import.meta.dir, '..');
 const TOOL_RENAMES_PATH = join(ROOT, 'src/mcp/tool-renames.ts');
-const PATHFINDER_PATH = join(ROOT, 'src/mcp/tools/pathfinder.ts');
 const GOAL_PATH = join(ROOT, 'src/mcp/tools/goal.ts');
 const DAG_TOOLS_PATH = join(ROOT, 'src/mcp/tools/dag-tools.ts');
 const DOC_PATH = join(ROOT, '.claude/CLAUDE.md');
@@ -39,13 +38,12 @@ export const END_MARKER = '<!-- @@capability-matrix:end -->';
 
 export interface SourceFiles {
   toolRenames: string;
-  pathfinder: string;
   goal: string;
   dagTools: string;
 }
 
 export interface MatrixTool {
-  layer: 'map' | 'solve' | 'run';
+  layer: 'solve' | 'run';
   sourceName: string;
   publicName: string;
   params: string[];
@@ -75,7 +73,7 @@ export type ReadSegmentResult =
 
 interface RawTool {
   sourceName: string;
-  fileLayer: 'map' | 'solve' | 'run';
+  fileLayer: 'solve' | 'run';
   fileOrder: number;
   inputSchemaKeys: string[];
 }
@@ -99,7 +97,7 @@ function propertyNameText(name: ts.PropertyName): string {
   return name.getText();
 }
 
-function extractRawTools(source: string, fileLayer: 'map' | 'solve' | 'run'): RawTool[] {
+function extractRawTools(source: string, fileLayer: 'solve' | 'run'): RawTool[] {
   const sf = ts.createSourceFile('x.ts', source, ts.ScriptTarget.Latest, true);
   const tools: RawTool[] = [];
   let fileOrder = 0;
@@ -204,26 +202,24 @@ function extractRenames(source: string): ExtractedRenames {
 
 export function extractMatrix(sources: SourceFiles): Matrix {
   const { renames, promise } = extractRenames(sources.toolRenames);
-  const mapRaw = extractRawTools(sources.pathfinder, 'map');
   const solveRaw = extractRawTools(sources.goal, 'solve');
   const runRaw = extractRawTools(sources.dagTools, 'run');
 
-  // §4 入矩阵筛选: pathfinder 全部 → map_*; goal 仅 dag_goal → solve; dag-tools 仅 dag_run → run
-  const mapIn = mapRaw;
+  // §4 入矩阵筛选: goal 仅 dag_goal → solve; dag-tools 仅 dag_run → run
   const solveIn = solveRaw.filter((t) => t.sourceName === 'dag_goal');
   const runIn = runRaw.filter((t) => t.sourceName === 'dag_run');
 
   // §4: TOOL_RENAMES 每条目须判得出一层 (key 须在 raw 抽取里出现)
-  const allRawSources = new Set<string>([...mapRaw, ...solveRaw, ...runRaw].map((t) => t.sourceName));
+  const allRawSources = new Set<string>([...solveRaw, ...runRaw].map((t) => t.sourceName));
   for (const key of Object.keys(renames)) {
     if (!allRawSources.has(key)) {
       throw new Error(`extractMatrix: TOOL_RENAMES 条目 "${key}" 找不到对应 sourceName 工具 (未判出层)`);
     }
   }
 
-  // 层序 map_* → solve → run; 层内按 fileOrder 升序
-  const layerRank = (l: 'map' | 'solve' | 'run'): number => (l === 'map' ? 0 : l === 'solve' ? 1 : 2);
-  const ordered = [...mapIn, ...solveIn, ...runIn].sort((a, b) => {
+  // 层序 solve → run; 层内按 fileOrder 升序
+  const layerRank = (l: 'solve' | 'run'): number => (l === 'solve' ? 0 : 1);
+  const ordered = [...solveIn, ...runIn].sort((a, b) => {
     const la = layerRank(a.fileLayer);
     const lb = layerRank(b.fileLayer);
     if (la !== lb) return la - lb;
@@ -233,10 +229,6 @@ export function extractMatrix(sources: SourceFiles): Matrix {
   const tools: MatrixTool[] = [];
   for (const t of ordered) {
     const publicName = renames[t.sourceName] ?? t.sourceName;
-    // §4: 落 map_* 层者 publicName 必须 map_ 开头
-    if (t.fileLayer === 'map' && !publicName.startsWith('map_')) {
-      throw new Error(`extractMatrix: map_* 层工具 ${t.sourceName} → publicName "${publicName}" 不以 map_ 开头`);
-    }
     tools.push({
       layer: t.fileLayer,
       sourceName: t.sourceName,
@@ -256,16 +248,13 @@ export function extractMatrix(sources: SourceFiles): Matrix {
     run: runKeys.has(k),
   }));
 
-  // §5 绊线 (硬编码字面量, 不派生): 层数=3, map_*=8, 行数=18
+  // §5 绊线 (硬编码字面量, 不派生): 层数=2, 行数=19。map_* 层 (原 8 工具) 随 pathfinder 删除
+  // (owner 2026-10-08「omd 删掉 conductor」, S3), 层数 3→2 是 owner 重定, 不是就地改数。
   const layers = new Set(tools.map((t) => t.layer));
-  if (layers.size !== 3 || !(layers.has('map') && layers.has('solve') && layers.has('run'))) {
+  if (layers.size !== 2 || !(layers.has('solve') && layers.has('run'))) {
     throw new Error(
-      `勘察计数与代码冲突: 期望 层数=3 (map/solve/run 每层非空), 实际 层数=${layers.size} = {${[...layers].join(',')}}`,
+      `勘察计数与代码冲突: 期望 层数=2 (solve/run 每层非空), 实际 层数=${layers.size} = {${[...layers].join(',')}}`,
     );
-  }
-  const mapCount = tools.filter((t) => t.layer === 'map').length;
-  if (mapCount !== 8) {
-    throw new Error(`勘察计数与代码冲突: 期望 map_* 层工具数=8, 实际 ${mapCount}`);
   }
   if (rows.length !== 19) {
     throw new Error(`勘察计数与代码冲突: 期望 矩阵行数=19, 实际 ${rows.length}`);
@@ -280,11 +269,9 @@ export function renderSegment(matrix: Matrix): string {
   const lines: string[] = [];
   // 行 2
   lines.push(matrix.promise);
-  const mapT = matrix.tools.filter((t) => t.layer === 'map');
   const solveT = matrix.tools.filter((t) => t.layer === 'solve');
   const runT = matrix.tools.filter((t) => t.layer === 'run');
-  // 行 3-5
-  lines.push(`- **map_* 层**(${mapT.length} 工具, pathfinder.ts): ${mapT.map((t) => `\`${t.publicName}\``).join(' · ')}`);
+  // 行 3-4
   lines.push(`- **solve 层**(${solveT.length} 工具, goal.ts): ${solveT.map((t) => `\`${t.publicName}\``).join(' · ')}`);
   lines.push(`- **run 层**(${runT.length} 工具, dag-tools.ts): ${runT.map((t) => `\`${t.publicName}\``).join(' · ')}`);
   // 行 6..15: 每工具一行
@@ -312,7 +299,6 @@ export function renderSegment(matrix: Matrix): string {
 export function buildMatrix(): string {
   const sources: SourceFiles = {
     toolRenames: readFileSync(TOOL_RENAMES_PATH, 'utf8'),
-    pathfinder: readFileSync(PATHFINDER_PATH, 'utf8'),
     goal: readFileSync(GOAL_PATH, 'utf8'),
     dagTools: readFileSync(DAG_TOOLS_PATH, 'utf8'),
   };

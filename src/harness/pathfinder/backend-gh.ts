@@ -41,7 +41,7 @@
  */
 import { deriveStatus, sweepWaitingHuman } from './frontier';
 import { createGhWaitingNotifier, parseStaleAt } from './notify-gh';
-import { looksLikeResult } from './result-format';
+import { looksLikeResult } from '../research/result-format';
 import {
   applySuggestions,
   confirmSuggestion as confirmSuggestionPure,

@@ -2,14 +2,13 @@
  * src/mcp/tools/config-tools — omd 配置工具族 (omd init 的 MCP 面, D-config-mcp)。
  *
  * omd 跑在 Claude 里时"掌舵"= Opus, 配置不再走独立 TUI wizard; 这组工具让 Opus/​slash 直接
- * 改引擎配置 (key/角色/preset/HUD) 且**当前 MCP 子进程即时生效** (headless-config 双写: 写入磁盘 +
+ * 改引擎配置 (key/角色/preset) 且**当前 MCP 子进程即时生效** (headless-config 双写: 写入磁盘 +
  * 活注入)。5 工具:
  *   omd_set_key       —— 落 provider key → auth.json(pi)/ .env(native) + re-register
  *   omd_apply_preset  —— 套角色矩阵预设 (cn-trio 等) → .env + config.json
  *   omd_set_role      —— 单角色 (conductor/leaf/verifier/dream) → config.json
  *   omd_config_status —— 当前角色→模型 + 每 provider 凭证状态 + 无凭证告警
  *   omd_env           —— 引擎眼里这个仓长什么样 (语言证据 / PATH 上的 runner / 验收命令候选)
- *   omd_toggle_hud    —— 装/卸 DAG/pathfinder 实时底栏 HUD
  *
  * Pure-fn factory: createConfigTools({cwd}) → OmdMcpTool[]。密钥只落 auth.json/.env, 永不碰 .mcp.json。
  */
@@ -26,7 +25,6 @@ import {
   configSnapshot,
   setKeyHeadless,
   setRoleHeadless,
-  toggleHud,
   type KeyTarget,
 } from '../../harness/init/headless-config';
 import {
@@ -66,7 +64,6 @@ export function createConfigTools(deps: ConfigToolDeps): OmdMcpTool[] {
     makeSetModel(),
     makeConfigStatus(deps.router),
     makeEnvProbe(cwd),
-    makeToggleHud(cwd),
   ];
 }
 
@@ -394,32 +391,6 @@ function makeConfigStatus(router?: ConfigToolDeps['router']): OmdMcpTool {
         return ok(lines.join('\n'));
       } catch (e) {
         return err(`omd_config_status 失败: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    },
-  };
-}
-
-function makeToggleHud(cwd: string): OmdMcpTool {
-  return {
-    name: 'omd_toggle_hud',
-    description:
-      "Install (on=true) or remove (on=false) the DAG/pathfinder live HUD status line in this repo's settings.local.json.",
-    inputSchema: {
-      on: z.boolean().describe('true = install HUD, false = remove'),
-    },
-    handler: async ({ on }) => {
-      try {
-        const r = toggleHud(cwd, on as boolean, { cwd });
-        if (r.status === 'failed') return err(`omd_toggle_hud 失败: ${r.reason ?? '未知'}`);
-        const msg: Record<Exclude<typeof r.status, 'failed'>, string> = {
-          installed: `✓ HUD 已装 → ${r.path} (Claude Code 里打开本 repo 即见, 每 2s 刷新)`,
-          already: `HUD statusLine 已在 — 无变更 (${r.path})`,
-          removed: `✓ HUD 已移除 (${r.path})`,
-          'not-present': 'HUD statusLine 不在本 repo — 无变更',
-        };
-        return ok(msg[r.status]);
-      } catch (e) {
-        return err(`omd_toggle_hud 失败: ${e instanceof Error ? e.message : String(e)}`);
       }
     },
   };
