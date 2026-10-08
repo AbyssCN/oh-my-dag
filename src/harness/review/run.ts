@@ -6,13 +6,13 @@
  * parallel callModel → screen → 收集 finding 清单 (不综合不 graft, finding≠ground truth, 调用方终裁)。
  *
  * 双轴 (Matt Pocock): **Standards 轴** (correctness/security/boundary/contract… — 代码写得对不对)
- * × **Spec 轴** (spec 维度 — 做的是不是 SDD 说该做的事)。Spec 轴对照 findLatestSdd(cwd/docs/plan)
- * 的最新 SDD; 无 SDD → 报"spec 轴跳过"(非失败)。G3 强制含 spec。收敛层 (verify) 两轴共用。
+ * × **Spec 轴** (spec 维度 — 做的是不是 SDD 说该做的事)。Spec 轴对照 opts.sddPath (显式, 不存在抛错),
+ * 未给则 findLatestSdd(cwd/docs/plan) 的最新 SDD; 无 SDD → 报"spec 轴跳过"(非失败)。G3 强制含 spec。收敛层 (verify) 两轴共用。
  *
  * 全文写盘 (零丢失), 返回结构化 finding 供调用方 (CLI 打印 / build 内嵌摘要进报告)。
  */
-import { appendFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { buildReviewPrompt, buildSpecReviewPrompt, screenFinding, type ReviewDimension, type ReviewGate } from './index';
 import { verifyFindings as realVerifyFindings, type VerifiedFinding, type ReviewSendFn } from './verify';
 import { checkFindingAnchors, type AnchorCheckResult } from './anchor-check';
@@ -152,6 +152,11 @@ export interface RunReviewOpts {
   verify?: boolean;
   /** 取证 cwd (默认 process.cwd(), 即被审仓库根; spec 轴也在 <cwd>/docs/plan 找 SDD)。 */
   cwd?: string;
+  /**
+   * spec 轴对照的 SDD 显式路径 (相对 cwd 或绝对)。给了就读它、不走 findSdd;
+   * 文件不存在 → 抛错, **不回落**最新 SDD (静默对错文件比不审更糟)。
+   */
+  sddPath?: string;
   /** 深审 opt-in:单 agent review(读全仓 + 实测 → 确定性 verify)。默认 opts.single ?? OMD_REVIEW_SINGLE==='1';off → 老 Promise.all。 */
   single?: boolean;
   /** 注入依赖 (测试用)。 */
@@ -162,6 +167,21 @@ export interface RunReviewOpts {
    * (opts.single) 不走本汇 —— run-single 不在 D-4 写集, 其观察面保持现状 (零事件)。
    */
   onProgress?: (e: ReviewProgressEvent) => void;
+}
+
+/**
+ * spec 轴 SDD 定位 (run / run-single 共用): 显式 sddPath 优先 —— 不存在即抛错不回落;
+ * 未给 → findSdd(<cwd>/docs/plan) 取最新一份。
+ */
+export function locateSdd(
+  sddPath: string | undefined,
+  cwd: string,
+  findSdd: (planDir: string) => { path: string; text: string } | null,
+): { path: string; text: string } | null {
+  if (!sddPath) return findSdd(join(cwd, 'docs', 'plan'));
+  const path = resolve(cwd, sddPath);
+  if (!existsSync(path)) throw new Error(`[review] --sdd 指定的 SDD 不存在: ${path} (不回落最新 SDD)`);
+  return { path, text: readFileSync(path, 'utf8') };
 }
 
 /** spec 轴无 SDD 时的跳过说明 (非失败; 不进收敛层)。 */
@@ -206,7 +226,7 @@ export async function runReview(opts: RunReviewOpts): Promise<RunReviewResult> {
 
   // Spec 轴: 定位当前 SDD (无 → 轴跳过, 非失败)。
   const wantSpec = dims.includes('spec');
-  const sdd = wantSpec ? findSdd(join(cwd, 'docs', 'plan')) : null;
+  const sdd = wantSpec ? locateSdd(opts.sddPath, cwd, findSdd) : null;
   const specSkipped = wantSpec && !sdd;
 
   // D-4 事件汇: onProgress = 进程内回调 (测试/内嵌); OMD_REVIEW_EVENT_FILE = 子进程通道

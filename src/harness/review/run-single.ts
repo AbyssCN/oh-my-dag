@@ -8,9 +8,8 @@
  * SDD: docs/plan/2026-07-22-dag-native-review.md(§9 Phase 边界之外的探索臂)。
  * 契约冻结:返回 RunReviewResult,与 runReview 一致。
  */
-import { join } from 'node:path';
 import { buildGateReview, buildSpecReviewPrompt, screenFinding, DIMS_BY_GATE } from './index';
-import { resolveReviewModels, type ReviewFinding, type RunReviewOpts, type RunReviewResult } from './run';
+import { locateSdd, resolveReviewModels, type ReviewFinding, type RunReviewOpts, type RunReviewResult } from './run';
 import { verifyFindings as realVerifyFindings } from './verify';
 import { checkFindingAnchors } from './anchor-check';
 import { findLatestSdd } from '../execute-slice';
@@ -51,7 +50,7 @@ export async function runReviewSingle(opts: RunReviewOpts): Promise<RunReviewRes
   const verifyEffort = (env.OMD_REVIEW_VERIFY_EFFORT as ReviewEffort) || undefined;
 
   const wantSpec = dims.includes('spec');
-  const sdd = wantSpec ? findSdd(join(cwd, 'docs', 'plan')) : null;
+  const sdd = wantSpec ? locateSdd(opts.sddPath, cwd, findSdd) : null;
   const specSkipped = wantSpec && !sdd;
 
   // 单 prompt:diff + 所有维度镜头(buildGateReview 复用校准资产)+ spec 对照 + 代码库/oracle 纪律。

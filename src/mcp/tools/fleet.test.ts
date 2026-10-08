@@ -104,3 +104,18 @@ describe('dag_review 观察面 (C-5)', () => {
     expect(spawnCalls[0]!.env?.OMD_REVIEW_EVENT_FILE).toBeUndefined();
   });
 });
+
+describe('dag_review sdd 透传', () => {
+  test('sdd 参数 → 子进程 argv 带 --sdd <path>', async () => {
+    const argvs: string[][] = [];
+    const spawn: SpawnFn = async (cmd, _opts) => {
+      argvs.push(cmd);
+      return { exitCode: 0, stdout: 'ok', stderr: '' };
+    };
+    const tools = createFleetTools({ runRegistry: new RunRegistry(), cwd: '/tmp', spawn });
+    await tools.find((x) => x.name === 'dag_review')!.handler({ sdd: '/r/docs/plan/t.md' } as never, {} as never);
+    await Bun.sleep(50);
+    const argv = argvs[0]!;
+    expect(argv[argv.indexOf('--sdd') + 1]).toBe('/r/docs/plan/t.md');
+  });
+});

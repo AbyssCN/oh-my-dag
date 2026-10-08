@@ -10,12 +10,13 @@
  * finding≠ground truth, 调用方终裁。
  *
  *   bun run scripts/dag-review.ts [--gate G0|G1|G2|G3] [--base main] [--staged] [--brief] [--no-verify]
- *                                 [--spec] [--no-spec] [--dims correctness,security,boundary,contract,spec]
+ *                                 [--spec] [--no-spec] [--sdd <path>] [--dims correctness,security,boundary,contract,spec]
  *                                 [--model ds:..] [--extra "<额外对抗接缝>"] [--out path] [--paths "src,sql"]
  *   Gate 阶梯 (双轴 Matt Pocock): G0 免审 (docs/机械, 短路 exit 0) · G1=[contract,boundary]
  *   · G2=[correctness,security,boundary] · G3=G2+contract+**spec 强制** (Spec 轴 = diff 对照
  *   docs/plan 最新 SDD; 无 SDD → 轴跳过非失败; 模型可 OMD_REVIEW_SPEC_MODEL 单独路由)。
  *   --spec 任意 gate 强制加 spec 轴; --no-spec 排除 (G3 报错, spec 在 G3 不可免)。
+ *   --sdd <path> = Spec 轴对照这份 SDD/任务书 (隐含 --spec; 与 --no-spec 互斥; 文件不存在报错, 不回落最新)。
  *   默认: gate=G2, base=main 的 branch diff。--staged = 审暂存区。
  *   --paths = 逗号分隔 pathspec, 把 diff 限到指定目录/文件 (防部署产物/无关域污染)。
  *   收敛层默认开 (extract→仓库取证→证伪, 见 review/verify.ts; --no-verify 关), **两轴共用**:
@@ -27,7 +28,7 @@ import { bootstrapModelRuntime } from '../src/model/bootstrap';
 import { $ } from 'bun';
 
 const USAGE =
-  'usage: bun run scripts/dag-review.ts [--gate G0|G1|G2|G3] [--base main] [--staged] [--brief] [--no-verify] [--spec] [--no-spec] [--dims correctness,security,boundary,contract,spec] [--model ..] [--extra "<焦点>"] [--out path] [--paths "src,sql"]';
+  'usage: bun run scripts/dag-review.ts [--gate G0|G1|G2|G3] [--base main] [--staged] [--brief] [--no-verify] [--spec] [--no-spec] [--sdd <path>] [--dims correctness,security,boundary,contract,spec] [--model ..] [--extra "<焦点>"] [--out path] [--paths "src,sql"]';
 
 // ---- args ----
 const BOOL = new Set(['staged', 'brief', 'no-verify', 'spec', 'no-spec', 'single', 'help']);
@@ -58,6 +59,17 @@ if (gateRaw === 'G0') {
   process.exit(0);
 }
 const gate = gateRaw as ReviewGate;
+if (flags.sdd !== undefined) {
+  if (!flags.sdd) {
+    console.error(`[dag-review] --sdd 缺路径。\n${USAGE}`);
+    process.exit(1);
+  }
+  if (flags['no-spec']) {
+    console.error('[dag-review] --sdd 隐含 --spec, 与 --no-spec 互斥。');
+    process.exit(1);
+  }
+  flags.spec = 'true';
+}
 if (flags.spec && flags['no-spec']) {
   console.error('[dag-review] --spec 与 --no-spec 互斥。');
   process.exit(1);
@@ -102,6 +114,7 @@ const { findings, verified, outPath, sddPath, specSkipped } = await runReview({
   model: flags.model,
   outPath: flags.out,
   verify: !flags['no-verify'],
+  sddPath: flags.sdd,
   single: flags.single ? true : undefined, // --single: 单 agent 深审(读全仓 + 实测 → 确定性 verify)
 });
 

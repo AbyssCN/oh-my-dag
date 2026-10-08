@@ -256,21 +256,25 @@ function makeDagReview(deps: FleetToolDeps, spawn: SpawnFn): OmdMcpTool {
       gate: z.enum(REVIEW_GATES).optional().describe('Review gate G0|G1|G2|G3 (default G2)'),
       scope: z.string().optional().describe('Comma-separated pathspec limiting the diff (e.g. "src,sql")'),
       deep: z.boolean().optional().describe('深审档: 单 agent 读全仓 + 实测(--single);比默认多维并行贵但精度高/自然去重'),
+      sdd: z.string().optional().describe('Spec 轴对照的 SDD/任务书路径 (--sdd; 隐含 spec 轴; 不存在则报错, 不回落最新 SDD)'),
     },
     handler: async (args) => {
-      const { gate, scope, deep } = args as { gate?: string; scope?: string; deep?: boolean };
+      const { gate, scope, deep, sdd } = args as { gate?: string; scope?: string; deep?: boolean; sdd?: string };
       const argv: string[] = ['--brief'];
       if (gate) argv.push('--gate', gate);
       if (deep) argv.push('--single');
       if (!pushFlag(argv, 'paths', scope)) {
         return { content: [{ type: 'text' as const, text: 'dag_review: scope must not start with "--"' }], isError: true };
       }
+      if (!pushFlag(argv, 'sdd', sdd)) {
+        return { content: [{ type: 'text' as const, text: 'dag_review: sdd must not start with "--"' }], isError: true };
+      }
       const runId = dispatchFleetRun({ ...deps, spawn }, {
         tool: 'dag_review',
         script: 'scripts/dag-review.ts',
         argv,
         reportPath: reportPathFor('review'),
-        goal: `review gate=${gate ?? 'G2'}${scope ? ` paths=${scope}` : ''}`,
+        goal: `review gate=${gate ?? 'G2'}${scope ? ` paths=${scope}` : ''}${sdd ? ` sdd=${sdd}` : ''}`,
         // D-4: 有 TUI 等观察面订阅者 → 起事件文件轮询 (合成 runId = 本 run, 维度 = 节点)。
         eventFile: deps.onNodeEvent ? join(mkdtempSync(join(tmpdir(), 'omd-review-events-')), 'events.ndjson') : undefined,
       });

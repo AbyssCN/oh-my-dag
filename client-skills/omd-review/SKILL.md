@@ -22,7 +22,9 @@ description: 对一批 diff 做对抗式审查:默认多维并行召回 + 确定
 - `scope`:收窄审查范围(路径/模块);不给 = 当前 branch diff 全量。
 - `deep`:**深审档**(`true`)。一个 pi agent 读全仓 + **实测**(库/runtime API 主张必跑 `bun -e` 复现,治外部 API 幻觉)→ 确定性跨模型 verify。比默认贵,但**精度更高、自然去重**。
 
-1. `dag_review(gate?, scope?, deep?)` → `runId`;
+- `sdd`:Spec 轴对照**这份** SDD/任务书(隐含 spec 轴;文件不存在直接报错,不回落 `docs/plan` 最新一份)。**审 omdl run 一律带**:`dag_review(gate: "G2", sdd: <meta.repo>/<meta.spec>, scope: <run 改动路径>)`;CLI 同款 `bun run scripts/dag-review.ts --gate G2 --sdd <任务书> --base <base>`(在 run 的 worktree 里跑)。
+
+1. `dag_review(gate?, scope?, deep?, sdd?)` → `runId`;
 2. `dag_status(runId)` 轮询(跑几分钟,别重复发起);
 3. `dag_result(runId)` → **报告落盘路径**,自己 `Read` 再转述(按严重度先讲 top 项)。
 

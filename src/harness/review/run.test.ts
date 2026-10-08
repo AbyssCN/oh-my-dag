@@ -148,6 +148,33 @@ describe('review/run 双轴', () => {
     expect(fb.calls.find((c) => c.content.includes('对抗式审查 [spec]'))!.model).toBe('test:find-model');
   });
 
+  test('给 sddPath → 读该文件对照, 不调 findSdd (omdl run 对准自己的任务书)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omd-review-sdd-'));
+    const sddFile = join(dir, '2026-10-08-task.md');
+    await Bun.write(sddFile, '# 任务书\n允许改动: x.ts');
+    const { calls, send } = makeFakeSend();
+    let findCalled = false;
+    const res = await runReview(baseOpts({
+      sddPath: sddFile,
+      deps: { send, findSdd: () => { findCalled = true; return FAKE_SDD; }, env: {} },
+    }));
+    expect(findCalled).toBe(false);
+    expect(res.sddPath).toBe(sddFile);
+    const specCall = calls.find((c) => c.content.includes('对抗式审查 [spec]'))!;
+    expect(specCall.content).toContain('允许改动: x.ts');
+    expect(specCall.content).not.toContain(FAKE_SDD.text);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('给了不存在的 sddPath → 抛错, 不回落最新 SDD (D2)', async () => {
+    const { calls, send } = makeFakeSend();
+    await expect(runReview(baseOpts({
+      sddPath: '/nonexistent/docs/plan/nope.md',
+      deps: { send, findSdd: () => FAKE_SDD, env: {} },
+    }))).rejects.toThrow(/nope\.md/);
+    expect(calls.length).toBe(0);
+  });
+
   test('收敛层两轴共用: spec 偏离与 standards bug 一起走 extract→证伪', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omd-review-cwd-'));
     const { calls, send } = makeFakeSend((content) => {
@@ -310,6 +337,12 @@ describe('scripts/dag-review CLI gate 阶梯 (子进程冒烟, 零模型调用)'
 
   test('--spec 与 --no-spec 互斥, exit 1', () => {
     const p = Bun.spawnSync([process.execPath, SCRIPT, '--gate', 'G2', '--spec', '--no-spec'], { cwd: REPO_ROOT });
+    expect(p.exitCode).toBe(1);
+    expect(p.stderr.toString()).toContain('互斥');
+  });
+
+  test('--sdd 与 --no-spec 互斥 (--sdd 隐含 --spec), exit 1', () => {
+    const p = Bun.spawnSync([process.execPath, SCRIPT, '--gate', 'G2', '--sdd', 'docs/plan/x.md', '--no-spec'], { cwd: REPO_ROOT });
     expect(p.exitCode).toBe(1);
     expect(p.stderr.toString()).toContain('互斥');
   });
