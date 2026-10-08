@@ -109,7 +109,7 @@ describe('omd mcp 进程生命周期 (D-9 回归)', () => {
   test('客户端消失 (stdin 关闭) → ≤5s 干净自退 exit 0, 不留僵尸忙转', async () => {
     const tuiPath = fileURLToPath(new URL('../../src/harness/cli.ts', import.meta.url));
     const proc = spawnWithPipes(
-      () => Bun.spawn(['bun', 'run', tuiPath, 'mcp'], { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' }),
+      () => Bun.spawn(['bun', 'run', tuiPath, 'mcp'], { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe', env: { ...process.env, OMD_INSTALL_SKILLS: '0' } }),
       ['stdin', 'stdout', 'stderr'],
       'D-9 回归: 起 omd mcp server',
     );
