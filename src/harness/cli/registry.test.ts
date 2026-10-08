@@ -27,7 +27,6 @@ describe('CLI registry', () => {
     expect(findCommand(['status', 'run-1'])?.cmd.tool).toBe('dag_status');
     expect(findCommand(['map', 'add', '--title', 'ticket'])?.cmd.tool).toBe('map_add');
     expect(findCommand(['config', 'set-model', '--role', 'leaf'])?.cmd.tool).toBe('omd_set_model');
-    expect(findCommand(['history', 'search', '--query', 'needle'])?.cmd.tool).toBe('history_search');
   });
 
   test('preserves legacy fixture run and solve dispatch', () => {

@@ -165,7 +165,7 @@ const MEMORY_COMMANDS: readonly CliCommand[] = [
 // ---------------------------------------------------------------------------
 // CONFIG_COMMANDS —— env · config status/set-key/set-model/set-role/preset/
 //                    register-provider/models-auto/hud · shapes · primitive ·
-//                    web · distill · plans · history read/search (16 条)
+//                    web · distill · plans (14 条; history read/search 2026-10-08 S1 随对话位删除)
 //
 // SDD §命名命令表 把这一段 (config + misc) 写在一个 block,contract 也只列 CONFIG_COMMANDS
 // 一个出口 —— 本片不分 MISC_COMMANDS (与 registry.ts 的五分组不同;这里对齐 contract 字面)。
@@ -186,8 +186,6 @@ const CONFIG_COMMANDS: readonly CliCommand[] = [
   build(['web'], 'omd_web', 'search and retrieve web content'),
   build(['distill'], 'omd_distill', 'distill supplied text'),
   build(['plans'], 'omd_plans', 'show plan ledger'),
-  build(['history', 'read'], 'history_read', 'read conversation history'),
-  build(['history', 'search'], 'history_search', 'search conversation history'),
 ];
 
 // ---------------------------------------------------------------------------

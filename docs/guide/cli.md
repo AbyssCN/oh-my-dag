@@ -138,8 +138,6 @@ Logs always go to stderr; only the result lands on stdout. Pipe-friendly by cons
 | `omd web` | `omd_web` | search + fetch, zero LLM |
 | `omd distill` | `omd_distill` | distil insight from text you already have |
 | `omd plans` | `omd_plans` | list saved plans |
-| `omd history read` | `history_read` | read conversation history |
-| `omd history search` | `history_search` | search conversation history |
 
 ## The `call` escape hatch
 
