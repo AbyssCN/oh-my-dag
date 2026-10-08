@@ -4,7 +4,7 @@
 
 ## 安装
 
-**Claude Code**:**无需手动拷贝**。注册 omd MCP 后,`omd mcp` server 首次启动时自动把这 22 个技能
+**Claude Code**:**无需手动拷贝**。注册 omd MCP 后,`omd mcp` server 首次启动时自动把这 23 个技能
 (统一 `omd-` 前缀,避免和你既有 skill 撞名)幂等铺进用户级 `~/.claude/skills/` —— 新会话即得
 `/omd-path`、`/omd-deliver` 等。自装幂等、随包升级更新,且**从不覆盖你改过的技能**(按内容 hash 判定,
 用户动过即跳过)。关掉自装:环境变量 `OMD_INSTALL_SKILLS=0`。机制在 `src/harness/client-skills-install.ts`。
@@ -16,7 +16,7 @@ cd <目标repo> && claude mcp add omd -- omd mcp        # 全局安装的 omd; �
 
 **Codex**:没有 skills 机制——把需要的 SKILL.md 正文并入目标 repo 的 `AGENTS.md`,或作为 prompt 片段引用。
 
-## 技能一览(22 个)
+## 技能一览(23 个)
 
 > 这张表**必须与本目录 `ls` 逐个对上** —— 表里有而目录没有 = 用户装了却拿不到,
 > 目录有而表里没有 = 出厂了没人知道。两种都是静默失效。
@@ -40,6 +40,7 @@ cd <目标repo> && claude mcp add omd -- omd mcp        # 全局安装的 omd; �
 | `/omd-audit` | 安全专项审计:信任边界清单(注入/认证/fail-open) | MCP `run`(审计 DAG 模板) |
 | `/omd-sast` | 确定性 semgrep 静态扫描 | Bash semgrep |
 | `/omd-review` | 对抗式 diff 审查 + 误报裁决程序 + gate ROI 分档 | MCP `dag_review`(三段式) |
+| `/omd-retro` | 一批 omd-lite run 合并后复盘:确定性汇总 → 重复模式分流成闸 / 审查标准 / 任务书模板 → 提案交 owner;gc 预览清 worktree | Bash `omd-lite retro` / `omd-lite gc` |
 | `/omd-slim` | 精益审计:先 debt 台账、再 global-first 两遍法找过度工程 | `scripts/omd-debt.ts` + MCP `dag_slim` |
 | `/omd-deepen` | git 热点架构加深 → 浅模块去壳加厚 → leverage 排序 | MCP `dag_deepen`(三段式) |
 | `/omd-debug` | 系统化根因调试 8 阶段(无根因不修)+ 修完扫同类;并发多假设派 `dag_debug` | 方法论 + omd `dag_debug` |
